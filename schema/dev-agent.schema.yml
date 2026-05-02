@@ -1,0 +1,183 @@
+$schema: "http://json-schema.org/draft-07/schema#"
+title: ".dev-agent.yml"
+description: "Per-repo configuration consumed by the dev-agent plugin and reusable workflows."
+type: object
+required:
+  - schema_version
+  - commands
+  - branches
+  - deploy_skills
+  - audit_skills
+  - scaffold_skills
+  - artifacts
+  - guardrails
+  - cost_caps
+  - models
+  - scout
+  - notifications
+  - hotfix
+
+properties:
+  schema_version:
+    const: 1
+
+  commands:
+    type: object
+    required: [test, build, typecheck]
+    properties:
+      test: { type: string }
+      test_unit: { type: string }
+      test_contract: { type: string }
+      test_integration: { type: string }
+      test_components: { type: string }
+      test_e2e: { type: string }
+      build: { type: string }
+      typecheck: { type: string }
+      lint: { type: string }
+
+  branches:
+    type: object
+    required: [default, staging, release_target, release_pr_required]
+    properties:
+      default: { type: string }
+      staging:
+        oneOf:
+          - { type: string }
+          - { type: "null" }
+      release_target: { type: string }
+      release_pr_required: { type: boolean }
+
+  deploy_skills:
+    type: object
+    required: [staging, prod]
+    properties:
+      staging: { type: array, items: { type: string } }
+      prod:    { type: array, items: { type: string } }
+
+  audit_skills:
+    type: object
+    required: [pre_pr]
+    properties:
+      pre_pr: { type: array, items: { type: string } }
+
+  scaffold_skills:
+    type: object
+    properties:
+      edge_function: { type: string }
+      migration: { type: string }
+
+  artifacts:
+    type: object
+    required: [specs_dir, plans_dir, status_file, runbooks_dir]
+    properties:
+      specs_dir: { type: string }
+      plans_dir: { type: string }
+      status_file: { type: string }
+      runbooks_dir: { type: string }
+
+  guardrails:
+    type: object
+    required:
+      - blocked_paths
+      - require_explicit_unlock
+      - max_files_changed
+      - max_lines_changed
+      - scope_creep_thresholds
+      - trivial_cleanup_categories
+    properties:
+      blocked_paths: { type: array, items: { type: string } }
+      require_explicit_unlock: { type: array, items: { type: string } }
+      max_files_changed: { type: integer, minimum: 1 }
+      max_lines_changed: { type: integer, minimum: 1 }
+      scope_creep_thresholds:
+        type: object
+        required: [files_outside_spec_scope, loc_outside_spec_scope]
+        properties:
+          files_outside_spec_scope: { type: integer, minimum: 0 }
+          loc_outside_spec_scope: { type: integer, minimum: 0 }
+      trivial_cleanup_categories: { type: array, items: { type: string } }
+
+  cost_caps:
+    type: object
+    required:
+      - spec_brainstorm
+      - implement
+      - staging_deploy
+      - promote_to_prod
+      - smoke_verify
+      - scout_digest
+      - rollback
+    additionalProperties:
+      type: object
+      required: [tokens_in, tokens_out, dollars]
+      properties:
+        tokens_in: { type: integer, minimum: 0 }
+        tokens_out: { type: integer, minimum: 0 }
+        dollars: { type: number, minimum: 0 }
+
+  models:
+    type: object
+    required:
+      - scout
+      - triage
+      - smoke_analysis
+      - drift_detection
+      - notification
+      - implementation
+      - staging_deploy
+      - promote_to_prod
+      - rollback
+      - spec_brainstorm
+      - ambiguous_failure
+    additionalProperties:
+      type: string
+
+  scout:
+    type: object
+    required: [enabled, cron, sources, suppression]
+    properties:
+      enabled: { type: boolean }
+      cron: { type: string }
+      sources:
+        type: array
+        items:
+          type: object
+          required: [kind]
+          properties:
+            kind:
+              enum: [github_issues, vercel_logs, supabase_logs, codebase_audit, competitive]
+      suppression:
+        type: object
+        required: [track_rejections, suppress_after_n_rejects]
+        properties:
+          track_rejections: { type: boolean }
+          suppress_after_n_rejects: { type: integer, minimum: 1 }
+
+  notifications:
+    type: object
+    required: [github_issue, status_file]
+    properties:
+      push:
+        type: object
+        required: [provider, topic]
+        properties:
+          provider: { enum: [ntfy.sh, pushover, slack-webhook] }
+          topic: { type: string }
+      email:
+        type: object
+        required: [via, secret_name, to]
+        properties:
+          via: { const: resend }
+          secret_name: { type: string }
+          to: { type: string, format: email }
+      github_issue: { type: boolean }
+      status_file: { type: boolean }
+
+  hotfix:
+    type: object
+    required: [enabled, required_label, skip_spec, skip_drift_check]
+    properties:
+      enabled: { type: boolean }
+      required_label: { type: string }
+      skip_spec: { type: boolean }
+      skip_drift_check: { type: boolean }

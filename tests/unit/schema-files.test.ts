@@ -48,3 +48,13 @@ describe('schema/label-vocabulary.yml', () => {
     );
   });
 });
+
+describe('schema/dev-agent.schema.yml', () => {
+  it('loads as YAML', () => {
+    const content = readFileSync(resolve(__dirname, '../../schema/dev-agent.schema.yml'), 'utf8');
+    const parsed = yaml.load(content) as Record<string, unknown>;
+    expect(parsed).toBeDefined();
+    expect(parsed.$schema).toBe('http://json-schema.org/draft-07/schema#');
+    expect(parsed.title).toBe('.dev-agent.yml');
+  });
+});
