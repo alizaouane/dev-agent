@@ -10,11 +10,19 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "tsc",
-    "test": "echo 'no tests yet — Phase 1 will add'"
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "zod": "^3.23.0",
+    "js-yaml": "^4.1.0",
+    "deepmerge": "^4.3.1"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@types/js-yaml": "^4.0.9",
     "tsx": "^4.0.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   }
 }
