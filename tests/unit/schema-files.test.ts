@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { z } from 'zod';
+import { devAgentConfigSchema } from '../../lib/schema';
 
 const labelVocabularySchema = z.object({
   states: z.array(z.string().regex(/^state:[a-z-]+$/)).nonempty(),
@@ -56,5 +57,18 @@ describe('schema/dev-agent.schema.yml', () => {
     expect(parsed).toBeDefined();
     expect(parsed.$schema).toBe('http://json-schema.org/draft-07/schema#');
     expect(parsed.title).toBe('.dev-agent.yml');
+  });
+});
+
+describe('examples/test-repo/.dev-agent.yml', () => {
+  it('parses against devAgentConfigSchema', () => {
+    const content = readFileSync(
+      resolve(__dirname, '../../examples/test-repo/.dev-agent.yml'),
+      'utf8'
+    );
+    const parsed = yaml.load(content);
+    const result = devAgentConfigSchema.safeParse(parsed);
+    if (!result.success) console.error(result.error.format());
+    expect(result.success).toBe(true);
   });
 });
