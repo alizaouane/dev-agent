@@ -1,0 +1,25 @@
+states:
+  - state:proposed
+  - state:scoping
+  - state:spec-ready
+  - state:implementing
+  - state:pr-review
+  - state:staging-deployed
+  - state:ready-to-promote
+  - state:promoting
+  - state:done
+  - state:blocked
+  - state:abandoned
+  - state:rolled-back
+
+kinds:
+  - kind:user-intent
+  - kind:scout-proposal
+  - kind:scout-digest
+  - kind:hotfix
+
+priorities:
+  - priority:p0
+  - priority:p1
+  - priority:p2
+  - priority:p3

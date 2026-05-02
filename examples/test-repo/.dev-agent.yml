@@ -1,0 +1,80 @@
+schema_version: 1
+
+commands:
+  test: "echo 'mock test'"
+  build: "echo 'mock build'"
+  typecheck: "echo 'mock typecheck'"
+
+branches:
+  default: main
+  staging: null
+  release_target: main
+  release_pr_required: false
+
+deploy_skills:
+  staging: []
+  prod: []
+
+audit_skills:
+  pre_pr: []
+
+scaffold_skills: {}
+
+artifacts:
+  specs_dir: docs/specs
+  plans_dir: docs/plans
+  status_file: docs/program-status.md
+  runbooks_dir: docs/runbooks
+
+guardrails:
+  blocked_paths:
+    - secrets/**
+  require_explicit_unlock: []
+  max_files_changed: 10
+  max_lines_changed: 200
+  scope_creep_thresholds:
+    files_outside_spec_scope: 0
+    loc_outside_spec_scope: 20
+  trivial_cleanup_categories:
+    - formatting
+    - comment-fix
+
+cost_caps:
+  spec_brainstorm: { tokens_in: 10000, tokens_out: 3000, dollars: 0.5 }
+  implement:       { tokens_in: 20000, tokens_out: 10000, dollars: 0.5 }
+  staging_deploy:  { tokens_in: 5000,  tokens_out: 2000,  dollars: 0.1 }
+  promote_to_prod: { tokens_in: 7500,  tokens_out: 3000,  dollars: 0.1 }
+  smoke_verify:    { tokens_in: 3000,  tokens_out: 1000,  dollars: 0.05 }
+  scout_digest:    { tokens_in: 10000, tokens_out: 2000,  dollars: 0.05 }
+  rollback:        { tokens_in: 5000,  tokens_out: 2000,  dollars: 0.1 }
+
+models:
+  scout: claude-haiku-4-5
+  triage: claude-haiku-4-5
+  smoke_analysis: claude-haiku-4-5
+  drift_detection: claude-haiku-4-5
+  notification: claude-haiku-4-5
+  implementation: claude-haiku-4-5
+  staging_deploy: claude-haiku-4-5
+  promote_to_prod: claude-haiku-4-5
+  rollback: claude-haiku-4-5
+  spec_brainstorm: claude-haiku-4-5
+  ambiguous_failure: claude-haiku-4-5
+
+scout:
+  enabled: false
+  cron: "0 9 * * *"
+  sources: []
+  suppression:
+    track_rejections: true
+    suppress_after_n_rejects: 3
+
+notifications:
+  github_issue: true
+  status_file: true
+
+hotfix:
+  enabled: false
+  required_label: "kind:hotfix"
+  skip_spec: true
+  skip_drift_check: false
