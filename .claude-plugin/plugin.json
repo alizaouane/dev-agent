@@ -1,0 +1,15 @@
+{
+  "name": "dev-agent",
+  "version": "0.1.0-alpha.2",
+  "description": "Portable agentic feature-development orchestrator: drop intent → spec → PR → staging → prod, with bounded human gates.",
+  "author": {
+    "name": "Ali Zaouane",
+    "url": "https://github.com/alizaouane"
+  },
+  "repository": "https://github.com/alizaouane/dev-agent",
+  "homepage": "https://github.com/alizaouane/dev-agent#readme",
+  "license": "UNLICENSED",
+  "keywords": ["agentic", "ci-cd", "github-actions", "automation", "devops", "claude-code"],
+  "commands": "./commands/",
+  "skills": "./skills/"
+}
