@@ -14,6 +14,9 @@ export async function NavHeader() {
           <Link href="/" className="text-muted-foreground hover:text-foreground">
             Inbox
           </Link>
+          <Link href="/repos" className="text-muted-foreground hover:text-foreground">
+            Repos
+          </Link>
           <Link href="/pipeline" className="text-muted-foreground hover:text-foreground">
             Pipeline
           </Link>

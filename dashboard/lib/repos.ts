@@ -5,52 +5,115 @@ import type { Octokit } from '@octokit/rest';
 import { parseAllowlist } from './auth';
 
 /**
- * Minimal description of a repository the dashboard is allowed to operate on.
- *
- * `default_branch` is the branch we read `.dev-agent.yml` from and the implicit
- * base for kickoff PRs unless a spec overrides it.
+ * Description of a repository the dashboard surfaces. `wired_up` is the user-
+ * facing distinction between repos already running the dev-agent pipeline
+ * (have `.dev-agent.yml` at the default branch) and repos the user could
+ * onboard with one click.
  */
 export type RepoInfo = {
   owner: string;
   name: string;
   default_branch: string;
+  wired_up: boolean;
+  html_url: string;
+  description: string | null;
 };
 
 /**
- * Server-only: enumerate every repo across the orgs in `ALLOWED_GH_ORGS` that
- * has a `.dev-agent.yml` file at the root of its default branch.
+ * Server-only: enumerate every repository the authenticated user can see that
+ * passes the allowlist policy, then probe each one for `.dev-agent.yml` to
+ * mark it `wired_up`.
  *
- * Discovery is two-phase:
- *  1. List all repos in each allowed org (`octokit.repos.listForOrg`, paginated).
- *  2. For each candidate, attempt `getContent('.dev-agent.yml')` against the
- *     default branch — a 404 means the repo is not opted in and is dropped.
+ * Discovery sources:
+ *  1. `octokit.repos.listForAuthenticatedUser` — the user's own repos plus
+ *     any repos shared with them via collaboration. Used so personal repos
+ *     under the logged-in user (e.g. `alizaouane/...`) aren't invisible.
+ *  2. `octokit.repos.listForOrg` for each org in `ALLOWED_GH_ORGS` — the
+ *     user must already be a member (auth is gated upstream) and have at
+ *     least read access to the repo.
  *
- * A failure listing one org (e.g. the user has no access, or the org is
- * temporarily unreachable) is logged and swallowed so other allowed orgs are
- * still surfaced — the dashboard should degrade gracefully rather than render
- * an empty page when one org misbehaves.
+ * Allowlist policy (least-surprising):
+ *  - If `ALLOWED_GH_USERNAMES` is set, only repos whose owner is in that
+ *    list survive the personal-repo path.
+ *  - If `ALLOWED_GH_ORGS` is set, only those orgs are crawled.
+ *  - If both are unset, all accessible repos are returned (helpful for
+ *    self-hosted/single-user deployments where the auth callback has
+ *    already gated access).
  *
- * Note: this issues one `getContent` request per candidate repo. For tenants
- * with many repos this is acceptable for v1 but should be revisited (e.g.
- * caching, GitHub Search API, or a manifest endpoint) if the count grows.
+ * `wired_up` is `true` iff `.dev-agent.yml` exists at the root of the
+ * default branch. We do NOT drop unwired repos — they show up in the
+ * dashboard as "Available to wire up" so the user has a one-click path
+ * to onboard them. (The previous behavior silently dropped them and is
+ * what made the post-login dashboard look empty for users who hadn't
+ * already wired up dev-agent in any repo.)
+ *
+ * Per-source failures (org access denied, network blip) are logged and
+ * swallowed so one bad source doesn't blank out the rest.
  */
 export async function listAllowedRepos(octokit: Octokit): Promise<RepoInfo[]> {
-  const orgs = parseAllowlist(process.env.ALLOWED_GH_ORGS);
-  if (orgs.length === 0) return [];
+  const allowedUsernames = parseAllowlist(process.env.ALLOWED_GH_USERNAMES);
+  const allowedOrgs = parseAllowlist(process.env.ALLOWED_GH_ORGS);
 
-  const candidates: RepoInfo[] = [];
-  for (const org of orgs) {
+  const candidates: Map<string, Omit<RepoInfo, 'wired_up'>> = new Map();
+  const key = (owner: string, name: string) => `${owner.toLowerCase()}/${name.toLowerCase()}`;
+
+  // Source 1: every repo the authenticated user can list (their own + collaborator).
+  try {
+    type ListedRepo = {
+      name: string;
+      owner: { login: string; type?: string };
+      default_branch?: string;
+      html_url: string;
+      description: string | null;
+    };
+    const personal: ListedRepo[] = await octokit.paginate(
+      octokit.repos.listForAuthenticatedUser,
+      { per_page: 100, affiliation: 'owner,collaborator,organization_member' },
+    );
+    for (const r of personal) {
+      const isOrgRepo = (r.owner.type ?? '').toLowerCase() === 'organization';
+      if (isOrgRepo) {
+        // Defer org repos to the org pass below — that's where the
+        // ALLOWED_GH_ORGS filter applies. Skip here to avoid double-counting.
+        continue;
+      }
+      // Personal repo policy: if allowedUsernames is set, must match. Else allow.
+      if (allowedUsernames.length > 0 && !allowedUsernames.some((u) => u.toLowerCase() === r.owner.login.toLowerCase())) {
+        continue;
+      }
+      candidates.set(key(r.owner.login, r.name), {
+        owner: r.owner.login,
+        name: r.name,
+        default_branch: r.default_branch ?? 'main',
+        html_url: r.html_url,
+        description: r.description,
+      });
+    }
+  } catch (err) {
+    console.warn('listAllowedRepos: failed to list authenticated-user repos:', err);
+  }
+
+  // Source 2: each allowed org.
+  for (const org of allowedOrgs) {
     try {
-      const repos = await octokit.paginate(octokit.repos.listForOrg, {
+      type OrgRepo = {
+        name: string;
+        default_branch?: string;
+        html_url: string;
+        description: string | null;
+      };
+      const repos: OrgRepo[] = await octokit.paginate(octokit.repos.listForOrg, {
         org,
         per_page: 100,
         type: 'all',
       });
       for (const r of repos) {
-        candidates.push({
+        candidates.set(key(org, r.name), {
           owner: org,
           name: r.name,
           default_branch: r.default_branch ?? 'main',
+          html_url: r.html_url,
+          description: r.description,
         });
       }
     } catch (err) {
@@ -58,11 +121,12 @@ export async function listAllowedRepos(octokit: Octokit): Promise<RepoInfo[]> {
     }
   }
 
-  // Probe each candidate for `.dev-agent.yml` at the root of its default branch.
-  // We do this in parallel — `Promise.all` is fine because per-repo failures
-  // are caught locally and turned into `null`.
-  const checks = await Promise.all(
-    candidates.map(async (r): Promise<RepoInfo | null> => {
+  // Probe each candidate for `.dev-agent.yml`. Per-repo failures map to
+  // wired_up: false (which is the right answer for both "no file" and
+  // "transient API error" — the dashboard will simply show a wire-up button).
+  const candidateList = Array.from(candidates.values());
+  const probed = await Promise.all(
+    candidateList.map(async (r): Promise<RepoInfo> => {
       try {
         await octokit.repos.getContent({
           owner: r.owner,
@@ -70,12 +134,28 @@ export async function listAllowedRepos(octokit: Octokit): Promise<RepoInfo[]> {
           path: '.dev-agent.yml',
           ref: r.default_branch,
         });
-        return r;
+        return { ...r, wired_up: true };
       } catch {
-        return null;
+        return { ...r, wired_up: false };
       }
     }),
   );
 
-  return checks.filter((r): r is RepoInfo => r !== null);
+  // Stable sort: wired-up first (most relevant for pipeline views), then
+  // alphabetical within each group.
+  return probed.sort((a, b) => {
+    if (a.wired_up !== b.wired_up) return a.wired_up ? -1 : 1;
+    const ownerCmp = a.owner.localeCompare(b.owner);
+    if (ownerCmp !== 0) return ownerCmp;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+/**
+ * Convenience: filter to repos already running dev-agent. Pipeline / cost /
+ * activity views should use this — they only have meaningful data for
+ * wired-up repos.
+ */
+export function wiredRepos(repos: RepoInfo[]): RepoInfo[] {
+  return repos.filter((r) => r.wired_up);
 }

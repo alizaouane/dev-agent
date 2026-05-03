@@ -1,5 +1,5 @@
 import { getOctokit } from '@/lib/gh';
-import { listAllowedRepos } from '@/lib/repos';
+import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { fetchPipeline } from '@/lib/pipeline';
 import { CostChart, type DailyCost } from '@/components/cost-chart';
 import { parseTelemetry } from '@/lib/telemetry';
@@ -14,7 +14,7 @@ function dayOf(iso: string): string {
 export default async function CostPage() {
   const octokit = await getOctokit();
   const repos = await listAllowedRepos(octokit);
-  const items = await fetchPipeline(octokit, repos, { include_terminal: true });
+  const items = await fetchPipeline(octokit, wiredRepos(repos), { include_terminal: true });
 
   const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
   const sinceIso = new Date(since).toISOString();

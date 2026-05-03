@@ -1,0 +1,222 @@
+/**
+ * Embedded copy of `examples/web-app-template/` files used by the wireUpRepo
+ * server action when onboarding a new consumer.
+ *
+ * SOURCE-OF-TRUTH: `examples/web-app-template/` in this repo. The embedded
+ * copies here can drift if the templates change — `wire-up-template.test.ts`
+ * (engine-side) verifies this file matches the on-disk templates. If you
+ * update the templates, copy the new content into the constants below and
+ * re-run the tests.
+ *
+ * Why embed instead of read at runtime: Vercel deploys the dashboard with
+ * `rootDirectory: dashboard/`, which excludes parent paths like
+ * `../examples/`. Embedding makes the action self-contained and survives the
+ * deployment boundary.
+ */
+
+export const TEMPLATE_DEV_AGENT_YML = `schema_version: 1
+
+# Tune these to match your repo. The fields below are sized for a typical
+# Next.js + TypeScript + Vercel project; adjust if you're on a different
+# stack.
+
+commands:
+  test: npm test
+  build: npm run build
+  typecheck: npm run typecheck
+  lint: npm run lint
+
+branches:
+  default: main
+  # Set staging if you have a long-lived staging branch (e.g. develop).
+  # Leave null for repos where main → preview deploy is the staging path.
+  staging: null
+  release_target: main
+  release_pr_required: true
+
+deploy_skills:
+  # Names map to scripts/<name>.sh OR .claude/skills/<name>/SKILL.md
+  # in this repo — whichever the agent finds first.
+  staging:
+    - vercel-deploy-preview
+  prod:
+    - vercel-promote-to-prod
+
+audit_skills:
+  pre_pr: []
+
+scaffold_skills: {}
+
+artifacts:
+  specs_dir: docs/specs
+  plans_dir: docs/plans
+  status_file: docs/program-status.md
+  runbooks_dir: docs/runbooks
+
+guardrails:
+  # Paths the agent must NEVER touch. Anything under these globs is
+  # treated as a hard fail — the agent aborts rather than edit them.
+  blocked_paths:
+    - .env*
+    - secrets/**
+    - "**/*.pem"
+    - "**/*.key"
+    - .github/workflows/**         # workflows themselves edited via PR review only
+    - supabase/migrations/**       # schema changes go through DBAs
+    - prisma/migrations/**
+    - .vercel/**
+  # Paths the agent may modify ONLY if the spec explicitly mentions them.
+  # Useful for code that's owned by another team or has invariants the
+  # agent can't reason about by reading the file alone.
+  require_explicit_unlock:
+    - app/api/**             # API routes — surface area for prod traffic
+    - lib/payments/**        # payment-handling code
+    - lib/auth/**            # auth + session code
+    - tests/integration/**   # changes to integration tests need review
+  max_files_changed: 30
+  max_lines_changed: 800
+  scope_creep_thresholds:
+    files_outside_spec_scope: 0
+    loc_outside_spec_scope: 50
+  trivial_cleanup_categories:
+    - formatting
+    - comment-fix
+    - import-sort
+
+cost_caps:
+  spec_brainstorm: { tokens_in: 50000,  tokens_out: 8000,  dollars: 1.50 }
+  implement:       { tokens_in: 200000, tokens_out: 60000, dollars: 5.00 }
+  staging_deploy:  { tokens_in: 30000,  tokens_out: 8000,  dollars: 0.50 }
+  promote_to_prod: { tokens_in: 30000,  tokens_out: 8000,  dollars: 0.50 }
+  smoke_verify:    { tokens_in: 20000,  tokens_out: 4000,  dollars: 0.20 }
+  scout_digest:    { tokens_in: 50000,  tokens_out: 5000,  dollars: 0.50 }
+  rollback:        { tokens_in: 30000,  tokens_out: 8000,  dollars: 0.50 }
+
+models:
+  scout: claude-haiku-4-5
+  triage: claude-haiku-4-5
+  smoke_analysis: claude-haiku-4-5
+  drift_detection: claude-haiku-4-5
+  notification: claude-haiku-4-5
+  implementation: claude-sonnet-4-6
+  staging_deploy: claude-sonnet-4-6
+  promote_to_prod: claude-sonnet-4-6
+  rollback: claude-sonnet-4-6
+  spec_brainstorm: claude-opus-4-7
+  ambiguous_failure: claude-opus-4-7
+
+scout:
+  enabled: false
+  cron: "0 9 * * 1-5"
+  sources: []
+  suppression:
+    track_rejections: true
+    suppress_after_n_rejects: 3
+
+notifications:
+  github_issue: true
+  status_file: true
+
+hotfix:
+  enabled: true
+  required_label: "kind:hotfix"
+  skip_spec: true
+  skip_drift_check: false
+`;
+
+export const TEMPLATE_WORKFLOW_YML = `name: dev-agent
+
+# Wrapper that delegates to alizaouane/dev-agent's reusable phase
+# workflows. Drop this file into .github/workflows/ in your repo,
+# add ANTHROPIC_API_KEY as a repo secret, and you're wired up.
+#
+# SECURITY: This wrapper does not use any untrusted event payload data
+# in \`run:\` blocks. It only forwards the workflow_dispatch inputs
+# (typed as choice or number, validated by GitHub before they reach the
+# job) to the reusable workflows. No \`run:\` steps live in this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Which phase to run
+        required: true
+        type: choice
+        options:
+          - implement
+          - staging-deploy
+          - smoke-verify
+          - promote-to-prod
+          - rollback
+      issue_number:
+        description: GitHub issue number to act on
+        required: true
+        type: number
+      invocation_mode:
+        description: live (call the agent) or stub (skip agent for tests)
+        required: false
+        type: string
+        default: live
+
+jobs:
+  implement:
+    if: inputs.phase == 'implement'
+    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
+    with:
+      issue_number: \${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: \${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  staging-deploy:
+    if: inputs.phase == 'staging-deploy'
+    uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@v1
+    with:
+      issue_number: \${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: \${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  smoke-verify:
+    if: inputs.phase == 'smoke-verify'
+    uses: alizaouane/dev-agent/.github/workflows/phase-smoke-verify.yml@v1
+    with:
+      issue_number: \${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: \${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  promote-to-prod:
+    if: inputs.phase == 'promote-to-prod'
+    uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@v1
+    with:
+      issue_number: \${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: \${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  rollback:
+    if: inputs.phase == 'rollback'
+    uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@v1
+    with:
+      issue_number: \${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: \${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+`;
+
+/**
+ * Files to drop into a target repo when wiring it up. Order doesn't matter
+ * for the GitHub API, but is significant for human review of the resulting
+ * PR — we put `.dev-agent.yml` first so reviewers see the config before
+ * the workflow that uses it.
+ */
+export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
+  { path: '.dev-agent.yml', content: TEMPLATE_DEV_AGENT_YML },
+  { path: '.github/workflows/dev-agent.yml', content: TEMPLATE_WORKFLOW_YML },
+];
