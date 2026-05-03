@@ -12,8 +12,10 @@ branches:
   release_pr_required: false
 
 deploy_skills:
-  staging: []
-  prod: []
+  staging:
+    - mock-deploy-staging
+  prod:
+    - mock-deploy-prod
 
 audit_skills:
   pre_pr: []
