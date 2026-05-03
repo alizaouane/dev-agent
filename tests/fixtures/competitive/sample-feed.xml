@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Acme Blog</title>
+    <item>
+      <title>Acme launches AI Agent v2</title>
+      <link>https://acme.example.com/posts/agent-v2</link>
+      <description>New scheduling features.</description>
+      <pubDate>Mon, 03 May 2026 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <title>Acme adds OAuth flow</title>
+      <link>https://acme.example.com/posts/oauth</link>
+      <description>Sign in with Google.</description>
+      <pubDate>Sun, 02 May 2026 10:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>
