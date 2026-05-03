@@ -1,10 +1,12 @@
 import { getOctokit } from '@/lib/gh';
-import { listAllowedRepos } from '@/lib/repos';
+import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { IntentForm } from '@/components/intent-form';
 
 export default async function IntentPage() {
   const octokit = await getOctokit();
-  const repos = await listAllowedRepos(octokit);
+  // Drop-intent only makes sense for wired-up repos — there's no pipeline
+  // to drop into otherwise.
+  const repos = wiredRepos(await listAllowedRepos(octokit));
   return (
     <div>
       <h1 className="mb-4 text-2xl font-semibold">Drop intent</h1>

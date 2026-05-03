@@ -67,8 +67,8 @@ describe('needsActionFilter', () => {
 describe('fetchPipeline', () => {
   it('returns FeatureItems across the given repos', async () => {
     const repos: RepoInfo[] = [
-      { owner: 'q', name: 'r1', default_branch: 'main' },
-      { owner: 'q', name: 'r2', default_branch: 'main' },
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+      { owner: 'q', name: 'r2', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r2', description: null },
     ];
     const octokit = makeOctokit({
       'q/r1': [
@@ -99,7 +99,7 @@ describe('fetchPipeline', () => {
   });
 
   it('include_terminal: true returns terminal issues too', async () => {
-    const repos: RepoInfo[] = [{ owner: 'q', name: 'r1', default_branch: 'main' }];
+    const repos: RepoInfo[] = [{ owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null }];
     const octokit = makeOctokit({
       'q/r1': [
         {

@@ -6,6 +6,7 @@ import type { Octokit } from '@octokit/rest';
 
 import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
+import { WIRE_UP_FILES } from './wire-up-template';
 
 /**
  * Verify `username` has at least `write` permission on `owner/repo`. Uses
@@ -200,4 +201,136 @@ export async function dispatchRollback(formData: FormData): Promise<void> {
 
   revalidatePath('/');
   revalidatePath(`/features/${issue_number}`);
+}
+
+/**
+ * Server Action: open a PR against `owner/repo` that adds the dev-agent
+ * onboarding files (.dev-agent.yml + .github/workflows/dev-agent.yml).
+ *
+ * Flow:
+ *  1. Verify the user has write permission on the target repo.
+ *  2. Resolve the default branch's tip commit.
+ *  3. Check for an existing onboarding PR — if one is already open from
+ *     `chore/wire-up-dev-agent`, redirect to it (idempotent on retries).
+ *  4. Create a new branch `chore/wire-up-dev-agent` from the default tip.
+ *  5. Use createOrUpdateFileContents for each WIRE_UP_FILES entry. We
+ *     don't pre-check whether the file exists — if it does, the API
+ *     returns 422 and the action surfaces the conflict to the caller.
+ *  6. Open the PR with a clear body explaining the next steps.
+ *
+ * Form fields:
+ *  - `owner` — repo owner (org or user)
+ *  - `repo`  — repo name
+ *
+ * @throws Error if the repo already has .dev-agent.yml on the default branch
+ *   (the user should be using the wired flow, not re-wiring).
+ * @throws ForbiddenError if user lacks write perm.
+ */
+export async function wireUpRepo(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const owner = (formData.get('owner') as string).trim();
+  const repo = (formData.get('repo') as string).trim();
+  const default_branch = (formData.get('default_branch') as string)?.trim() || 'main';
+
+  if (!owner || !repo) throw new Error('owner and repo are required');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  // Defensive: if the repo already has .dev-agent.yml on its default branch,
+  // bail out. The user is on /repos which derived `wired_up` server-side,
+  // so this is mostly a guard against TOCTOU races, not a UX path.
+  try {
+    await octokit.repos.getContent({ owner, repo, path: '.dev-agent.yml', ref: default_branch });
+    throw new Error(`${owner}/${repo} is already wired up`);
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status !== 404) throw err;
+    // 404 is the happy path: file doesn't exist, proceed.
+  }
+
+  // Resolve the default branch tip — needed as the parent for the new branch.
+  const ref = await octokit.git.getRef({ owner, repo, ref: `heads/${default_branch}` });
+  const tipSha = ref.data.object.sha;
+
+  const wireBranch = 'chore/wire-up-dev-agent';
+
+  // Idempotency: if a wire-up PR is already open from this branch, redirect
+  // there rather than failing or duplicating work.
+  const existing = await octokit.pulls.list({
+    owner,
+    repo,
+    head: `${owner}:${wireBranch}`,
+    state: 'open',
+    per_page: 1,
+  });
+  if (existing.data.length > 0) {
+    redirect(existing.data[0].html_url);
+  }
+
+  // Create the branch (or reset if it exists from a prior aborted run).
+  try {
+    await octokit.git.createRef({
+      owner,
+      repo,
+      ref: `refs/heads/${wireBranch}`,
+      sha: tipSha,
+    });
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === 422) {
+      // Branch already exists — fast-forward it to the default tip so the
+      // file commits below land on a clean base.
+      await octokit.git.updateRef({
+        owner,
+        repo,
+        ref: `heads/${wireBranch}`,
+        sha: tipSha,
+        force: true,
+      });
+    } else {
+      throw err;
+    }
+  }
+
+  // Commit each template file. createOrUpdateFileContents is one commit per
+  // file — that's fine here (two files); a tree+commit dance would be needed
+  // only for larger payloads.
+  for (const f of WIRE_UP_FILES) {
+    await octokit.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path: f.path,
+      message: `chore(dev-agent): add ${f.path}`,
+      content: Buffer.from(f.content, 'utf8').toString('base64'),
+      branch: wireBranch,
+    });
+  }
+
+  const prBody = [
+    `Wires up [dev-agent](https://github.com/alizaouane/dev-agent) on this repo.`,
+    ``,
+    `**What this PR does:**`,
+    `- Adds \`.dev-agent.yml\` (config: which commands to run, which paths to never touch, cost caps).`,
+    `- Adds \`.github/workflows/dev-agent.yml\` (calls dev-agent's reusable workflows pinned at \`@v1\`).`,
+    ``,
+    `**Next steps after merge:**`,
+    `1. Add \`ANTHROPIC_API_KEY\` as a repository secret (Settings → Secrets and variables → Actions).`,
+    `2. (Recommended) Settings → Actions → General → enable "Allow GitHub Actions to create and approve pull requests".`,
+    `3. Tune \`.dev-agent.yml\` for your stack (commands, deploy_skills, guardrails).`,
+    `4. File a feature issue, then trigger the agent: \`gh workflow run dev-agent.yml -f phase=implement -f issue_number=<N>\`.`,
+    ``,
+    `Triggered by @${session_username} from the dev-agent dashboard.`,
+  ].join('\n');
+
+  const pr = await octokit.pulls.create({
+    owner,
+    repo,
+    title: 'chore: wire up dev-agent',
+    head: wireBranch,
+    base: default_branch,
+    body: prBody,
+  });
+
+  revalidatePath('/repos');
+  redirect(pr.data.html_url);
 }
