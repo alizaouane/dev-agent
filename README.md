@@ -60,6 +60,12 @@ See `commands/<name>.md` for full per-command docs.
 
 These are `user-invocable: false` — invoked by slash commands and reusable workflows, not by the user.
 
+## Status: v0.3.0 (Real implement step)
+
+`phase-implement.yml` now invokes [`anthropics/claude-code-action@v1`](https://github.com/anthropics/claude-code-action) instead of the stub-mode model invocation. The agent reads the linked spec, edits files, runs the consumer's test/typecheck commands, commits to a `feat/dev-agent-issue-<n>` branch, and the action auto-creates the PR. The phase workflow then transitions the issue to `state:pr-review`. **The system now actually ships code.**
+
+To use live mode: pass `invocation_mode: live` (now the default) to `phase-implement.yml`. Stub mode (`invocation_mode: stub`) skips the agent — useful for wiring tests.
+
 ## Status: v0.2.0 (Dashboard v1)
 
 Adds the web dashboard at [`dev-agent.qualiency.com`](https://dev-agent.qualiency.com) — inbox-driven UI, GitHub OAuth + allowlist, server actions wrapping the engine. Source: [`docs/specs/2026-05-03-dev-agent-dashboard-design.md`](docs/specs/2026-05-03-dev-agent-dashboard-design.md). Build: [`docs/plans/2026-05-03-dashboard-v1-plan.md`](docs/plans/2026-05-03-dashboard-v1-plan.md). Code under [`dashboard/`](dashboard/).

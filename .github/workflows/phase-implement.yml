@@ -13,7 +13,7 @@ on:
       invocation_mode:
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -29,10 +29,10 @@ on:
         type: string
         default: 'examples/test-repo/.dev-agent.yml'
       invocation_mode:
-        description: 'stub or live'
+        description: 'live (real claude-code-action) or stub (skip the agent — for tests)'
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
 
 jobs:
   implement:
@@ -51,39 +51,124 @@ jobs:
 
       - run: npm ci
 
-      - name: Read issue (data only)
+      - name: Read issue
+        id: issue
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
-        run: gh issue view "$ISSUE_NUMBER" --json number,title,body,labels > issue.json
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE_NUMBER" --json number,title,body,labels > issue.json
+          TITLE=$(jq -r '.title' issue.json)
+          # Find the linked spec file path. Look in body for a `docs/.../*.md`
+          # reference; fall back to the dev-agent.yml's specs_dir + a search
+          # for a file matching the issue slug.
+          SPECS_DIR=$(jq -r '.artifacts.specs_dir // "docs/specs"' "${{ inputs.config_path }}")
+          SPEC_PATH=$(jq -r '.body' issue.json | grep -oE "${SPECS_DIR}/[^[:space:])\"]+\.md" | head -1 || true)
+          if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
+            SPEC_PATH="${SPECS_DIR}/placeholder-no-spec.md"
+            mkdir -p "$SPECS_DIR"
+            printf '# (no spec linked)\n\nThe issue body did not reference a spec file under `%s/`. Treat the issue body as the spec.\n' "$SPECS_DIR" > "$SPEC_PATH"
+          fi
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+          echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
 
-      - name: Render implementation prompt + invoke (stub mode in 1c)
+      - name: Render system prompt
+        id: prompt
         env:
-          MODEL: claude-sonnet-4-6
-          INVOCATION_MODE: ${{ inputs.invocation_mode }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CONFIG_PATH: ${{ inputs.config_path }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
         run: |
           set -euo pipefail
           export PROMPT_VARS_JSON=$(jq -nc \
-            --arg spec_path "docs/specs/placeholder-1c.md" \
+            --arg spec_path "$SPEC_PATH" \
             --arg branch_name "feat/dev-agent-issue-${ISSUE_NUMBER}" \
-            --arg test "$(jq -r '.commands.test // "npm test"' "$CONFIG_PATH" 2>/dev/null || echo "npm test")" \
-            '{spec_path:$spec_path, branch_name:$branch_name, commands:{test:$test, typecheck:"npm run typecheck", lint:null}, guardrails:{blocked_paths:[], require_explicit_unlock:[], max_files_changed:30, max_lines_changed:800}}')
-          npx tsx lib/cli/render-and-run.ts implement > implement-result.json
-          jq -c . implement-result.json
+            --arg test "$(jq -r '.commands.test // "npm test"' "$CONFIG_PATH")" \
+            --arg typecheck "$(jq -r '.commands.typecheck // "npm run typecheck"' "$CONFIG_PATH")" \
+            --arg lint "$(jq -r '.commands.lint // ""' "$CONFIG_PATH")" \
+            --argjson blocked "$(jq -c '.guardrails.blocked_paths // []' "$CONFIG_PATH")" \
+            --argjson unlock "$(jq -c '.guardrails.require_explicit_unlock // []' "$CONFIG_PATH")" \
+            --argjson maxfiles "$(jq -r '.guardrails.max_files_changed // 30' "$CONFIG_PATH")" \
+            --argjson maxlines "$(jq -r '.guardrails.max_lines_changed // 800' "$CONFIG_PATH")" \
+            '{spec_path:$spec_path, branch_name:$branch_name, commands:{test:$test, typecheck:$typecheck, lint:($lint|select(length>0))}, guardrails:{blocked_paths:$blocked, require_explicit_unlock:$unlock, max_files_changed:$maxfiles, max_lines_changed:$maxlines}}')
+          npx tsx lib/cli/render-prompt.ts implement > /tmp/system-prompt.md
 
-      - name: Comment telemetry
+      - name: Build agent prompt (system + spec + issue context)
+        id: build
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+        run: |
+          set -euo pipefail
+          {
+            echo "# Implementation task — issue #$ISSUE_NUMBER"
+            echo ""
+            echo "**Issue title:** $ISSUE_TITLE"
+            echo "**Spec file:** \`$SPEC_PATH\`"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Spec content"
+            echo ""
+            cat "$SPEC_PATH"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Issue body"
+            echo ""
+            jq -r '.body // ""' issue.json
+            echo ""
+            echo "---"
+            echo ""
+            echo "## System / discipline (read carefully)"
+            echo ""
+            cat /tmp/system-prompt.md
+          } > /tmp/agent-prompt.md
+          echo "prompt_path=/tmp/agent-prompt.md" >> "$GITHUB_OUTPUT"
+
+      - name: Skip live agent invocation (stub mode)
+        if: inputs.invocation_mode == 'stub'
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
-          INVOCATION_MODE: ${{ inputs.invocation_mode }}
         run: |
           set -euo pipefail
-          MODEL=$(jq -r '.model' implement-result.json)
-          TIN=$(jq -r '.usage.tokens_in' implement-result.json)
-          TOUT=$(jq -r '.usage.tokens_out' implement-result.json)
-          DOLLARS=$(jq -r '.usage.dollars' implement-result.json)
-          BODY=$(printf '🤖 Phase: implement\nModel: %s\nTokens: %s in / %s out\nCost: $%s\nMode: %s\nStatus: stub-success (live mode wires in 1d)\n' "$MODEL" "$TIN" "$TOUT" "$DOLLARS" "$INVOCATION_MODE")
+          BODY=$(printf '🤖 Phase: implement\nModel: (none)\nTokens: 0 in / 0 out\nCost: $0\nMode: stub\nStatus: stub-mode (no agent invocation; set invocation_mode=live to ship code)\n')
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+
+      - name: Run Claude Code (live agent)
+        id: claude
+        if: inputs.invocation_mode == 'live'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ steps.build.outputs.prompt_path }}
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6'
+          branch_prefix: 'feat/dev-agent-issue-'
+
+      - name: Comment telemetry + link PR
+        if: inputs.invocation_mode == 'live'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          BRANCH_NAME: ${{ steps.claude.outputs.branch_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ -z "$BRANCH_NAME" ]; then
+            BODY=$(printf '🤖 Phase: implement\nModel: claude-sonnet-4-6\nMode: live\nStatus: agent-no-changes (the agent ran but produced no code changes; check logs)\n')
+            gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+            exit 0
+          fi
+          # Find the PR created by claude-code-action.
+          PR_NUMBER=$(gh pr list --head "$BRANCH_NAME" --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -z "$PR_NUMBER" ]; then
+            PR_LINE='(no PR yet — branch pushed but PR creation pending)'
+          else
+            PR_LINE="PR: #${PR_NUMBER}"
+          fi
+          BODY=$(printf '🤖 Phase: implement\nModel: claude-sonnet-4-6\nMode: live\nStatus: success\nBranch: %s\n%s\n' "$BRANCH_NAME" "$PR_LINE")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          # Advance state to pr-review now that the PR is open.
+          gh issue edit "$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review || true
