@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const mockOctokit = {
-  repos: { getCollaboratorPermissionLevel: vi.fn() },
+  repos: {
+    getCollaboratorPermissionLevel: vi.fn(),
+    getContent: vi.fn(),
+    createOrUpdateFileContents: vi.fn(),
+  },
   issues: {
     create: vi.fn(),
     get: vi.fn(),
@@ -10,6 +14,15 @@ const mockOctokit = {
     update: vi.fn(),
   },
   actions: { createWorkflowDispatch: vi.fn() },
+  git: {
+    getRef: vi.fn(),
+    createRef: vi.fn(),
+    updateRef: vi.fn(),
+  },
+  pulls: {
+    list: vi.fn(),
+    create: vi.fn(),
+  },
 };
 
 vi.mock('@/lib/gh', () => ({
@@ -129,5 +142,127 @@ describe('dispatchRollback', () => {
         inputs: { issue_number: '5', invocation_mode: 'live' },
       }),
     );
+  });
+});
+
+describe('wireUpRepo', () => {
+  function notFound() {
+    return Object.assign(new Error('Not Found'), { status: 404 });
+  }
+
+  it('opens a PR on a normal repo (default branch tip exists)', async () => {
+    // Repo is not yet wired up, has commits on main, no existing wire-up PR.
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc123' } } });
+    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    mockOctokit.git.createRef.mockResolvedValueOnce({});
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+    mockOctokit.pulls.create.mockResolvedValueOnce({
+      data: { html_url: 'https://github.com/qualiency/test-repo/pull/99' },
+    });
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'qualiency');
+    fd.append('repo', 'test-repo');
+    fd.append('default_branch', 'main');
+
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:.*\/pull\/99/);
+    }
+
+    // Branch was created from the resolved tip SHA.
+    expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'refs/heads/chore/wire-up-dev-agent', sha: 'abc123' }),
+    );
+    // Both template files were committed via the wire-up branch.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    expect(mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0]).toMatchObject({
+      branch: 'chore/wire-up-dev-agent',
+    });
+    // PR was opened.
+    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
+      expect.objectContaining({ head: 'chore/wire-up-dev-agent', base: 'main' }),
+    );
+  });
+
+  it('falls back to direct commit on the default branch for an empty repo', async () => {
+    // Empty repo: getContent for .dev-agent.yml 404s (good — not yet wired
+    // up), AND getRef for heads/main also 404s (the default branch has no
+    // commits yet). Action should commit the template files directly to
+    // the default branch and skip the PR flow.
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.getRef.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'qualiency');
+    fd.append('repo', 'fresh-empty-repo');
+    fd.append('default_branch', 'main');
+
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:https:\/\/github\.com\/qualiency\/fresh-empty-repo$/);
+    }
+
+    // Template files were committed WITHOUT a `branch` parameter, so they
+    // hit the repo's default branch (creating it if needed).
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
+      expect(call[0].branch).toBeUndefined();
+    }
+    // No branch + no PR was created on the empty-repo path.
+    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
+  });
+
+  it('redirects to an existing wire-up PR rather than failing', async () => {
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
+    mockOctokit.pulls.list.mockResolvedValueOnce({
+      data: [{ html_url: 'https://github.com/q/r/pull/7' }],
+    });
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    fd.append('default_branch', 'main');
+
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:.*\/pull\/7/);
+    }
+    // Should NOT have tried to create a new branch or PR.
+    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to wire up an already-wired repo', async () => {
+    // .dev-agent.yml already exists on the default branch.
+    mockOctokit.repos.getContent.mockResolvedValueOnce({ data: { type: 'file' } });
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'already-wired');
+    fd.append('default_branch', 'main');
+    await expect(wireUpRepo(fd)).rejects.toThrow(/already wired up/);
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    await expect(wireUpRepo(fd)).rejects.toThrow(/lacks write/);
   });
 });

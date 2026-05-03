@@ -249,8 +249,34 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
   }
 
   // Resolve the default branch tip — needed as the parent for the new branch.
-  const ref = await octokit.git.getRef({ owner, repo, ref: `heads/${default_branch}` });
-  const tipSha = ref.data.object.sha;
+  // Empty repos (no initial commit) 404 here; we fall back to direct commits
+  // on the default branch since there's nothing to PR against anyway.
+  let tipSha: string | undefined;
+  try {
+    const ref = await octokit.git.getRef({ owner, repo, ref: `heads/${default_branch}` });
+    tipSha = ref.data.object.sha;
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status !== 404) throw err;
+  }
+
+  if (tipSha === undefined) {
+    // Empty-repo onboarding path: commit each template file directly to the
+    // default branch. Without a `branch` parameter, createOrUpdateFileContents
+    // targets the repo's default branch and creates the initial commit + ref
+    // if needed. There's no PR — the repo had no history to compare against.
+    for (const f of WIRE_UP_FILES) {
+      await octokit.repos.createOrUpdateFileContents({
+        owner,
+        repo,
+        path: f.path,
+        message: `chore(dev-agent): add ${f.path}`,
+        content: Buffer.from(f.content, 'utf8').toString('base64'),
+      });
+    }
+    revalidatePath('/repos');
+    redirect(`https://github.com/${owner}/${repo}`);
+  }
 
   const wireBranch = 'chore/wire-up-dev-agent';
 
