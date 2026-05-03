@@ -1,0 +1,62 @@
+name: dev-agent · phase-rollback
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      config_path:
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      - name: Identify merge commit
+        id: merge
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PR=$(gh issue view "$ISSUE_NUMBER" --json comments | jq -r '.comments[].body' | grep -oE 'PR: #[0-9]+' | head -1 | grep -oE '[0-9]+' || true)
+          if [ -z "$PR" ]; then echo "no PR linked from issue" >&2; exit 1; fi
+          SHA=$(gh pr view "$PR" --json mergeCommit --jq .mergeCommit.oid)
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Render rollback prompt (stub)
+        env:
+          MODEL: claude-sonnet-4-6
+          INVOCATION_MODE: ${{ inputs.invocation_mode }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PR_NUMBER: ${{ steps.merge.outputs.pr }}
+        run: |
+          set -euo pipefail
+          export PROMPT_VARS_JSON=$(jq -nc \
+            --argjson issue "$ISSUE_NUMBER" \
+            --argjson pr "$PR_NUMBER" \
+            '{issue_number:$issue, merged_pr:$pr, branches:{staging:"staging", release_target:"main"}, deploy_skills:{staging:[],prod:[]}, commands:{test:"npm test"}}')
+          npx tsx lib/cli/render-and-run.ts rollback

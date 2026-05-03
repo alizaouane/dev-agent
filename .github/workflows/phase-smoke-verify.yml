@@ -1,0 +1,56 @@
+name: dev-agent · phase-smoke-verify
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      smoke_phase:
+        required: true
+        type: string
+      smoke_output:
+        required: true
+        type: string
+      smoke_exit_code:
+        required: true
+        type: number
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  smoke-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      - name: Classify smoke output (stub)
+        env:
+          MODEL: claude-haiku-4-5
+          INVOCATION_MODE: ${{ inputs.invocation_mode }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          SMOKE_PHASE: ${{ inputs.smoke_phase }}
+          SMOKE_OUTPUT: ${{ inputs.smoke_output }}
+          SMOKE_EXIT_CODE: ${{ inputs.smoke_exit_code }}
+        run: |
+          set -euo pipefail
+          export PROMPT_VARS_JSON=$(jq -nc \
+            --arg phase "$SMOKE_PHASE" \
+            --arg out "$SMOKE_OUTPUT" \
+            --argjson code "$SMOKE_EXIT_CODE" \
+            --argjson issue "$ISSUE_NUMBER" \
+            '{smoke_phase:$phase, smoke_output:$out, smoke_exit_code:$code, issue_number:$issue}')
+          npx tsx lib/cli/render-and-run.ts smoke-verify
