@@ -1,5 +1,7 @@
 import NextAuth, { type NextAuthConfig } from 'next-auth';
 import GitHub from 'next-auth/providers/github';
+import { getToken } from 'next-auth/jwt';
+import { headers } from 'next/headers';
 import { Octokit } from '@octokit/rest';
 
 export function parseAllowlist(csv: string | undefined): string[] {
@@ -82,6 +84,45 @@ export const authConfig: NextAuthConfig = {
 
 export const { handlers, signIn, signOut, auth } = NextAuth(authConfig);
 
+/**
+ * Server-only: read the GitHub OAuth access token from the encrypted JWT
+ * session cookie. Returns `undefined` if no session cookie is present or the
+ * token has been decrypted but lacks `access_token`.
+ *
+ * The access token is intentionally NOT exposed on the Session object (see T7),
+ * so it never reaches the browser via /api/auth/session. Server-side callers
+ * must read it directly from the cookie via this helper.
+ *
+ * Implementation note: this mirrors how NextAuth v5's own `auth()` adapts
+ * Next.js' `headers()` into a `Request` so that `@auth/core`'s `getToken()`
+ * can locate and decrypt the session cookie. `getToken()` handles cookie-name
+ * detection (`authjs.session-token` / `__Secure-authjs.session-token`) and
+ * uses the cookie name as the JWE salt.
+ */
+export async function getServerAccessToken(): Promise<string | undefined> {
+  const secret = process.env.AUTH_SECRET ?? process.env.NEXTAUTH_SECRET;
+  if (!secret) throw new Error('AUTH_SECRET or NEXTAUTH_SECRET must be set');
+
+  const h = await headers();
+  // Build a minimal Request that carries the incoming cookies, the same way
+  // NextAuth v5 does in node_modules/next-auth/lib/index.js (getSession).
+  const req = new Request('http://localhost', {
+    headers: { cookie: h.get('cookie') ?? '' },
+  });
+
+  // `secureCookie` toggles between `authjs.session-token` (dev/HTTP) and
+  // `__Secure-authjs.session-token` (prod/HTTPS). NEXTAUTH_URL is the
+  // canonical signal — fall back to NODE_ENV in case it is unset.
+  const authUrl = process.env.NEXTAUTH_URL ?? process.env.AUTH_URL;
+  const secureCookie = authUrl
+    ? authUrl.startsWith('https://')
+    : process.env.NODE_ENV === 'production';
+
+  const token = await getToken({ req, secret, secureCookie });
+  const accessToken = (token as { access_token?: unknown } | null)?.access_token;
+  return typeof accessToken === 'string' ? accessToken : undefined;
+}
+
 declare module 'next-auth' {
   interface Session {
     user: {
@@ -90,6 +131,7 @@ declare module 'next-auth' {
       image?: string | null;
       username: string;
     };
-    // accessToken intentionally NOT exposed on the Session — read server-side via getToken()
+    // accessToken intentionally NOT exposed on the Session — read server-side
+    // via getServerAccessToken() (lib/auth.ts).
   }
 }
