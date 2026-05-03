@@ -1,0 +1,84 @@
+name: dev-agent
+
+# Wrapper that delegates to alizaouane/dev-agent's reusable phase
+# workflows. Drop this file into .github/workflows/ in your repo,
+# add ANTHROPIC_API_KEY as a repo secret, and you're wired up.
+#
+# SECURITY: This wrapper does not use any untrusted event payload data
+# in `run:` blocks. It only forwards the workflow_dispatch inputs
+# (typed as choice or number, validated by GitHub before they reach the
+# job) to the reusable workflows. No `run:` steps live in this file.
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: Which phase to run
+        required: true
+        type: choice
+        options:
+          - implement
+          - staging-deploy
+          - smoke-verify
+          - promote-to-prod
+          - rollback
+      issue_number:
+        description: GitHub issue number to act on
+        required: true
+        type: number
+      invocation_mode:
+        description: live (call the agent) or stub (skip agent for tests)
+        required: false
+        type: string
+        default: live
+
+jobs:
+  implement:
+    if: inputs.phase == 'implement'
+    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: ${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  staging-deploy:
+    if: inputs.phase == 'staging-deploy'
+    uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@v1
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: ${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  smoke-verify:
+    if: inputs.phase == 'smoke-verify'
+    uses: alizaouane/dev-agent/.github/workflows/phase-smoke-verify.yml@v1
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: ${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  promote-to-prod:
+    if: inputs.phase == 'promote-to-prod'
+    uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@v1
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: ${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+
+  rollback:
+    if: inputs.phase == 'rollback'
+    uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@v1
+    with:
+      issue_number: ${{ inputs.issue_number }}
+      config_path: .dev-agent.yml
+      invocation_mode: ${{ inputs.invocation_mode }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
