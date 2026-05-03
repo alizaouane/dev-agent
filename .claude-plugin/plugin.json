@@ -1,6 +1,6 @@
 {
   "name": "dev-agent",
-  "version": "0.1.0-alpha.3",
+  "version": "0.1.0",
   "description": "Portable agentic feature-development orchestrator: drop intent → spec → PR → staging → prod, with bounded human gates.",
   "author": {
     "name": "Ali Zaouane",

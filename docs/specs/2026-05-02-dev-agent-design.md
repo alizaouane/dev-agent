@@ -251,8 +251,8 @@ On disk: `/Users/alizaouane/Documents/Qualiency/dev-agent/`. Structure:
 
 ```
 dev-agent/
-├── .claude/
-│   └── plugin.json                     # plugin manifest (name, version, schemas)
+├── .claude-plugin/
+│   └── plugin.json                     # plugin manifest (name, version, paths to commands/skills) — see https://code.claude.com/docs/en/plugins-reference.md
 ├── .github/
 │   └── workflows/                       # reusable workflows + this repo's CI
 │       ├── phase-implement.yml          # consumer-callable via uses: alizaouane/dev-agent/...@v1
@@ -510,7 +510,7 @@ Plugin runs `prompts/drift-check.md` (Sonnet) on diff vs spec after implementati
 
 **Build (in `/Users/alizaouane/Documents/Qualiency/dev-agent/`):**
 - Repo scaffolding: `git init`, `gh repo create alizaouane/dev-agent`, `package.json`, `tsconfig.json`, `.gitignore`, `README.md`
-- Plugin manifest (`.claude/plugin.json`)
+- Plugin manifest (`.claude-plugin/plugin.json`)
 - All 8 slash commands (`commands/*.md`)
 - All 4 skills (`skills/orchestrator`, `skills/scout`, `skills/drift-check`, `skills/notify`)
 - All 7 prompt templates (`prompts/*.md`)
@@ -600,7 +600,7 @@ Plugin runs `prompts/drift-check.md` (Sonnet) on diff vs spec after implementati
 ## Critical files
 
 **New repo: `alizaouane/dev-agent`** at `/Users/alizaouane/Documents/Qualiency/dev-agent/`
-- `.claude/plugin.json`
+- `.claude-plugin/plugin.json`
 - `commands/{dev-agent-init,develop,proposals,status,approve,abandon,rollback,digest}.md`
 - `skills/{orchestrator,scout,drift-check,notify}/SKILL.md`
 - `prompts/{implement,staging-deploy,promote-to-prod,smoke-verify,rollback,scout-digest,drift-check}.md`
