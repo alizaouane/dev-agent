@@ -60,6 +60,32 @@ See `commands/<name>.md` for full per-command docs.
 
 These are `user-invocable: false` — invoked by slash commands and reusable workflows, not by the user.
 
+## Phase 1c — workflows + test consumer (status: shipped at v0.1.0-alpha.3)
+
+The repo now ships 6 reusable GitHub workflows that consumer repos invoke via `uses:`:
+
+```yaml
+# In a consumer repo:
+jobs:
+  implement:
+    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
+    with:
+      issue_number: ${{ github.event.issue.number }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+In Phase 1c the workflows ship in **stub invocation mode** — the model invocation step returns deterministic canned output rather than calling Anthropic, so end-to-end wiring is testable without burning model tokens. Plan 1d flips the default to `live` after the lifecycle drill validates everything.
+
+Override per call:
+
+```yaml
+with:
+  invocation_mode: live  # only after Plan 1d
+```
+
+The synthetic test consumer at `examples/test-repo/` exercises every workflow via wrapper YAMLs that reference `./.github/workflows/phase-*.yml`.
+
 ## Design
 
 See [docs/specs/2026-05-02-dev-agent-design.md](docs/specs/2026-05-02-dev-agent-design.md). Implementation plans for each sub-phase live in [docs/plans/](docs/plans/).

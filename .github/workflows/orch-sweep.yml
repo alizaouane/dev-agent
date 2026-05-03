@@ -1,0 +1,31 @@
+name: dev-agent · orch-sweep
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      - name: Detect stuck issues
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CUTOFF=$(node -e "console.log(new Date(Date.now() - 30*60*1000).toISOString())")
+          gh issue list --label state:implementing --json number,updatedAt,title \
+            | jq -c --arg cutoff "$CUTOFF" '[.[] | select(.updatedAt < $cutoff)] | .[]?' \
+            | while read -r issue; do
+                NUM=$(echo "$issue" | jq -r .number)
+                echo "::warning::dev-agent issue #${NUM} stuck in state:implementing"
+              done

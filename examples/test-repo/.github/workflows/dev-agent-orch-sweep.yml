@@ -1,0 +1,10 @@
+name: dev-agent · orch-sweep (consumer wrapper)
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+jobs:
+  sweep:
+    uses: ./.github/workflows/orch-sweep.yml

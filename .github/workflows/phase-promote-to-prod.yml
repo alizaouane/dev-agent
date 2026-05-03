@@ -1,0 +1,54 @@
+name: dev-agent · phase-promote-to-prod
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      config_path:
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  promote-to-prod:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+
+      - name: Run prod promote chain (stub)
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          MODEL: claude-sonnet-4-6
+          INVOCATION_MODE: ${{ inputs.invocation_mode }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          MERGE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          export PROMPT_VARS_JSON=$(jq -nc \
+            --argjson skills "$(jq -c '.deploy_skills.prod' "$CONFIG_PATH")" \
+            --arg target "$(jq -r '.branches.release_target' "$CONFIG_PATH")" \
+            --arg test "$(jq -r '.commands.test' "$CONFIG_PATH")" \
+            --arg sha "$MERGE_SHA" \
+            '{deploy_skills:{prod:$skills}, branches:{release_target:$target}, commands:{test:$test}, merge_sha:$sha}')
+          npx tsx lib/cli/render-and-run.ts promote-to-prod > result.json
+          MODEL=$(jq -r '.model' result.json)
+          BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: stub-success (live wiring in 1d)\n' "$MODEL" "$INVOCATION_MODE")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"

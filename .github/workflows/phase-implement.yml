@@ -1,0 +1,73 @@
+name: dev-agent · phase-implement
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      config_path:
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+
+jobs:
+  implement:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - run: npm ci
+
+      - name: Read issue (data only)
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: gh issue view "$ISSUE_NUMBER" --json number,title,body,labels > issue.json
+
+      - name: Render implementation prompt + invoke (stub mode in 1c)
+        env:
+          MODEL: claude-sonnet-4-6
+          INVOCATION_MODE: ${{ inputs.invocation_mode }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          export PROMPT_VARS_JSON=$(jq -nc \
+            --arg spec_path "docs/specs/placeholder-1c.md" \
+            --arg branch_name "feat/dev-agent-issue-${ISSUE_NUMBER}" \
+            --arg test "$(jq -r '.commands.test // "npm test"' "$CONFIG_PATH" 2>/dev/null || echo "npm test")" \
+            '{spec_path:$spec_path, branch_name:$branch_name, commands:{test:$test, typecheck:"npm run typecheck", lint:null}, guardrails:{blocked_paths:[], require_explicit_unlock:[], max_files_changed:30, max_lines_changed:800}}')
+          npx tsx lib/cli/render-and-run.ts implement > implement-result.json
+          jq -c . implement-result.json
+
+      - name: Comment telemetry
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          INVOCATION_MODE: ${{ inputs.invocation_mode }}
+        run: |
+          set -euo pipefail
+          MODEL=$(jq -r '.model' implement-result.json)
+          TIN=$(jq -r '.usage.tokens_in' implement-result.json)
+          TOUT=$(jq -r '.usage.tokens_out' implement-result.json)
+          DOLLARS=$(jq -r '.usage.dollars' implement-result.json)
+          BODY=$(printf '🤖 Phase: implement\nModel: %s\nTokens: %s in / %s out\nCost: $%s\nMode: %s\nStatus: stub-success (live mode wires in 1d)\n' "$MODEL" "$TIN" "$TOUT" "$DOLLARS" "$INVOCATION_MODE")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"

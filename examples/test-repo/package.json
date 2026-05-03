@@ -1,0 +1,12 @@
+{
+  "name": "test-repo",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "test": "bash scripts/mock-test.sh",
+    "build": "bash scripts/mock-build.sh",
+    "typecheck": "bash scripts/mock-typecheck.sh",
+    "deploy:staging": "bash scripts/mock-deploy-staging.sh",
+    "deploy:prod": "bash scripts/mock-deploy-prod.sh"
+  }
+}
