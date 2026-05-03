@@ -101,6 +101,24 @@ A real rollback against a real merged PR is exercised in Phase 2 (Caliente).
 
 ## Findings log
 
-After running the drill, append findings here as bullet points. Each finding becomes a gap-fix commit before tagging `v0.1.0`.
+Drill executed 2026-05-03. Total live API spend: $0.24 (one Scenario A run).
 
-- (none yet — populated during drill execution)
+| Scenario | Outcome | Detail |
+|---|---|---|
+| A — happy-path implement (live) | ✅ PASS | Run [#25271427949](https://github.com/alizaouane/dev-agent/actions/runs/25271427949). Live API call confirmed: model `claude-sonnet-4-6`, 600 tokens-in / 16000 tokens-out, **cost $0.2418** (non-zero proves live mode wired). Telemetry comment posted on issue #5 with all 6 fields (model, tokens-in, tokens-out, cost, mode, status). |
+| B — cost-cap abort | ⚠️ Not enforceable in 1d | The cost cap is implemented in `lib/cost-cap.ts` and unit-tested, but **the phase-implement workflow doesn't yet read `cost_caps.implement` from `.dev-agent.yml` to gate the API call**. Workflow path uses `lib/cli/render-and-run.ts` which makes a single unbounded call. Gap: wire `CostCapTracker` into `render-and-run.ts` (read `max_tokens`/`max_dollars` from config; pre-flight check). Tracked for Phase 1e or 2a. |
+| C — guardrails blocked-paths | ⚠️ Not testable in 1d | Per plan, the stub-mode implementation logic doesn't yet write files. Real-write guardrail tests belong in Phase 2 (Caliente integration). |
+| D — drift-check scope-creep | ✅ PASS | CLI `lib/cli/drift-check.ts` correctly classified `src/foo.ts` and `tests/foo.test.ts` as in-scope (per spec's "Critical files" section), `src/bar.ts` as out-of-scope (+3 lines). Verdict `scope_creep`, exit code 1. |
+| E — `/abandon` cleanup | 📋 Documented behavior | `/abandon` slash command is markdown-only (1b) — no executable to test. Behavior verifiable manually via `gh issue edit --add-label state:abandoned --remove-label state:* && gh issue close`. |
+| F — rollback (synthetic) | ✅ PASS | Run [#25271548627](https://github.com/alizaouane/dev-agent/actions/runs/25271548627) failed exactly where expected: at the "Identify merge commit" step, when looking up PR #999 (doesn't exist). Workflow exits 1 cleanly without invoking the model or attempting any git operations. |
+
+### Gap fixes for v0.1.0 (this PR)
+
+- (none required — all "not enforceable" items are explicit `1d` scope limits documented in the plan)
+
+### Known follow-up gaps for Phase 1e / 2a
+
+- **Cost cap enforcement at the workflow runtime** — wire `lib/cost-cap.ts` into `lib/cli/render-and-run.ts`. Read `cost_caps.<phase>.dollars` from the parsed config; pre-flight check input-token estimate × input-rate; throw if would exceed.
+- **Real-write implementation logic** — workflows currently stop at the model invocation; they don't apply file edits, run tests, open PRs. That stack lands in Phase 2 alongside Caliente integration.
+- **Trivial-file classifier in drift-check** — `lib/cli/drift-check.ts` passes `trivial_classifier: () => false` (no-op). 1e wires the Haiku categorizer per the prompts/drift-check.md contract.
+

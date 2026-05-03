@@ -60,7 +60,21 @@ See `commands/<name>.md` for full per-command docs.
 
 These are `user-invocable: false` — invoked by slash commands and reusable workflows, not by the user.
 
-## Phase 1c — workflows + test consumer (status: shipped at v0.1.0-alpha.3)
+## Status: v0.1.0 (Phase 1 complete)
+
+Phase 1 ships the foundation, plugin surface, reusable workflows, and live Anthropic wiring against a synthetic test consumer at `examples/test-repo/`. See [`docs/runbooks/2026-05-03-phase-1d-drill.md`](docs/runbooks/2026-05-03-phase-1d-drill.md) for the lifecycle drill that validated the v0.1.0 milestone.
+
+Consumer repos can pin to `@v1`:
+
+```yaml
+uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
+```
+
+Phase 2 (Caliente integration) lands the real implementation logic — file edits, test runs, PR creation, merge-commit rollback. v0.1.0 covers everything up to and including the model-invocation boundary.
+
+To run a workflow with live model invocation, configure `ANTHROPIC_API_KEY` as a repo secret and pass `invocation_mode: live`.
+
+## Phase 1c — workflows + test consumer
 
 The repo now ships 6 reusable GitHub workflows that consumer repos invoke via `uses:`:
 
