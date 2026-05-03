@@ -11,3 +11,6 @@ build/
 coverage/
 *.tsbuildinfo
 .cache/
+
+# Claude Code session state (NOT .claude-plugin/ — that's the plugin manifest dir, tracked)
+.claude/
