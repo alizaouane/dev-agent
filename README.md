@@ -60,7 +60,11 @@ See `commands/<name>.md` for full per-command docs.
 
 These are `user-invocable: false` — invoked by slash commands and reusable workflows, not by the user.
 
-## Status: v0.1.0 (Phase 1 complete)
+## Status: v0.2.0 (Dashboard v1)
+
+Adds the web dashboard at [`dev-agent.qualiency.com`](https://dev-agent.qualiency.com) — inbox-driven UI, GitHub OAuth + allowlist, server actions wrapping the engine. Source: [`docs/specs/2026-05-03-dev-agent-dashboard-design.md`](docs/specs/2026-05-03-dev-agent-dashboard-design.md). Build: [`docs/plans/2026-05-03-dashboard-v1-plan.md`](docs/plans/2026-05-03-dashboard-v1-plan.md). Code under [`dashboard/`](dashboard/).
+
+## Status: v0.1.0 (Phase 1 — engine)
 
 Phase 1 ships the foundation, plugin surface, reusable workflows, and live Anthropic wiring against a synthetic test consumer at `examples/test-repo/`. See [`docs/runbooks/2026-05-03-phase-1d-drill.md`](docs/runbooks/2026-05-03-phase-1d-drill.md) for the lifecycle drill that validated the v0.1.0 milestone.
 
