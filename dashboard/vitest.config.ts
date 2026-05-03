@@ -2,6 +2,11 @@ import { defineConfig } from 'vitest/config';
 import { resolve } from 'node:path';
 
 export default defineConfig({
+  // Use esbuild's automatic JSX runtime so .tsx test files don't need
+  // `import React` at the top — matches Next.js' default JSX transform.
+  esbuild: {
+    jsx: 'automatic',
+  },
   test: {
     environment: 'jsdom',
     setupFiles: ['./__tests__/setup.ts'],
