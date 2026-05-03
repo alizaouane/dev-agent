@@ -51,6 +51,16 @@ jobs:
 
       - run: npm ci
 
+      - name: Convert .dev-agent.yml to JSON for jq
+        id: cfg
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          # Sanity check: parse must succeed.
+          jq -e . /tmp/config.json > /dev/null
+
       - name: Read issue
         id: issue
         env:
@@ -63,7 +73,7 @@ jobs:
           # Find the linked spec file path. Look in body for a `docs/.../*.md`
           # reference; fall back to the dev-agent.yml's specs_dir + a search
           # for a file matching the issue slug.
-          SPECS_DIR=$(jq -r '.artifacts.specs_dir // "docs/specs"' "${{ inputs.config_path }}")
+          SPECS_DIR=$(jq -r '.artifacts.specs_dir // "docs/specs"' /tmp/config.json)
           SPEC_PATH=$(jq -r '.body' issue.json | grep -oE "${SPECS_DIR}/[^[:space:])\"]+\.md" | head -1 || true)
           if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
             SPEC_PATH="${SPECS_DIR}/placeholder-no-spec.md"
@@ -77,20 +87,19 @@ jobs:
         id: prompt
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
-          CONFIG_PATH: ${{ inputs.config_path }}
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
         run: |
           set -euo pipefail
           export PROMPT_VARS_JSON=$(jq -nc \
             --arg spec_path "$SPEC_PATH" \
             --arg branch_name "feat/dev-agent-issue-${ISSUE_NUMBER}" \
-            --arg test "$(jq -r '.commands.test // "npm test"' "$CONFIG_PATH")" \
-            --arg typecheck "$(jq -r '.commands.typecheck // "npm run typecheck"' "$CONFIG_PATH")" \
-            --arg lint "$(jq -r '.commands.lint // ""' "$CONFIG_PATH")" \
-            --argjson blocked "$(jq -c '.guardrails.blocked_paths // []' "$CONFIG_PATH")" \
-            --argjson unlock "$(jq -c '.guardrails.require_explicit_unlock // []' "$CONFIG_PATH")" \
-            --argjson maxfiles "$(jq -r '.guardrails.max_files_changed // 30' "$CONFIG_PATH")" \
-            --argjson maxlines "$(jq -r '.guardrails.max_lines_changed // 800' "$CONFIG_PATH")" \
+            --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
+            --arg typecheck "$(jq -r '.commands.typecheck // "npm run typecheck"' /tmp/config.json)" \
+            --arg lint "$(jq -r '.commands.lint // ""' /tmp/config.json)" \
+            --argjson blocked "$(jq -c '.guardrails.blocked_paths // []' /tmp/config.json)" \
+            --argjson unlock "$(jq -c '.guardrails.require_explicit_unlock // []' /tmp/config.json)" \
+            --argjson maxfiles "$(jq -r '.guardrails.max_files_changed // 30' /tmp/config.json)" \
+            --argjson maxlines "$(jq -r '.guardrails.max_lines_changed // 800' /tmp/config.json)" \
             '{spec_path:$spec_path, branch_name:$branch_name, commands:{test:$test, typecheck:$typecheck, lint:($lint|select(length>0))}, guardrails:{blocked_paths:$blocked, require_explicit_unlock:$unlock, max_files_changed:$maxfiles, max_lines_changed:$maxlines}}')
           npx tsx lib/cli/render-prompt.ts implement > /tmp/system-prompt.md
 
