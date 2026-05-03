@@ -4,6 +4,9 @@
   "description": "Portable agentic feature development system. Claude Code plugin + reusable GitHub workflows + per-repo config schema.",
   "private": true,
   "type": "module",
+  "workspaces": [
+    "dashboard"
+  ],
   "engines": {
     "node": ">=20"
   },

@@ -14,3 +14,8 @@ coverage/
 
 # Claude Code session state (NOT .claude-plugin/ — that's the plugin manifest dir, tracked)
 .claude/
+
+# Next.js
+dashboard/.next/
+dashboard/next-env.d.ts
+dashboard/out/

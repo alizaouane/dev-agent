@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatTelemetry, type TelemetryPayload } from '../../lib/telemetry';
+import { formatTelemetry, parseTelemetry, type TelemetryPayload } from '../../lib/telemetry';
 
 describe('formatTelemetry', () => {
   it('formats a successful implement phase', () => {
@@ -68,5 +68,88 @@ describe('formatTelemetry', () => {
       artifacts: {},
     };
     expect(formatTelemetry(payload)).toContain('Duration: 4s');
+  });
+});
+
+describe('parseTelemetry', () => {
+  it('round-trips with formatTelemetry (small token counts pass through unchanged)', () => {
+    const original: TelemetryPayload = {
+      phase: 'implement',
+      model: 'claude-sonnet-4-6',
+      duration_ms: 12 * 60_000 + 34 * 1000,
+      tokens_in: 120,
+      tokens_out: 80,
+      cost_usd: 0.15,
+      attempts: 1,
+      status: 'success',
+      artifacts: {},
+    };
+    const formatted = formatTelemetry(original);
+    const parsed = parseTelemetry(formatted);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.phase).toBe('implement');
+    expect(parsed!.model).toBe('claude-sonnet-4-6');
+    expect(parsed!.tokens_in).toBe(120);
+    expect(parsed!.tokens_out).toBe(80);
+    expect(parsed!.cost_usd).toBeCloseTo(0.15, 2);
+    expect(parsed!.status).toBe('success');
+    expect(parsed!.attempts).toBe(1);
+  });
+
+  it('parses abbreviated token counts (k / M suffixes)', () => {
+    const formatted = [
+      '🤖 Phase: implement',
+      'Model: claude-sonnet-4-6',
+      'Duration: 12m 34s',
+      'Tokens: 145k in / 67k out',
+      'Cost: $2.31',
+      'Attempts: 1',
+      'Status: success',
+    ].join('\n');
+    const parsed = parseTelemetry(formatted);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.tokens_in).toBe(145_000);
+    expect(parsed!.tokens_out).toBe(67_000);
+    expect(parsed!.cost_usd).toBeCloseTo(2.31, 2);
+  });
+
+  it('returns null for non-telemetry comment text', () => {
+    expect(parseTelemetry('just a regular comment')).toBeNull();
+    expect(parseTelemetry('')).toBeNull();
+    expect(parseTelemetry('🤖 something else without phase')).toBeNull();
+  });
+
+  it('survives extra trailing/leading whitespace', () => {
+    const formatted = `\n\n🤖 Phase: smoke_verify\nModel: claude-haiku-4-5\nDuration: 4s\nTokens: 100 in / 50 out\nCost: $0.01\nAttempts: 1\nStatus: success\n\n`;
+    const parsed = parseTelemetry(formatted);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.phase).toBe('smoke_verify');
+    expect(parsed!.tokens_in).toBe(100);
+    expect(parsed!.tokens_out).toBe(50);
+  });
+
+  it("parses the workflow's printf format (Mode, no Duration/Attempts) — actual Phase 1d drill output", () => {
+    // Verbatim body posted by .github/workflows/phase-implement.yml on issue #5
+    // of alizaouane/dev-agent (Phase 1d drill artifact).
+    const comment = [
+      '🤖 Phase: implement',
+      'Model: claude-sonnet-4-6',
+      'Tokens: 600 in / 16000 out',
+      'Cost: $0.2418',
+      'Mode: live',
+      'Status: stub-success (live mode wires in 1d)',
+    ].join('\n');
+    const parsed = parseTelemetry(comment);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.phase).toBe('implement');
+    expect(parsed!.model).toBe('claude-sonnet-4-6');
+    expect(parsed!.tokens_in).toBe(600);
+    expect(parsed!.tokens_out).toBe(16000);
+    expect(parsed!.cost_usd).toBeCloseTo(0.2418, 4);
+    expect(parsed!.mode).toBe('live');
+    expect(parsed!.status).toBe('stub-success (live mode wires in 1d)');
+    // Workflow format omits these fields.
+    expect(parsed!.duration_ms).toBeUndefined();
+    expect(parsed!.attempts).toBeUndefined();
   });
 });
