@@ -1,3 +1,7 @@
 export default function Home() {
-  return <main>dev-agent dashboard — placeholder</main>;
+  return (
+    <main className="flex min-h-screen items-center justify-center bg-background text-foreground">
+      <h1 className="text-4xl font-bold">dev-agent</h1>
+    </main>
+  );
 }
