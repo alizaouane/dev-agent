@@ -100,7 +100,14 @@ jobs:
             --argjson unlock "$(jq -c '.guardrails.require_explicit_unlock // []' /tmp/config.json)" \
             --argjson maxfiles "$(jq -r '.guardrails.max_files_changed // 30' /tmp/config.json)" \
             --argjson maxlines "$(jq -r '.guardrails.max_lines_changed // 800' /tmp/config.json)" \
-            '{spec_path:$spec_path, branch_name:$branch_name, commands:{test:$test, typecheck:$typecheck, lint:($lint|select(length>0))}, guardrails:{blocked_paths:$blocked, require_explicit_unlock:$unlock, max_files_changed:$maxfiles, max_lines_changed:$maxlines}}')
+            '{spec_path:$spec_path, branch_name:$branch_name, commands:{test:$test, typecheck:$typecheck, lint:(if ($lint|length) > 0 then $lint else null end)}, guardrails:{blocked_paths:$blocked, require_explicit_unlock:$unlock, max_files_changed:$maxfiles, max_lines_changed:$maxlines}}')
+          # Sanity check: PROMPT_VARS_JSON must be non-empty JSON. jq's
+          # `select` filter can silently produce no output, leaving us with
+          # an empty string that breaks render-prompt.ts. Fail loudly here.
+          if [ -z "$PROMPT_VARS_JSON" ]; then
+            echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
+            exit 1
+          fi
           npx tsx lib/cli/render-prompt.ts implement > /tmp/system-prompt.md
 
       - name: Build agent prompt (system + spec + issue context)
