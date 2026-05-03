@@ -1,6 +1,6 @@
 import { getOctokit } from '@/lib/gh';
 import { FeatureDetail } from '@/components/feature-detail';
-import { parseTelemetry } from '../../../../lib/telemetry';
+import { parseTelemetry } from '@/lib/telemetry';
 
 type SearchParams = Promise<{ repo?: string }>;
 

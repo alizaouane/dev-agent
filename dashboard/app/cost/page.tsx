@@ -2,7 +2,7 @@ import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos } from '@/lib/repos';
 import { fetchPipeline } from '@/lib/pipeline';
 import { CostChart, type DailyCost } from '@/components/cost-chart';
-import { parseTelemetry } from '../../../lib/telemetry';
+import { parseTelemetry } from '@/lib/telemetry';
 
 const PHASES = ['implement', 'staging_deploy', 'promote_to_prod', 'smoke_verify', 'rollback'] as const;
 type PhaseKey = (typeof PHASES)[number];

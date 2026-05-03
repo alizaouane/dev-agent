@@ -5,21 +5,7 @@ import { redirect } from 'next/navigation';
 import type { Octokit } from '@octokit/rest';
 
 import { getOctokit, getCurrentUsername } from './gh';
-
-/**
- * Thrown when the authenticated user lacks `write` (or higher) permission on
- * the target repository. Server Actions throw this BEFORE any mutation; the
- * UI catches it and renders a "you don't have access" message.
- *
- * Distinct from {@link UnauthorizedError} (in `./gh`): unauthorized = no
- * session at all; forbidden = signed in, but not allowed to act on this repo.
- */
-export class ForbiddenError extends Error {
-  constructor(msg: string) {
-    super(msg);
-    this.name = 'ForbiddenError';
-  }
-}
+import { ForbiddenError } from './errors';
 
 /**
  * Verify `username` has at least `write` permission on `owner/repo`. Uses

@@ -3,7 +3,7 @@ import 'server-only';
 import type { Octokit } from '@octokit/rest';
 
 import type { RepoInfo } from './repos';
-import { parseTelemetry, type ParsedTelemetry } from '../../lib/telemetry';
+import { parseTelemetry, type ParsedTelemetry } from '@/lib/telemetry';
 
 /**
  * The full state-label vocabulary used by the engine. Mirrors the labels

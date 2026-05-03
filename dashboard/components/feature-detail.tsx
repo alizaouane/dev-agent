@@ -8,7 +8,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import type { ParsedTelemetry } from '../../lib/telemetry';
+import type { ParsedTelemetry } from '@/lib/telemetry';
 
 type IssueShape = {
   number: number;
