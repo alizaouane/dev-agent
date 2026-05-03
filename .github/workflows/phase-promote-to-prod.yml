@@ -17,6 +17,22 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: false
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number'
+        required: true
+        type: number
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: 'examples/test-repo/.dev-agent.yml'
+      invocation_mode:
+        description: 'stub or live'
+        required: false
+        type: string
+        default: 'stub'
 
 jobs:
   promote-to-prod:

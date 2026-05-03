@@ -22,6 +22,29 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: false
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number'
+        required: true
+        type: number
+      smoke_phase:
+        description: 'staging or prod'
+        required: true
+        type: string
+      smoke_output:
+        description: 'captured smoke output'
+        required: true
+        type: string
+      smoke_exit_code:
+        description: 'smoke exit code'
+        required: true
+        type: number
+      invocation_mode:
+        description: 'stub or live'
+        required: false
+        type: string
+        default: 'stub'
 
 jobs:
   smoke-verify:
