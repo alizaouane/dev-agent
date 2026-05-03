@@ -1,0 +1,19 @@
+name: dev-agent · implement
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  implement:
+    if: github.event.label.name == 'state:implementing'
+    # Production consumers reference the parent repo via:
+    #   uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
+    # For in-this-repo testing, we point at the local file:
+    uses: ./.github/workflows/phase-implement.yml
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      config_path: examples/test-repo/.dev-agent.yml
+      invocation_mode: stub
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

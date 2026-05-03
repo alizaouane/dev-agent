@@ -1,0 +1,16 @@
+name: dev-agent · promote-to-prod
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  promote-to-prod:
+    if: github.event.label.name == 'state:promoting'
+    uses: ./.github/workflows/phase-promote-to-prod.yml
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      config_path: examples/test-repo/.dev-agent.yml
+      invocation_mode: stub
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
