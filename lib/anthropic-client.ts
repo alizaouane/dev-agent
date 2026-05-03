@@ -1,4 +1,6 @@
+import Anthropic from '@anthropic-ai/sdk';
 import { createHash } from 'node:crypto';
+import { usageToDollars } from './pricing';
 
 export type InvocationMode = 'stub' | 'live' | 'auto';
 
@@ -35,11 +37,46 @@ function deterministicStub(args: InvokeArgs): InvokeResult {
   };
 }
 
-export async function invokeAnthropic(args: InvokeArgs): Promise<InvokeResult> {
-  const mode = resolveMode(args.mode);
-  if (mode === 'stub') return deterministicStub(args);
+async function liveInvoke(args: InvokeArgs): Promise<InvokeResult> {
   if (!process.env.ANTHROPIC_API_KEY) {
     throw new Error('ANTHROPIC_API_KEY required for live invocation mode');
   }
-  throw new Error('LIVE_MODE_NOT_WIRED_UNTIL_1D — set INVOCATION_MODE=stub to proceed');
+  const client = new Anthropic();
+  const userText = args.user.length > 0 ? args.user : '(continue)';
+  const response = await client.messages.create({
+    model: args.model,
+    max_tokens: args.maxTokens ?? 16000,
+    system: [
+      { type: 'text', text: args.system, cache_control: { type: 'ephemeral' } },
+    ],
+    messages: [{ role: 'user', content: userText }],
+  });
+
+  let text = '';
+  for (const block of response.content) {
+    if (block.type === 'text') text += block.text;
+  }
+
+  const u = response.usage;
+  const tokens_in =
+    u.input_tokens +
+    (u.cache_creation_input_tokens ?? 0) +
+    (u.cache_read_input_tokens ?? 0);
+  const tokens_out = u.output_tokens;
+
+  return {
+    text,
+    usage: {
+      tokens_in,
+      tokens_out,
+      dollars: usageToDollars(args.model, u),
+    },
+    model: response.model ?? args.model,
+  };
+}
+
+export async function invokeAnthropic(args: InvokeArgs): Promise<InvokeResult> {
+  const mode = resolveMode(args.mode);
+  if (mode === 'stub') return deterministicStub(args);
+  return liveInvoke(args);
 }
