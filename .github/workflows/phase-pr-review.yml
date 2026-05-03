@@ -1,0 +1,90 @@
+name: dev-agent · phase-pr-review
+
+# Phase 2b: when a reviewer (human or bot) mentions `@claude` on a dev-agent
+# authored PR, the agent reads the comment, addresses it on the same branch,
+# and pushes the fix. Closes the implement → review → fix → merge loop.
+#
+# Triggered events:
+#   - issue_comment.created — top-level PR comments (PRs are issues to GH)
+#   - pull_request_review_comment.created — inline file comments
+#   - pull_request_review.submitted — top-level review with body
+#
+# Filter: only PRs whose head branch matches `feat/dev-agent-issue-*`
+# (everything the dev-agent ships) AND the comment/review body contains
+# `@claude`. Other PRs and other comments are ignored.
+#
+# SECURITY: Comment/review/branch text is NEVER interpolated into `run:`
+# blocks via ${{ ... }}. All untrusted strings flow exclusively through
+# environment variables, and the only run block (Resolve PR head branch)
+# operates on the PR number (an integer) and the head ref (validated by
+# regex before use).
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+jobs:
+  pr-review:
+    if: |
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '@claude') &&
+        github.event.comment.user.login != 'claude[bot]'
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        github.event.comment.user.login != 'claude[bot]'
+      ) ||
+      (
+        github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        github.event.review.user.login != 'claude[bot]'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Resolve PR head branch
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          # Strict regex gate: only dev-agent-authored PRs proceed. The head
+          # ref came from GH but we still validate it against a known-safe
+          # shape before using it as a checkout ref or echoing it back.
+          if ! [[ "$HEAD" =~ ^feat/dev-agent-issue-[0-9]+$ ]]; then
+            echo "PR head branch is not a dev-agent branch; exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.skip != 'true'
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head }}
+
+      - name: Run Claude Code (live agent)
+        if: steps.pr.outputs.skip != 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # No explicit prompt — claude-code-action's auto-detected
+          # `agent` mode reads the PR + triggering comment automatically.
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
+          show_full_output: 'true'
