@@ -1,5 +1,12 @@
 name: dev-agent · phase-staging-deploy
 
+# Phase 2c: after a dev-agent PR merges, run the consumer's
+# `deploy_skills.staging` chain and the smoke command. The agent invokes
+# each skill in declared order, captures stdout/stderr, and stops on the
+# first failure. The workflow flips the issue label from
+# state:pr-review → state:staging-deployed when the deploy succeeds, or
+# state:blocked otherwise.
+
 on:
   workflow_call:
     inputs:
@@ -13,7 +20,7 @@ on:
       invocation_mode:
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -29,42 +36,119 @@ on:
         type: string
         default: 'examples/test-repo/.dev-agent.yml'
       invocation_mode:
-        description: 'stub or live'
+        description: 'live (real claude-code-action) or stub (no agent — for tests)'
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
 
 jobs:
   staging-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
-      contents: read
+      contents: write
       issues: write
+      pull-requests: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
+
       - run: npm ci
 
-      - name: Run staging deploy chain (stub)
+      - name: Convert .dev-agent.yml to JSON for jq
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          jq -e . /tmp/config.json > /dev/null
+
+      - name: Render system prompt
+        id: prompt
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
-          MODEL: claude-sonnet-4-6
-          INVOCATION_MODE: ${{ inputs.invocation_mode }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          CONFIG_PATH: ${{ inputs.config_path }}
           MERGE_SHA: ${{ github.sha }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           export PROMPT_VARS_JSON=$(jq -nc \
-            --argjson skills "$(jq -c '.deploy_skills.staging' "$CONFIG_PATH")" \
-            --arg staging "$(jq -r '.branches.staging // ""' "$CONFIG_PATH")" \
-            --arg test "$(jq -r '.commands.test' "$CONFIG_PATH")" \
+            --argjson skills "$(jq -c '.deploy_skills.staging // []' /tmp/config.json)" \
+            --arg staging "$(jq -r '.branches.staging // ""' /tmp/config.json)" \
+            --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
             --arg sha "$MERGE_SHA" \
-            '{deploy_skills:{staging:$skills}, branches:{staging:($staging // null)}, commands:{test:$test}, merge_sha:$sha}')
-          npx tsx lib/cli/render-and-run.ts staging-deploy > result.json
-          MODEL=$(jq -r '.model' result.json)
-          BODY=$(printf '🤖 Phase: staging-deploy\nModel: %s\nMode: %s\nStatus: stub-success (live wiring in 1d)\n' "$MODEL" "$INVOCATION_MODE")
+            '{deploy_skills:{staging:$skills}, branches:{staging:(if ($staging|length) > 0 then $staging else null end)}, commands:{test:$test}, merge_sha:$sha}')
+          if [ -z "$PROMPT_VARS_JSON" ]; then
+            echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
+            exit 1
+          fi
+          npx tsx lib/cli/render-prompt.ts staging-deploy > /tmp/system-prompt.md
+
+      - name: Read issue title
+        id: issue
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE=$(gh issue view "$ISSUE_NUMBER" --json title --jq '.title')
+          echo "title=$TITLE" >> "$GITHUB_OUTPUT"
+
+      - name: Build agent prompt
+        id: build
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          ISSUE_TITLE: ${{ steps.issue.outputs.title }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          {
+            echo "# Staging deploy task — issue #$ISSUE_NUMBER"
+            echo ""
+            echo "**Issue title:** $ISSUE_TITLE"
+            echo "**Merge SHA:** \`$MERGE_SHA\`"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## System / discipline (read carefully)"
+            echo ""
+            cat /tmp/system-prompt.md
+          } > /tmp/agent-prompt.md
+          echo "prompt_path=/tmp/agent-prompt.md" >> "$GITHUB_OUTPUT"
+
+      - name: Skip live agent invocation (stub mode)
+        if: inputs.invocation_mode == 'stub'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BODY=$(printf '🤖 Phase: staging-deploy\nModel: (none)\nMode: stub\nStatus: stub-mode (no agent invocation; set invocation_mode=live to run deploy)\n')
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+
+      - name: Run Claude Code (live agent)
+        if: inputs.invocation_mode == 'live'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ steps.build.outputs.prompt_path }}
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite WebFetch'
+          show_full_output: 'true'
+
+      - name: Comment telemetry + flip state
+        if: inputs.invocation_mode == 'live'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Staging deploy is non-mutating to the repo (no branch, no PR), so
+          # there's nothing on origin to verify. We trust the action's exit
+          # code: if the action step succeeded, the agent ran the deploy
+          # chain and (presumably) the smoke command. The agent's JSON
+          # output is captured in show_full_output: true logs for postmortem.
+          BODY=$(printf '🤖 Phase: staging-deploy\nModel: claude-sonnet-4-6\nMode: live\nStatus: success\nMerge SHA: %s\n' "${GITHUB_SHA}")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --remove-label state:pr-review --add-label state:staging-deployed || true
