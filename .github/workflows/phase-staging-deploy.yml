@@ -153,13 +153,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Extract the agent's final JSON from execution_file. The action
-          # serializes the agent's last message as `.result`; the agent
-          # emits the required JSON inside a ```json ... ``` markdown
-          # fence per prompts/staging-deploy.md. awk between the fence
-          # markers handles nested braces in deploy_artifacts; a regex
-          # like \{[^{}]*\} would silently reject the nested structure.
-          RESULT_TEXT=$(jq -r '.result // ""' "$EXEC_FILE" 2>/dev/null || echo "")
+          # claude-execution-output.json is a JSON array of message events
+          # (see anthropics/claude-code-action base-action/src/run-claude-sdk.ts).
+          # The result event is the last entry: {type: "result", result: "..."}.
+          # The result string contains the agent's final markdown including
+          # the ```json ... ``` fenced block from prompts/staging-deploy.md.
+          # awk between the fences handles nested braces in deploy_artifacts;
+          # a regex like \{[^{}]*\} would silently reject the nested array.
+          # Use jq's `last` rather than `tail -1` — the result string is
+          # multiline (includes the agent's prose plus the fenced JSON),
+          # so `tail -1` would collapse to a trailing blank.
+          RESULT_TEXT=$(jq -r '[.[] | select(.type=="result") | .result // empty] | last // ""' "$EXEC_FILE" 2>/dev/null || echo "")
           AGENT_JSON=$(printf '%s' "$RESULT_TEXT" | awk '/```json/{flag=1;next} /```/{flag=0} flag' | tr -d '\n')
           [ -z "$AGENT_JSON" ] && AGENT_JSON='{}'
           SMOKE_PASSING=$(printf '%s' "$AGENT_JSON" | jq -r '.smoke_passing // false' 2>/dev/null || echo "false")
