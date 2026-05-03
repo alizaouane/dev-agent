@@ -153,13 +153,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Extract the agent's final JSON line from execution_file. The
-          # action serializes the agent's stop-event content as the `result`
-          # field; the agent emits `{"deploys_completed": ..., "smoke_passing": ..., ...}`
-          # wrapped in a markdown fence per prompts/staging-deploy.md.
+          # Extract the agent's final JSON from execution_file. The action
+          # serializes the agent's last message as `.result`; the agent
+          # emits the required JSON inside a ```json ... ``` markdown
+          # fence per prompts/staging-deploy.md. awk between the fence
+          # markers handles nested braces in deploy_artifacts; a regex
+          # like \{[^{}]*\} would silently reject the nested structure.
           RESULT_TEXT=$(jq -r '.result // ""' "$EXEC_FILE" 2>/dev/null || echo "")
-          # Strip any ```json fences and grab the first {...} block.
-          AGENT_JSON=$(printf '%s' "$RESULT_TEXT" | grep -oE '\{[^{}]*"smoke_passing"[^{}]*\}' | head -1 || echo "{}")
+          AGENT_JSON=$(printf '%s' "$RESULT_TEXT" | awk '/```json/{flag=1;next} /```/{flag=0} flag' | tr -d '\n')
+          [ -z "$AGENT_JSON" ] && AGENT_JSON='{}'
           SMOKE_PASSING=$(printf '%s' "$AGENT_JSON" | jq -r '.smoke_passing // false' 2>/dev/null || echo "false")
           DEPLOYS=$(printf '%s' "$AGENT_JSON" | jq -r '.deploys_completed // 0' 2>/dev/null || echo "0")
           SUMMARY=$(printf '%s' "$AGENT_JSON" | jq -r '.summary // "(no summary)"' 2>/dev/null || echo "(parse failed)")
