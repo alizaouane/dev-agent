@@ -4,6 +4,7 @@ You execute the staging deploy after a PR has been merged. Run the consumer's `d
 
 ## Inputs
 
+- `{{consumer_root}}` — directory containing the consumer's `.dev-agent.yml`; **start every shell command with `cd "{{consumer_root}}" && ...`** so paths like `scripts/<skill>.sh` resolve correctly
 - `{{deploy_skills.staging}}` — ordered list of skill names to invoke (may be empty)
 - `{{branches.staging}}` — the staging branch (or null if no staging-first repo)
 - `{{commands.test}}` — smoke command to run after the deploy chain succeeds
@@ -11,9 +12,9 @@ You execute the staging deploy after a PR has been merged. Run the consumer's `d
 
 ## How to invoke each skill
 
-For each name `<skill>` in `deploy_skills.staging`, in order, look for one of these (first match wins):
+For each name `<skill>` in `deploy_skills.staging`, in order, look for one of these *relative to `{{consumer_root}}`* (first match wins):
 
-1. `scripts/<skill>.sh` — a shell script. Run it as `bash scripts/<skill>.sh`. Pass `GITHUB_SHA={{merge_sha}}` in the environment so the script can reference it.
+1. `scripts/<skill>.sh` — a shell script. Run it as `cd "{{consumer_root}}" && GITHUB_SHA={{merge_sha}} bash scripts/<skill>.sh`.
 2. `.claude/skills/<skill>/SKILL.md` — a Claude Code skill. Read the SKILL.md file in full and follow its instructions.
 3. Otherwise → abort the chain with `summary: "skill not found: <skill>"`.
 
@@ -21,7 +22,7 @@ Capture each skill's stdout and stderr in your reasoning so the workflow log pre
 
 ## Smoke verification
 
-After all skills succeed, run `{{commands.test}}` once. Treat exit code 0 as `smoke_passing: true`, anything else as false.
+After all skills succeed, run `cd "{{consumer_root}}" && {{commands.test}}` once. Treat exit code 0 as `smoke_passing: true`, anything else as false.
 
 ## Required output
 
