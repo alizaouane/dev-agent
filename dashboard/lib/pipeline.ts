@@ -157,13 +157,20 @@ export async function fetchPipeline(
 
       let lastTelemetry: ParsedTelemetry | null = null;
       try {
-        const cs = await octokit.issues.listComments({
-          owner: r.owner,
-          repo: r.name,
-          issue_number: i.number,
-          per_page: 30,
-        });
-        const comments = (cs as unknown as { data?: Array<{ body?: string }> }).data ?? [];
+        // listComments returns oldest-first by default. A single page of 30
+        // would return the OLDEST 30 comments, missing all recent activity
+        // — so we paginate fully and walk newest-first to find the latest
+        // telemetry. Per-issue comment counts are typically small (telemetry
+        // + approvals only), so the cost is minimal.
+        const comments: Array<{ body?: string }> = await octokit.paginate(
+          octokit.issues.listComments,
+          {
+            owner: r.owner,
+            repo: r.name,
+            issue_number: i.number,
+            per_page: 100,
+          },
+        );
         for (let idx = comments.length - 1; idx >= 0; idx--) {
           const t = parseTelemetry(comments[idx].body ?? '');
           if (t) {
