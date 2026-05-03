@@ -1,6 +1,6 @@
 {
   "name": "dev-agent",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Portable agentic feature development system. Claude Code plugin + reusable GitHub workflows + per-repo config schema.",
   "private": true,
   "type": "module",
