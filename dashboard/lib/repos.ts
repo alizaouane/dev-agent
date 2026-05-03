@@ -73,13 +73,28 @@ export async function listAllowedRepos(octokit: Octokit): Promise<RepoInfo[]> {
     for (const r of personal) {
       const isOrgRepo = (r.owner.type ?? '').toLowerCase() === 'organization';
       if (isOrgRepo) {
-        // Defer org repos to the org pass below — that's where the
-        // ALLOWED_GH_ORGS filter applies. Skip here to avoid double-counting.
-        continue;
-      }
-      // Personal repo policy: if allowedUsernames is set, must match. Else allow.
-      if (allowedUsernames.length > 0 && !allowedUsernames.some((u) => u.toLowerCase() === r.owner.login.toLowerCase())) {
-        continue;
+        // Org-typed repo policy:
+        //   - If ALLOWED_GH_ORGS is set, only include if the owner is in it
+        //     (the org-pass loop below would have crawled it anyway, so the
+        //     candidates Map dedupes — but pre-filtering avoids surfacing
+        //     org repos the user is a member of but isn't allowlisted on).
+        //   - If ALLOWED_GH_ORGS is unset, INCLUDE the repo. Otherwise users
+        //     who work primarily in org repos and are admitted via
+        //     ALLOWED_GH_USERNAMES would see an empty dashboard.
+        if (
+          allowedOrgs.length > 0 &&
+          !allowedOrgs.some((o) => o.toLowerCase() === r.owner.login.toLowerCase())
+        ) {
+          continue;
+        }
+      } else {
+        // User-typed (personal) repo: filter by ALLOWED_GH_USERNAMES if set.
+        if (
+          allowedUsernames.length > 0 &&
+          !allowedUsernames.some((u) => u.toLowerCase() === r.owner.login.toLowerCase())
+        ) {
+          continue;
+        }
       }
       candidates.set(key(r.owner.login, r.name), {
         owner: r.owner.login,

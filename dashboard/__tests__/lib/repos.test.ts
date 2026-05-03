@@ -134,10 +134,10 @@ describe('listAllowedRepos', () => {
     expect(repos.find((r) => r.name === 'org-repo-a')?.owner).toBe('qualiency');
   });
 
-  it('skips org-typed repos from listForAuthenticatedUser to avoid double-counting', async () => {
+  it('dedupes repos surfaced by both listForAuthenticatedUser (org-typed) and listForOrg', async () => {
     // listForAuthenticatedUser returns BOTH user-owned + org-membership repos.
-    // The latter should defer to listForOrg's pass to avoid duplicates AND
-    // to apply the ALLOWED_GH_ORGS gate consistently.
+    // The candidates Map keys by owner/name so the same repo from both
+    // sources collapses to a single entry.
     process.env.ALLOWED_GH_ORGS = 'qualiency';
     const octokit = mockOctokit({
       authenticatedUserRepos: [
@@ -149,9 +149,50 @@ describe('listAllowedRepos', () => {
     });
     const repos = await listAllowedRepos(octokit);
     const names = repos.map((r) => `${r.owner}/${r.name}`).sort();
-    // 'qualiency/shared' must appear exactly once, not twice.
     expect(names.filter((n) => n === 'qualiency/shared')).toHaveLength(1);
     expect(names).toEqual(['alizaouane/mine', 'qualiency/only-via-org', 'qualiency/shared']);
+  });
+
+  it('includes org-typed repos from listForAuthenticatedUser when ALLOWED_GH_ORGS is unset', async () => {
+    // Regression for CodeRabbit P2: a user admitted via ALLOWED_GH_USERNAMES
+    // who primarily works in org-owned repos should see those repos too.
+    // Without org-pass crawling (no ALLOWED_GH_ORGS), the org-typed entries
+    // from listForAuthenticatedUser are the ONLY way they surface — so we
+    // must NOT skip them.
+    process.env.ALLOWED_GH_USERNAMES = 'alizaouane';
+    delete process.env.ALLOWED_GH_ORGS;
+    const octokit = mockOctokit({
+      authenticatedUserRepos: [
+        personalRepo('mine', 'alizaouane'),
+        personalRepo('caliente-booking', 'qualiency', { owner: { login: 'qualiency', type: 'Organization' } }),
+      ],
+    });
+    const repos = await listAllowedRepos(octokit);
+    expect(repos.map((r) => `${r.owner}/${r.name}`).sort()).toEqual([
+      'alizaouane/mine',
+      'qualiency/caliente-booking',
+    ]);
+  });
+
+  it('filters org-typed repos by ALLOWED_GH_ORGS when both allowlists are set', async () => {
+    // If ALLOWED_GH_ORGS=qualiency is set, an org-typed repo from a
+    // different org (acme) returned by listForAuthenticatedUser should
+    // NOT be surfaced — the user is opting into specific orgs.
+    process.env.ALLOWED_GH_USERNAMES = 'alizaouane';
+    process.env.ALLOWED_GH_ORGS = 'qualiency';
+    const octokit = mockOctokit({
+      authenticatedUserRepos: [
+        personalRepo('mine', 'alizaouane'),
+        personalRepo('q-repo', 'qualiency', { owner: { login: 'qualiency', type: 'Organization' } }),
+        personalRepo('acme-repo', 'acme', { owner: { login: 'acme', type: 'Organization' } }),
+      ],
+      reposByOrg: { qualiency: [] },
+    });
+    const repos = await listAllowedRepos(octokit);
+    expect(repos.map((r) => `${r.owner}/${r.name}`).sort()).toEqual([
+      'alizaouane/mine',
+      'qualiency/q-repo',
+    ]);
   });
 
   it('returns empty array (and logs) when the user has no accessible repos', async () => {
