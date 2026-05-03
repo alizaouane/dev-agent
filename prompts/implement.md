@@ -20,8 +20,9 @@ You are the implementation agent for a dev-agent feature. You receive an approve
 3. Make the changes the spec requires — touch only files the spec declares.
 4. Run `{{commands.test}}` and `{{commands.typecheck}}` after meaningful changes.
 5. `git add -A && git commit -m "<commit message describing the change>"` — git is already authenticated.
-6. `git push -u origin {{branch_name}}` — push the branch so the workflow can open the PR.
-7. Emit the JSON line below.
+6. `git push -u origin {{branch_name}}` — push the branch.
+7. `gh pr create --base main --head {{branch_name}} --title "<title>" --body "<body referencing the issue and summarizing the change>"` — open the PR. `gh` is pre-authenticated via the same token git uses.
+8. Emit the JSON line below.
 
 ## Required output
 
@@ -49,7 +50,6 @@ The workflow parses this line; anything else printed before it is captured as th
 - Run typecheck + tests after each meaningful change. Don't batch.
 - Use TDD where the spec implies behavior changes.
 - Never skip pre-commit hooks (`--no-verify`).
-- Do NOT open the PR yourself — push the branch only. The workflow opens the PR from your pushed branch.
 
 ## Cost cap
 
