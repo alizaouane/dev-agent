@@ -72,14 +72,21 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           MERGE_SHA: ${{ github.sha }}
+          CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           set -euo pipefail
+          # The consumer root is the directory containing .dev-agent.yml.
+          # The agent will cd there before running any skill so scripts/
+          # and .claude/skills/ resolve correctly.
+          CONSUMER_ROOT=$(dirname "$CONFIG_PATH")
+          [ "$CONSUMER_ROOT" = "." ] && CONSUMER_ROOT=""
           export PROMPT_VARS_JSON=$(jq -nc \
+            --arg consumer_root "$CONSUMER_ROOT" \
             --argjson skills "$(jq -c '.deploy_skills.staging // []' /tmp/config.json)" \
             --arg staging "$(jq -r '.branches.staging // ""' /tmp/config.json)" \
             --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
             --arg sha "$MERGE_SHA" \
-            '{deploy_skills:{staging:$skills}, branches:{staging:(if ($staging|length) > 0 then $staging else null end)}, commands:{test:$test}, merge_sha:$sha}')
+            '{consumer_root:(if ($consumer_root|length) > 0 then $consumer_root else "." end), deploy_skills:{staging:$skills}, branches:{staging:(if ($staging|length) > 0 then $staging else null end)}, commands:{test:$test}, merge_sha:$sha}')
           if [ -z "$PROMPT_VARS_JSON" ]; then
             echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
             exit 1
@@ -129,6 +136,7 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
 
       - name: Run Claude Code (live agent)
+        id: claude
         if: inputs.invocation_mode == 'live'
         uses: anthropics/claude-code-action@v1
         with:
@@ -137,18 +145,31 @@ jobs:
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite WebFetch'
           show_full_output: 'true'
 
-      - name: Comment telemetry + flip state
+      - name: Parse agent JSON + comment telemetry + flip state
         if: inputs.invocation_mode == 'live'
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # Staging deploy is non-mutating to the repo (no branch, no PR), so
-          # there's nothing on origin to verify. We trust the action's exit
-          # code: if the action step succeeded, the agent ran the deploy
-          # chain and (presumably) the smoke command. The agent's JSON
-          # output is captured in show_full_output: true logs for postmortem.
-          BODY=$(printf '🤖 Phase: staging-deploy\nModel: claude-sonnet-4-6\nMode: live\nStatus: success\nMerge SHA: %s\n' "${GITHUB_SHA}")
+          # Extract the agent's final JSON line from execution_file. The
+          # action serializes the agent's stop-event content as the `result`
+          # field; the agent emits `{"deploys_completed": ..., "smoke_passing": ..., ...}`
+          # wrapped in a markdown fence per prompts/staging-deploy.md.
+          RESULT_TEXT=$(jq -r '.result // ""' "$EXEC_FILE" 2>/dev/null || echo "")
+          # Strip any ```json fences and grab the first {...} block.
+          AGENT_JSON=$(printf '%s' "$RESULT_TEXT" | grep -oE '\{[^{}]*"smoke_passing"[^{}]*\}' | head -1 || echo "{}")
+          SMOKE_PASSING=$(printf '%s' "$AGENT_JSON" | jq -r '.smoke_passing // false' 2>/dev/null || echo "false")
+          DEPLOYS=$(printf '%s' "$AGENT_JSON" | jq -r '.deploys_completed // 0' 2>/dev/null || echo "0")
+          SUMMARY=$(printf '%s' "$AGENT_JSON" | jq -r '.summary // "(no summary)"' 2>/dev/null || echo "(parse failed)")
+          if [ "$SMOKE_PASSING" = "true" ]; then
+            STATUS="success"
+            NEW_LABEL="state:staging-deployed"
+          else
+            STATUS="failed (smoke or deploy did not pass)"
+            NEW_LABEL="state:blocked"
+          fi
+          BODY=$(printf '🤖 Phase: staging-deploy\nModel: claude-sonnet-4-6\nMode: live\nStatus: %s\nDeploys completed: %s\nSmoke passing: %s\nSummary: %s\nMerge SHA: %s\n' "$STATUS" "$DEPLOYS" "$SMOKE_PASSING" "$SUMMARY" "${GITHUB_SHA}")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
-          gh issue edit "$ISSUE_NUMBER" --remove-label state:pr-review --add-label state:staging-deployed || true
+          gh issue edit "$ISSUE_NUMBER" --remove-label state:pr-review --add-label "$NEW_LABEL" || true

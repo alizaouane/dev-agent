@@ -25,6 +25,7 @@ describe('renderPrompt', () => {
 
   it('handles array variables', () => {
     const out = renderPrompt('staging-deploy', {
+      consumer_root: '.',
       deploy_skills: { staging: ['deploy-a', 'deploy-b'] },
       branches: { staging: 'staging' },
       commands: { test: 'npm test' },
