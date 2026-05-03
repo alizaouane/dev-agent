@@ -85,13 +85,8 @@ export interface ParsedTelemetry {
   cost_usd: number;
   attempts?: number;
   status: string;
+  mode?: 'stub' | 'live';
 }
-
-// Matches the canonical block produced by `formatTelemetry`. The token counts
-// are written through `formatTokens` (e.g. "145k", "1.2M"), so we accept those
-// suffixes too — not just raw integers.
-const TELEMETRY_RE =
-  /🤖\s*Phase:\s*([^\n]+?)\s*\n\s*Model:\s*([^\n]+?)\s*\n\s*Duration:\s*([^\n]+?)\s*\n\s*Tokens:\s*([\d.]+\s*[kKmM]?)\s*in\s*\/\s*([\d.]+\s*[kKmM]?)\s*out\s*\n\s*Cost:\s*\$?\s*([\d.]+)\s*\n\s*Attempts:\s*(\d+)\s*\n\s*Status:\s*([^\n]+)/;
 
 function parseTokenCount(raw: string): number {
   const trimmed = raw.trim();
@@ -115,21 +110,111 @@ function parseDuration(raw: string): number | undefined {
   return minutes * 60_000 + seconds * 1000;
 }
 
+function parseTokensField(raw: string): { tokens_in: number; tokens_out: number } | null {
+  // "145k in / 67k out" — tolerant of whitespace
+  const m = raw.match(/^\s*([\d.]+\s*[kKmM]?)\s*in\s*\/\s*([\d.]+\s*[kKmM]?)\s*out\s*$/);
+  if (!m) return null;
+  const tokens_in = parseTokenCount(m[1]);
+  const tokens_out = parseTokenCount(m[2]);
+  if (Number.isNaN(tokens_in) || Number.isNaN(tokens_out)) return null;
+  return { tokens_in, tokens_out };
+}
+
+function parseCostField(raw: string): number | null {
+  const m = raw.match(/^\s*\$?\s*([\d.]+)\s*$/);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  return Number.isNaN(n) ? null : n;
+}
+
+function parseModeField(raw: string): 'stub' | 'live' | undefined {
+  const trimmed = raw.trim().toLowerCase();
+  if (trimmed === 'stub' || trimmed === 'live') return trimmed;
+  return undefined;
+}
+
+// Field-by-field, two-pass parser. Tolerant of:
+//   - the engine's `formatTelemetry` block (Duration / Attempts / Artifacts)
+//   - the workflow's bash `printf` block (Mode, no Duration/Attempts/Artifacts)
+// Required fields: Phase, Model, Tokens, Cost, Status. Everything else optional.
 export function parseTelemetry(comment: string): ParsedTelemetry | null {
   if (!comment) return null;
-  const match = comment.match(TELEMETRY_RE);
-  if (!match) return null;
-  const tokensIn = parseTokenCount(match[4]);
-  const tokensOut = parseTokenCount(match[5]);
-  if (Number.isNaN(tokensIn) || Number.isNaN(tokensOut)) return null;
-  return {
-    phase: match[1].trim(),
-    model: match[2].trim(),
-    duration_ms: parseDuration(match[3]),
-    tokens_in: tokensIn,
-    tokens_out: tokensOut,
-    cost_usd: parseFloat(match[6]),
-    attempts: parseInt(match[7], 10),
-    status: match[8].trim(),
+
+  // Pass 1: find the anchor line "🤖 Phase: <name>" and split into lines from there.
+  const anchorMatch = comment.match(/🤖\s*Phase:\s*([^\n]+)/);
+  if (!anchorMatch) return null;
+  const anchorIdx = comment.indexOf(anchorMatch[0]);
+  const tail = comment.slice(anchorIdx);
+  const lines = tail.split('\n');
+
+  // Pass 2: walk lines, recognizing prefixes. Stop after Status or at end / Artifacts block.
+  const fields: Record<string, string> = {};
+  fields.phase = anchorMatch[1].trim();
+
+  const prefixes: Array<[string, string]> = [
+    ['Model:', 'model'],
+    ['Tokens:', 'tokens'],
+    ['Cost:', 'cost'],
+    ['Mode:', 'mode'],
+    ['Duration:', 'duration'],
+    ['Attempts:', 'attempts'],
+    ['Status:', 'status'],
+  ];
+
+  let sawStatus = false;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    const trimmedLine = line.trim();
+    if (!trimmedLine) continue;
+    if (trimmedLine.startsWith('Artifacts:')) break; // ignore artifacts block
+    let matched = false;
+    for (const [prefix, key] of prefixes) {
+      if (trimmedLine.startsWith(prefix)) {
+        fields[key] = trimmedLine.slice(prefix.length).trim();
+        matched = true;
+        if (key === 'status') sawStatus = true;
+        break;
+      }
+    }
+    if (!matched) {
+      // Unknown line after we've started; stop scanning so we don't consume
+      // unrelated comment text below the telemetry block.
+      if (sawStatus) break;
+    }
+  }
+
+  // Required fields check.
+  if (!fields.phase || !fields.model || !fields.tokens || !fields.cost || !fields.status) {
+    return null;
+  }
+
+  const tokens = parseTokensField(fields.tokens);
+  if (!tokens) return null;
+
+  const cost = parseCostField(fields.cost);
+  if (cost === null) return null;
+
+  const out: ParsedTelemetry = {
+    phase: fields.phase,
+    model: fields.model.trim(),
+    tokens_in: tokens.tokens_in,
+    tokens_out: tokens.tokens_out,
+    cost_usd: cost,
+    status: fields.status.trim(),
   };
+
+  if (fields.duration !== undefined) {
+    const d = parseDuration(fields.duration);
+    if (d !== undefined) out.duration_ms = d;
+  }
+  if (fields.attempts !== undefined) {
+    const a = parseInt(fields.attempts, 10);
+    if (!Number.isNaN(a)) out.attempts = a;
+  }
+  if (fields.mode !== undefined) {
+    const m = parseModeField(fields.mode);
+    if (m) out.mode = m;
+  }
+
+  return out;
 }

@@ -127,4 +127,29 @@ describe('parseTelemetry', () => {
     expect(parsed!.tokens_in).toBe(100);
     expect(parsed!.tokens_out).toBe(50);
   });
+
+  it("parses the workflow's printf format (Mode, no Duration/Attempts) — actual Phase 1d drill output", () => {
+    // Verbatim body posted by .github/workflows/phase-implement.yml on issue #5
+    // of alizaouane/dev-agent (Phase 1d drill artifact).
+    const comment = [
+      '🤖 Phase: implement',
+      'Model: claude-sonnet-4-6',
+      'Tokens: 600 in / 16000 out',
+      'Cost: $0.2418',
+      'Mode: live',
+      'Status: stub-success (live mode wires in 1d)',
+    ].join('\n');
+    const parsed = parseTelemetry(comment);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.phase).toBe('implement');
+    expect(parsed!.model).toBe('claude-sonnet-4-6');
+    expect(parsed!.tokens_in).toBe(600);
+    expect(parsed!.tokens_out).toBe(16000);
+    expect(parsed!.cost_usd).toBeCloseTo(0.2418, 4);
+    expect(parsed!.mode).toBe('live');
+    expect(parsed!.status).toBe('stub-success (live mode wires in 1d)');
+    // Workflow format omits these fields.
+    expect(parsed!.duration_ms).toBeUndefined();
+    expect(parsed!.attempts).toBeUndefined();
+  });
 });
