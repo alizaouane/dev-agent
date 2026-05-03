@@ -521,7 +521,7 @@ Deferred until v1 has been used for a few weeks and friction is measured.
 
 | # | Risk | Mitigation |
 |---|---|---|
-| 1 | Vercel free tier limits (function execution time, bandwidth) for cost-dashboard cold loads at 5–10 s | Free tier function execution is 10 s on Hobby — this is right at the edge. If we hit it, upgrade to Pro ($20/mo) or add a tiny KV cache pre-aggregating cost data. |
+| 1 | Cost-dashboard cold loads at 5–10 s | Resolved — user has Vercel Pro tier (60 s function timeout, 100 GB bandwidth). Plenty of headroom. KV cache deferred until measured friction warrants. |
 | 2 | GitHub OAuth scope `repo` is broad (read/write all repos, not just allowlisted). | Acceptable for single-user; documented. If we open this to teammates later, evaluate Granular OAuth Apps when they reach feature parity for label-write + workflow-dispatch. |
 | 3 | NEXTAUTH_SECRET rotation policy unclear | Generate fresh on initial deploy; rotate annually or on suspected compromise. Rotation invalidates all sessions (all users re-sign-in). Acceptable. |
 | 4 | Adding a teammate later requires Vercel env var edit + redeploy | Acceptable. Could later move allowlist to a small JSON file in the repo with a CI step that validates and auto-redeploys. |
