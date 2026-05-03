@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { isUsernameAllowed, isOrgAllowed, parseAllowlist } from '@/lib/auth';
+import { isUsernameAllowed, isOrgAllowed, parseAllowlist, authConfig } from '@/lib/auth';
 
 describe('parseAllowlist', () => {
   it('parses a simple CSV', () => {
@@ -49,5 +49,19 @@ describe('isOrgAllowed', () => {
   });
   it('is case-insensitive', () => {
     expect(isOrgAllowed('QUALIENCY')).toBe(true);
+  });
+});
+
+describe('session callback', () => {
+  it('does NOT expose accessToken on the returned session (would leak to browser)', async () => {
+    const sessionCallback = authConfig.callbacks?.session;
+    expect(sessionCallback).toBeDefined();
+    const result = await sessionCallback!({
+      session: { user: { name: 'Ali', email: 'a@b.com', image: null }, expires: new Date(Date.now() + 86400000).toISOString() },
+      token: { access_token: 'gho_supersecret', username: 'alizaouane' },
+    } as unknown as Parameters<NonNullable<typeof sessionCallback>>[0]);
+    expect((result as unknown as Record<string, unknown>).accessToken).toBeUndefined();
+    // The username should still be exposed on user (that's safe — it's public)
+    expect((result as unknown as { user: { username: string } }).user.username).toBe('alizaouane');
   });
 });

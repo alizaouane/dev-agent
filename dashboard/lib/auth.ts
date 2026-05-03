@@ -24,9 +24,13 @@ async function isUserMemberOfAnyAllowedOrg(token: string, username: string): Pro
   for (const org of allowedOrgs) {
     try {
       await octokit.orgs.checkMembershipForUser({ org, username });
-      return true; // 204 means member
-    } catch {
-      // 404 means not a member; try next
+      return true;
+    } catch (e) {
+      const status = (e as { status?: number }).status;
+      if (status === 404) continue; // genuine "not a member" — try next org
+      // 401/403/5xx — log and re-throw so signIn surfaces a different error
+      console.error(`org check failed for ${org}/${username}: ${status}`, e);
+      throw e;
     }
   }
   return false;
@@ -45,8 +49,9 @@ export const authConfig: NextAuthConfig = {
     }),
   ],
   callbacks: {
-    async signIn({ user, account }) {
-      const username = (user as unknown as { login?: string }).login ?? user.name ?? '';
+    async signIn({ account, profile }) {
+      const username = (profile as { login?: string } | undefined)?.login ?? '';
+      if (!username) return '/auth/error?reason=missing_login';
       if (isUsernameAllowed(username)) return true;
       if (account?.access_token && (await isUserMemberOfAnyAllowedOrg(account.access_token, username))) {
         return true;
@@ -65,8 +70,6 @@ export const authConfig: NextAuthConfig = {
         ...session.user,
         username: (token.username as string) ?? '',
       };
-      // Expose the access token via session for server-side use only
-      (session as unknown as { accessToken?: string }).accessToken = token.access_token as string;
       return session;
     },
   },
@@ -87,6 +90,6 @@ declare module 'next-auth' {
       image?: string | null;
       username: string;
     };
-    accessToken?: string;
+    // accessToken intentionally NOT exposed on the Session — read server-side via getToken()
   }
 }
