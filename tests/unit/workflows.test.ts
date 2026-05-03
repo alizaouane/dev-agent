@@ -15,8 +15,13 @@ const PHASE_WORKFLOWS = [
 
 const ALL_REUSABLE = [...PHASE_WORKFLOWS, 'orch-sweep.yml'];
 
+// Event-triggered workflows that listen to GitHub events (not reusable
+// via workflow_call). They share the YAML / security invariants but
+// don't need to declare workflow_call inputs.
+const EVENT_TRIGGERED_WORKFLOWS = ['phase-pr-review.yml'];
+
 describe('.github/workflows/', () => {
-  for (const wf of [...ALL_REUSABLE, 'ci.yml']) {
+  for (const wf of [...ALL_REUSABLE, ...EVENT_TRIGGERED_WORKFLOWS, 'ci.yml']) {
     describe(wf, () => {
       const path = resolve(workflowsDir, wf);
       const raw = readFileSync(path, 'utf8');
@@ -51,7 +56,7 @@ describe('.github/workflows/', () => {
 
   it('no run: block inlines github.event.* (title|body) directly', () => {
     const forbidden = /\$\{\{\s*github\.event\.[a-z_.]*(title|body)/i;
-    for (const wf of [...ALL_REUSABLE, 'ci.yml']) {
+    for (const wf of [...ALL_REUSABLE, ...EVENT_TRIGGERED_WORKFLOWS, 'ci.yml']) {
       const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
       const runBlocks = raw.split(/\n\s+run:\s*\|/).slice(1);
       for (const block of runBlocks) {
@@ -59,5 +64,42 @@ describe('.github/workflows/', () => {
         expect(upToNextStep).not.toMatch(forbidden);
       }
     }
+  });
+
+  describe('phase-pr-review.yml', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-pr-review.yml'), 'utf8');
+    const parsed = yaml.load(raw) as {
+      on?: Record<string, unknown>;
+      jobs?: Record<string, { if?: string; permissions?: Record<string, string> }>;
+    };
+
+    it('listens to comment + review events', () => {
+      expect(parsed.on?.issue_comment).toBeDefined();
+      expect(parsed.on?.pull_request_review).toBeDefined();
+      expect(parsed.on?.pull_request_review_comment).toBeDefined();
+    });
+
+    it('gates the job behind a @claude mention check', () => {
+      const job = parsed.jobs?.['pr-review'];
+      expect(job?.if).toMatch(/@claude/);
+    });
+
+    it('excludes claude[bot] comments to avoid loops', () => {
+      const job = parsed.jobs?.['pr-review'];
+      expect(job?.if).toMatch(/claude\[bot\]/);
+    });
+
+    it('grants id-token: write for OIDC', () => {
+      const job = parsed.jobs?.['pr-review'];
+      expect(job?.permissions?.['id-token']).toBe('write');
+    });
+
+    it('validates head ref shape with a regex before checkout', () => {
+      // The Resolve PR head branch step must whitelist the head ref to a
+      // strict feat/dev-agent-issue-<digits> shape; otherwise an attacker
+      // who can push a PR could choose a head ref that smuggles shell
+      // metacharacters into the checkout step.
+      expect(raw).toMatch(/feat\/dev-agent-issue-\[0-9\]\+\$/);
+    });
   });
 });
