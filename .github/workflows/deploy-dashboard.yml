@@ -11,6 +11,9 @@ on:
   pull_request:
     paths:
       - 'dashboard/**'
+      - 'lib/**'
+      - 'package.json'
+      - 'package-lock.json'
 
 jobs:
   test:

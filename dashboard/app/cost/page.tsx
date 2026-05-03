@@ -17,16 +17,23 @@ export default async function CostPage() {
   const items = await fetchPipeline(octokit, repos, { include_terminal: true });
 
   const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  const sinceIso = new Date(since).toISOString();
   const buckets: Record<string, Record<PhaseKey, number>> = {};
   for (const it of items) {
     const [owner, name] = it.repo.split('/');
-    const cs = await octokit.issues.listComments({
-      owner,
-      repo: name,
-      issue_number: it.issue_number,
-      per_page: 100,
-    });
-    const comments = (cs as unknown as { data?: Array<{ body?: string; created_at?: string }> }).data ?? [];
+    // Paginate all comments since the 30-day cutoff. listComments returns
+    // a max of 100 per page; without paginate, busy issues would silently
+    // drop recent telemetry past the first page and undercount spend.
+    const comments: Array<{ body?: string; created_at?: string }> = await octokit.paginate(
+      octokit.issues.listComments,
+      {
+        owner,
+        repo: name,
+        issue_number: it.issue_number,
+        since: sinceIso,
+        per_page: 100,
+      },
+    );
     for (const c of comments) {
       if (!c.created_at) continue;
       const ts = new Date(c.created_at).getTime();
