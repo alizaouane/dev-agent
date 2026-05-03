@@ -162,7 +162,11 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: ${{ steps.build.outputs.prompt_path }}
-          claude_args: '--max-turns 30 --model claude-sonnet-4-6'
+          # Bash matches all bash commands (the agent needs npm/git/etc).
+          # Guardrails (blocked_paths, max_files_changed) are enforced by
+          # the rendered prompt, not by tool denylists — the prompt is the
+          # contract.
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           branch_prefix: 'feat/dev-agent-issue-'
 
       - name: Comment telemetry + link PR
