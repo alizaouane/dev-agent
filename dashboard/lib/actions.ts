@@ -10,6 +10,19 @@ import { WIRE_UP_FILES } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
 
 /**
+ * Extract the "Agreed scope" section from the PM agent's final message.
+ * The PM is prompted to end with `## Agreed scope\n\n<...>` when the
+ * user has converged on something to build. Returns null if no such
+ * section is present (which means the user clicked Approve too early).
+ */
+function extractAgreedScope(pmMessage: string): string | null {
+  const match = pmMessage.match(/##\s*Agreed scope\s*\n([\s\S]*?)$/i);
+  if (!match) return null;
+  const body = match[1].trim();
+  return body.length > 0 ? body : null;
+}
+
+/**
  * Verify `username` has at least `write` permission on `owner/repo`. Uses
  * `repos.getCollaboratorPermissionLevel` — the canonical GH API for this
  * check — which returns one of `admin | maintain | write | triage | read | none`.
@@ -398,4 +411,86 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
 
   revalidatePath('/repos');
   redirect(pr.data.html_url);
+}
+
+/**
+ * Server Action: end of the PM brainstorm chat. The user has agreed on a
+ * scope and clicked "Approve and start." We:
+ *
+ *   1. Extract the "Agreed scope" section from the PM's final message;
+ *      reject if missing (the chat hasn't converged yet).
+ *   2. Verify write permission on the target repo.
+ *   3. Create a GitHub issue carrying:
+ *        - the scope as the body (the implement workflow uses the issue
+ *          body as spec when no `docs/specs/<slug>.md` is linked — the
+ *          drill issues already validate this path)
+ *        - labels `kind:user-intent` + `state:implementing` (skipping
+ *          state:scoping/state:spec-ready because we already converged).
+ *   4. Dispatch `dev-agent.yml` on the consumer repo with phase=implement.
+ *      The wrapper workflow (installed by wireUpRepo) forwards to the
+ *      reusable phase-implement.yml@v1.
+ *   5. Redirect to the dashboard's feature page so the user sees telemetry
+ *      flow as the agent runs.
+ *
+ * Form fields:
+ *  - `repo`           — owner/name of the wired-up consumer
+ *  - `title`          — short feature title (used as the issue title)
+ *  - `pm_final_message` — the PM agent's last message containing the
+ *                         "## Agreed scope" block.
+ */
+export async function approveAndStart(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const repoFull = (formData.get('repo') as string).trim();
+  const title = ((formData.get('title') as string) ?? '').trim();
+  const pmFinalMessage = ((formData.get('pm_final_message') as string) ?? '').trim();
+
+  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+  if (!title) throw new Error('title cannot be empty');
+  const scope = extractAgreedScope(pmFinalMessage);
+  if (!scope) {
+    throw new Error(
+      'no "## Agreed scope" section found in the PM\'s final message — the chat has not converged yet',
+    );
+  }
+
+  const [owner, repo] = repoFull.split('/');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  // Issue body doubles as the spec the implement agent reads. Phase 2a's
+  // "spec_path = placeholder, treat issue body as spec" path handles the
+  // missing docs/specs/<slug>.md case; we lean on that here.
+  const issueBody = [
+    `Approved by @${session_username} via the dashboard PM brainstorm.`,
+    ``,
+    `## Agreed scope`,
+    ``,
+    scope,
+  ].join('\n');
+
+  const issue = await octokit.issues.create({
+    owner,
+    repo,
+    title: title.slice(0, 100),
+    body: issueBody,
+    labels: ['kind:user-intent', 'state:implementing'],
+  });
+
+  // Dispatch the consumer's wrapper workflow to start the implement phase.
+  // The wrapper exposes phase as a `choice` input; we send phase=implement
+  // and the new issue number.
+  await octokit.actions.createWorkflowDispatch({
+    owner,
+    repo,
+    workflow_id: 'dev-agent.yml',
+    ref: 'main',
+    inputs: {
+      phase: 'implement',
+      issue_number: String(issue.data.number),
+      invocation_mode: 'live',
+    },
+  });
+
+  revalidatePath('/');
+  redirect(`/features/${issue.data.number}?repo=${encodeURIComponent(repoFull)}`);
 }
