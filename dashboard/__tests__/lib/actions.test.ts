@@ -171,17 +171,10 @@ function notFound() {
 }
 
 describe('wireUpRepo', () => {
-
-  it('opens a PR on a normal repo (default branch tip exists)', async () => {
-    // Repo is not yet wired up, has commits on main, no existing wire-up PR.
+  it('commits template files directly to the default branch (no PR)', async () => {
+    // Repo is not yet wired up.
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc123' } } });
-    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
-    mockOctokit.git.createRef.mockResolvedValueOnce({});
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-    mockOctokit.pulls.create.mockResolvedValueOnce({
-      data: { html_url: 'https://github.com/qualiency/test-repo/pull/99' },
-    });
 
     const { wireUpRepo } = await import('@/lib/actions');
     const fd = new FormData();
@@ -192,32 +185,26 @@ describe('wireUpRepo', () => {
     try {
       await wireUpRepo(fd);
     } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:.*\/pull\/99/);
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    // Branch was created from the resolved tip SHA.
-    expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
-      expect.objectContaining({ ref: 'refs/heads/chore/wire-up-dev-agent', sha: 'abc123' }),
-    );
-    // All template files (.dev-agent.yml, workflow, pm.md) were committed
-    // via the wire-up branch.
+    // All three template files committed without a `branch` param, so they
+    // land on the repo's default branch.
     expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
-    expect(mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0]).toMatchObject({
-      branch: 'chore/wire-up-dev-agent',
-    });
-    // PR was opened.
-    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
-      expect.objectContaining({ head: 'chore/wire-up-dev-agent', base: 'main' }),
-    );
+    for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
+      expect(call[0].branch).toBeUndefined();
+    }
+    // The PR-flow APIs are never touched on the wire-up path now.
+    expect(mockOctokit.git.getRef).not.toHaveBeenCalled();
+    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
+    expect(mockOctokit.pulls.list).not.toHaveBeenCalled();
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
-  it('falls back to direct commit on the default branch for an empty repo', async () => {
-    // Empty repo: getContent for .dev-agent.yml 404s (good — not yet wired
-    // up), AND getRef for heads/main also 404s (the default branch has no
-    // commits yet). Action should commit the template files directly to
-    // the default branch and skip the PR flow.
+  it('uses the same direct-commit path for empty repos', async () => {
+    // Empty repos behave identically — the API creates the initial commit
+    // and branch ref on first createOrUpdateFileContents.
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.getRef.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { wireUpRepo } = await import('@/lib/actions');
@@ -229,39 +216,10 @@ describe('wireUpRepo', () => {
     try {
       await wireUpRepo(fd);
     } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:https:\/\/github\.com\/qualiency\/fresh-empty-repo$/);
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    // Template files were committed WITHOUT a `branch` parameter, so they
-    // hit the repo's default branch (creating it if needed).
     expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
-    for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
-      expect(call[0].branch).toBeUndefined();
-    }
-    // No branch + no PR was created on the empty-repo path.
-    expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
-    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
-  });
-
-  it('redirects to an existing wire-up PR rather than failing', async () => {
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
-    mockOctokit.pulls.list.mockResolvedValueOnce({
-      data: [{ html_url: 'https://github.com/q/r/pull/7' }],
-    });
-
-    const { wireUpRepo } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('owner', 'q');
-    fd.append('repo', 'r');
-    fd.append('default_branch', 'main');
-
-    try {
-      await wireUpRepo(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:.*\/pull\/7/);
-    }
-    // Should NOT have tried to create a new branch or PR.
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
@@ -480,13 +438,7 @@ describe('applyPmMdUpdate', () => {
   it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
-    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
-    mockOctokit.git.createRef.mockResolvedValueOnce({});
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-    mockOctokit.pulls.create.mockResolvedValueOnce({
-      data: { html_url: 'https://github.com/q/r/pull/1' },
-    });
 
     const { pushRepoSecret } = await import('@/lib/gh-secrets');
     (pushRepoSecret as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
@@ -499,7 +451,7 @@ describe('applyPmMdUpdate', () => {
     try {
       await wireUpRepo(fd);
     } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__/);
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
     expect(pushRepoSecret).toHaveBeenCalledWith({
@@ -509,21 +461,15 @@ describe('applyPmMdUpdate', () => {
       name: 'ANTHROPIC_API_KEY',
       value: 'sk-ant-test',
     });
-    // PR body should reflect the auto-push.
-    const prBody = mockOctokit.pulls.create.mock.calls[0][0].body as string;
-    expect(prBody).toMatch(/pushed to this repo's Actions secrets automatically/);
+    // Files were committed directly to the default branch (no PR flow).
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
-  it('falls back gracefully when ANTHROPIC_API_KEY is not configured on the dashboard', async () => {
-    // No env var set.
+  it('skips pushRepoSecret when ANTHROPIC_API_KEY is unset on the dashboard', async () => {
+    // No env var.
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
-    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
-    mockOctokit.git.createRef.mockResolvedValueOnce({});
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-    mockOctokit.pulls.create.mockResolvedValueOnce({
-      data: { html_url: 'https://github.com/q/r/pull/2' },
-    });
 
     const { pushRepoSecret } = await import('@/lib/gh-secrets');
     (pushRepoSecret as ReturnType<typeof vi.fn>).mockClear();
@@ -536,26 +482,18 @@ describe('applyPmMdUpdate', () => {
     try {
       await wireUpRepo(fd);
     } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__/);
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    // pushRepoSecret should NOT have been called — no key to push.
     expect(pushRepoSecret).not.toHaveBeenCalled();
-    // PR body should explain the manual step.
-    const prBody = mockOctokit.pulls.create.mock.calls[0][0].body as string;
-    expect(prBody).toMatch(/NOT auto-pushed/);
+    // Files still committed even without the secret.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
   });
 
-  it('still opens the PR when secret-push fails (e.g. user lacks admin perm)', async () => {
+  it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
-    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
-    mockOctokit.git.createRef.mockResolvedValueOnce({});
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-    mockOctokit.pulls.create.mockResolvedValueOnce({
-      data: { html_url: 'https://github.com/q/r/pull/3' },
-    });
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
     const { pushRepoSecret } = await import('@/lib/gh-secrets');
@@ -571,14 +509,12 @@ describe('applyPmMdUpdate', () => {
     try {
       await wireUpRepo(fd);
     } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__/);
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    // PR was still opened despite the secret-push failure.
-    expect(mockOctokit.pulls.create).toHaveBeenCalled();
-    // PR body explains the failure so the user knows to paste manually.
-    const prBody = mockOctokit.pulls.create.mock.calls[0][0].body as string;
-    expect(prBody).toMatch(/Tried to push.*automatically but failed/);
+    // The wire-up still landed all three files; only the secret push failed.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
 });
