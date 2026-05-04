@@ -166,6 +166,73 @@ describe('dispatchRollback', () => {
   });
 });
 
+describe('setBugScoutSchedule', () => {
+  const ACTIVE_YAML = [
+    'name: dev-agent · bug-scout',
+    '',
+    'on:',
+    '  schedule:',
+    "    - cron: '0 9 * * *'",
+    '  workflow_dispatch:',
+    '    inputs: {}',
+    '',
+    'jobs:',
+    '  bug-scout:',
+    '    uses: alizaouane/dev-agent/.github/workflows/phase-bug-scout.yml@v1',
+    '',
+  ].join('\n');
+
+  it('rejects an unknown preset', async () => {
+    const { setBugScoutSchedule } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('preset', 'hourly');
+    await expect(setBugScoutSchedule(fd)).rejects.toThrow(/invalid preset/);
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { setBugScoutSchedule } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('preset', 'weekly');
+    await expect(setBugScoutSchedule(fd)).rejects.toThrow(/lacks write/);
+  });
+
+  it('reads default branch from the repo and writes the new cron', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({
+      data: { default_branch: 'develop' },
+    });
+    mockOctokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        type: 'file',
+        encoding: 'base64',
+        content: Buffer.from(ACTIVE_YAML, 'utf8').toString('base64'),
+        sha: 'sha-abc',
+      },
+    });
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({});
+
+    const { setBugScoutSchedule } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('preset', 'weekly');
+    await setBugScoutSchedule(fd);
+
+    // It read the workflow file from the repo's actual default branch.
+    expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'develop', path: '.github/workflows/dev-agent-bug-scout.yml' }),
+    );
+    // It committed back with the SHA we read + new cron in the YAML.
+    const writeCall = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    expect(writeCall.sha).toBe('sha-abc');
+    const decoded = Buffer.from(writeCall.content, 'base64').toString('utf8');
+    expect(decoded).toContain("- cron: '0 9 * * 1'");
+  });
+});
+
 function notFound() {
   return Object.assign(new Error('Not Found'), { status: 404 });
 }

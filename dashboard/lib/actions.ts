@@ -10,6 +10,11 @@ import { WIRE_UP_FILES } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
 import { snoozeProposalId, unsnoozeProposalId } from './scout/snooze';
 import { evictRecommendationsForUser } from './next-cache';
+import {
+  SCHEDULE_PRESETS,
+  writeBugScoutSchedule,
+  type SchedulePreset,
+} from './bug-scout-schedule';
 
 /**
  * Extract the "Agreed scope" section from the PM agent's final message.
@@ -571,4 +576,45 @@ export async function regenerateRecommendation(): Promise<void> {
   const username = await getCurrentUsername();
   evictRecommendationsForUser(username);
   revalidatePath('/next');
+}
+
+/**
+ * Server Action: change the bug-scout cron schedule for a wired-up repo.
+ *
+ * Edits `.github/workflows/dev-agent-bug-scout.yml` on the default branch
+ * — GitHub Actions doesn't allow dynamic crons, so the schedule lives in
+ * the workflow file itself and changing it means a commit. Direct-commit
+ * (no PR) matches the wire-up flow's "this is your config, you don't
+ * need to PR-review your own settings" stance.
+ *
+ * Form fields:
+ *  - `repo`    — `owner/name`
+ *  - `preset`  — one of `daily | weekdays | weekly | off`
+ *
+ * @throws Error on bad input
+ * @throws ForbiddenError if user lacks write perm on the target repo
+ * @throws Error if the bug-scout workflow file isn't installed yet
+ */
+export async function setBugScoutSchedule(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const repoFull = (formData.get('repo') as string)?.trim() ?? '';
+  const presetRaw = (formData.get('preset') as string)?.trim() ?? '';
+  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+  if (!SCHEDULE_PRESETS.includes(presetRaw as SchedulePreset)) {
+    throw new Error(`invalid preset: ${presetRaw}`);
+  }
+  const preset = presetRaw as SchedulePreset;
+  const [owner, repo] = repoFull.split('/');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  // Pull the repo's default branch — `repos/[name]` doesn't carry it through
+  // form fields, and trusting client input here would let the form rewrite
+  // any branch the user can write to.
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
+  await writeBugScoutSchedule(octokit, owner, repo, default_branch, preset);
+
+  revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
 }
