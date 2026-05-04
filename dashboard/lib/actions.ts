@@ -8,6 +8,7 @@ import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
 import { WIRE_UP_FILES } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
+import { snoozeProposalId, unsnoozeProposalId } from './scout/snooze';
 
 /**
  * Extract the "Agreed scope" section from the PM agent's final message.
@@ -513,4 +514,35 @@ export async function applyPmMdUpdate(formData: FormData): Promise<void> {
   });
 
   redirect(pr.data.html_url);
+}
+
+/**
+ * Server Action: snooze a proposal so it stops appearing on /proposals
+ * for ~a week. In-memory store; no consumer-repo write.
+ *
+ * Form fields:
+ *  - `proposal_id` — the stable id from the Proposal type
+ */
+export async function snoozeProposal(formData: FormData): Promise<void> {
+  const username = await getCurrentUsername();
+  const proposalId = ((formData.get('proposal_id') as string) ?? '').trim();
+  if (!proposalId) throw new Error('proposal_id required');
+  snoozeProposalId(username, proposalId);
+  revalidatePath('/proposals');
+}
+
+/**
+ * Server Action: undo a snooze (used by the "Show snoozed" view's
+ * Un-snooze button). Idempotent — succeeds even if the entry doesn't
+ * exist anymore (e.g., expired before the user clicked).
+ *
+ * Form fields:
+ *  - `proposal_id`
+ */
+export async function unsnoozeProposal(formData: FormData): Promise<void> {
+  const username = await getCurrentUsername();
+  const proposalId = ((formData.get('proposal_id') as string) ?? '').trim();
+  if (!proposalId) throw new Error('proposal_id required');
+  unsnoozeProposalId(username, proposalId);
+  revalidatePath('/proposals');
 }
