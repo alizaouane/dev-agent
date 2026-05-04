@@ -35,7 +35,7 @@ export async function NavHeader() {
         </nav>
         <div className="flex items-center gap-3">
           <Link href="/intent">
-            <Button size="sm">Drop intent</Button>
+            <Button size="sm">Brainstorm with PM</Button>
           </Link>
           {session?.user && (
             <form
