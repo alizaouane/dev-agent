@@ -49,12 +49,21 @@ vi.mock('next/navigation', () => ({
   }),
 }));
 
+// Snapshot the original ANTHROPIC_API_KEY once so per-test mutations
+// (set/clear) don't leak across describe blocks.
+const ORIGINAL_ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({ data: { permission: 'write' } });
+  delete process.env.ANTHROPIC_API_KEY;
 });
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  if (ORIGINAL_ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+  else process.env.ANTHROPIC_API_KEY = ORIGINAL_ANTHROPIC_API_KEY;
+});
 
 describe('dropIntent', () => {
   it('creates an issue with state:scoping + kind:user-intent labels', async () => {
@@ -156,20 +165,11 @@ describe('dispatchRollback', () => {
   });
 });
 
-describe('wireUpRepo', () => {
-  function notFound() {
-    return Object.assign(new Error('Not Found'), { status: 404 });
-  }
+function notFound() {
+  return Object.assign(new Error('Not Found'), { status: 404 });
+}
 
-  // Reset env between tests so secret-push paths don't leak across.
-  const ORIGINAL_KEY = process.env.ANTHROPIC_API_KEY;
-  beforeEach(() => {
-    delete process.env.ANTHROPIC_API_KEY;
-  });
-  afterEach(() => {
-    if (ORIGINAL_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
-    else process.env.ANTHROPIC_API_KEY = ORIGINAL_KEY;
-  });
+describe('wireUpRepo', () => {
 
   it('opens a PR on a normal repo (default branch tip exists)', async () => {
     // Repo is not yet wired up, has commits on main, no existing wire-up PR.
@@ -286,6 +286,91 @@ describe('wireUpRepo', () => {
     fd.append('owner', 'q');
     fd.append('repo', 'r');
     await expect(wireUpRepo(fd)).rejects.toThrow(/lacks write/);
+  });
+});
+
+describe('approveAndStart', () => {
+  it('files an issue with the agreed scope and dispatches the implement workflow', async () => {
+    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 77 } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { approveAndStart } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('title', 'Add refunds');
+    fd.append(
+      'pm_final_message',
+      [
+        'Sounds good. Here is the scope.',
+        '',
+        '## Agreed scope',
+        '',
+        'Add a refund button to the booking-detail page.',
+        'Stripe API only — no UI for partial refunds in this iteration.',
+      ].join('\n'),
+    );
+
+    try {
+      await approveAndStart(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:\/features\/77/);
+    }
+
+    expect(mockOctokit.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        title: 'Add refunds',
+        labels: ['kind:user-intent', 'state:implementing'],
+      }),
+    );
+    // Issue body must contain the agreed-scope content so the implement
+    // agent has something to read.
+    const createCall = mockOctokit.issues.create.mock.calls[0][0];
+    expect(createCall.body).toContain('Add a refund button to the booking-detail page.');
+
+    // Workflow dispatched with phase=implement against the consumer's
+    // wrapper workflow.
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        workflow_id: 'dev-agent.yml',
+        ref: 'main',
+        inputs: {
+          phase: 'implement',
+          issue_number: '77',
+          invocation_mode: 'live',
+        },
+      }),
+    );
+  });
+
+  it('refuses when the PM message has no "## Agreed scope" section', async () => {
+    const { approveAndStart } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('title', 'Something');
+    fd.append('pm_final_message', 'Sure, let me know more about how this fits with...');
+    await expect(approveAndStart(fd)).rejects.toThrow(/Agreed scope.*not converged/);
+    // No issue created, no workflow dispatched.
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses without write permission on the target repo', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { approveAndStart } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('title', 'Anything');
+    fd.append(
+      'pm_final_message',
+      '## Agreed scope\n\nA real scope block to clear the converged check.',
+    );
+    await expect(approveAndStart(fd)).rejects.toThrow(/lacks write/);
   });
 
   it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
