@@ -14,8 +14,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import type { RepoInfo } from '@/lib/repos';
-import { approveAndStart } from '@/lib/actions';
+import { applyPmMdUpdate, approveAndStart } from '@/lib/actions';
 import { clearDraft, loadDraft, saveDraft } from '@/lib/pm-chat-draft';
+import { extractPmMdUpdate } from '@/lib/pm-md-update';
 
 /**
  * Streaming chat with the PM agent for in-browser idea intake.
@@ -132,6 +133,9 @@ export function PmChat({
   const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant');
   const lastAssistantText = lastAssistantMessage ? extractText(lastAssistantMessage) : '';
   const hasAgreedScope = /##\s*Agreed scope/i.test(lastAssistantText);
+  const proposedPmMd = lastAssistantText ? extractPmMdUpdate(lastAssistantText) : null;
+  const [pmUpdateErr, setPmUpdateErr] = useState<string | null>(null);
+  const [applyingPmUpdate, startPmUpdateTransition] = useTransition();
 
   function onSend() {
     const trimmed = input.trim();
@@ -165,6 +169,26 @@ export function PmChat({
         // the draft so the user can retry without retyping.
         saveDraft({ repo, title, input, messages });
         setApproveErr(msg);
+      }
+    });
+  }
+
+  function onApplyPmUpdate() {
+    if (!proposedPmMd) return;
+    setPmUpdateErr(null);
+    startPmUpdateTransition(async () => {
+      try {
+        const fd = new FormData();
+        fd.append('repo', repo);
+        fd.append('new_content', proposedPmMd);
+        // Use the current title as a hint for the commit/PR title; falls
+        // back to a generic message in the server action if blank.
+        if (title.trim()) fd.append('summary', `chore(pm.md): ${title.trim()}`);
+        await applyPmMdUpdate(fd);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes('NEXT_REDIRECT')) throw e;
+        setPmUpdateErr(msg);
       }
     });
   }
@@ -317,6 +341,29 @@ export function PmChat({
           ) : null}
         </div>
       </div>
+
+      {proposedPmMd ? (
+        <div className="rounded-md border border-blue-500/50 bg-blue-500/10 p-4">
+          <h3 className="mb-2 font-medium">PM proposes a pm.md update</h3>
+          <p className="mb-3 text-sm text-muted-foreground">
+            The PM noticed a pattern worth recording. Apply opens a PR replacing
+            <code className="mx-1">.dev-agent/pm.md</code>
+            with its proposed content — review the diff in the PR before merging.
+          </p>
+          <details className="mb-3 rounded border border-border bg-background p-3 text-xs">
+            <summary className="cursor-pointer text-sm font-medium">Preview proposed pm.md</summary>
+            <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-words text-xs leading-relaxed">
+              {proposedPmMd}
+            </pre>
+          </details>
+          <div className="flex justify-end">
+            <Button onClick={onApplyPmUpdate} disabled={applyingPmUpdate} variant="default">
+              {applyingPmUpdate ? 'Opening PR…' : 'Apply (opens PR)'}
+            </Button>
+          </div>
+          {pmUpdateErr ? <p className="mt-2 text-xs text-destructive">{pmUpdateErr}</p> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
