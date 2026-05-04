@@ -7,6 +7,7 @@ import type { Octokit } from '@octokit/rest';
 import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
 import { WIRE_UP_FILES } from './wire-up-template';
+import { pushRepoSecret } from './gh-secrets';
 
 /**
  * Verify `username` has at least `write` permission on `owner/repo`. Uses
@@ -260,6 +261,34 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
     if (status !== 404) throw err;
   }
 
+  // Try to push the dashboard's ANTHROPIC_API_KEY into the consumer repo's
+  // Actions secrets so the user doesn't have to paste it manually. We do
+  // this BEFORE creating files / opening the PR so the PR body can honestly
+  // reflect whether the secret is already in place. Failures here are
+  // non-fatal: we just fall back to the manual instruction in the PR body.
+  const dashboardKey = process.env.ANTHROPIC_API_KEY;
+  let secretPushed: 'pushed' | 'skipped-no-dashboard-key' | 'failed' = 'skipped-no-dashboard-key';
+  let secretPushError: string | undefined;
+  if (dashboardKey) {
+    try {
+      await pushRepoSecret({
+        octokit,
+        owner,
+        repo,
+        name: 'ANTHROPIC_API_KEY',
+        value: dashboardKey,
+      });
+      secretPushed = 'pushed';
+    } catch (err) {
+      // Most likely a 403 if the user has write but not admin perm on the
+      // repo — secrets require admin. Don't block the wire-up; surface the
+      // failure in the PR body so the user knows to paste manually.
+      secretPushed = 'failed';
+      secretPushError = err instanceof Error ? err.message : String(err);
+      console.warn(`pushRepoSecret failed for ${owner}/${repo}:`, err);
+    }
+  }
+
   if (tipSha === undefined) {
     // Empty-repo onboarding path: commit each template file directly to the
     // default branch. Without a `branch` parameter, createOrUpdateFileContents
@@ -332,18 +361,28 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
     });
   }
 
+  // Secret-status line in the PR body adapts based on what actually
+  // happened during the wire-up. Honesty matters here — silently
+  // claiming the secret was set when push failed would leave the user
+  // chasing a "missing ANTHROPIC_API_KEY" workflow failure later.
+  const secretLine =
+    secretPushed === 'pushed'
+      ? `- ✅ \`ANTHROPIC_API_KEY\` was pushed to this repo's Actions secrets automatically. No paste needed.`
+      : secretPushed === 'failed'
+        ? `- ⚠️ Tried to push \`ANTHROPIC_API_KEY\` automatically but failed (${secretPushError ?? 'see logs'}). Add it manually: Settings → Secrets and variables → Actions.`
+        : `- ℹ️ \`ANTHROPIC_API_KEY\` was NOT auto-pushed (the dashboard's own env var is unset). Add it as a repo secret: Settings → Secrets and variables → Actions.`;
+
   const prBody = [
     `Wires up [dev-agent](https://github.com/alizaouane/dev-agent) on this repo.`,
     ``,
     `**What this PR does:**`,
     `- Adds \`.dev-agent.yml\` (config: which commands to run, which paths to never touch, cost caps).`,
     `- Adds \`.github/workflows/dev-agent.yml\` (calls dev-agent's reusable workflows pinned at \`@v1\`).`,
+    secretLine,
     ``,
     `**Next steps after merge:**`,
-    `1. Add \`ANTHROPIC_API_KEY\` as a repository secret (Settings → Secrets and variables → Actions).`,
-    `2. (Recommended) Settings → Actions → General → enable "Allow GitHub Actions to create and approve pull requests".`,
-    `3. Tune \`.dev-agent.yml\` for your stack (commands, deploy_skills, guardrails).`,
-    `4. File a feature issue, then trigger the agent: \`gh workflow run dev-agent.yml -f phase=implement -f issue_number=<N>\`.`,
+    `1. Tune \`.dev-agent.yml\` for your stack (commands, deploy_skills, guardrails).`,
+    `2. File a feature issue, then trigger the agent: \`gh workflow run dev-agent.yml -f phase=implement -f issue_number=<N>\`.`,
     ``,
     `Triggered by @${session_username} from the dev-agent dashboard.`,
   ].join('\n');

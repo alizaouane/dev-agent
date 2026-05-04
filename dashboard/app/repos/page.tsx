@@ -12,6 +12,12 @@ import { WireUpButton } from '@/components/wire-up-button';
 export default async function ReposPage() {
   const octokit = await getOctokit();
   const repos = await listAllowedRepos(octokit);
+  // Surfaced server-side so the page can warn before the user clicks
+  // "Wire up dev-agent" — the auto-push of ANTHROPIC_API_KEY only works
+  // when the dashboard itself has the key in its env. Without this hint,
+  // a user wiring up their first repo would only learn the secret wasn't
+  // auto-pushed by reading the resulting PR body.
+  const dashboardKeySet = Boolean(process.env.ANTHROPIC_API_KEY);
 
   const wired = repos.filter((r) => r.wired_up);
   const unwired = repos.filter((r) => !r.wired_up);
@@ -23,6 +29,18 @@ export default async function ReposPage() {
         Every GitHub repo you can access. Wire up dev-agent on a repo to start filing
         issues that the agent picks up automatically.
       </p>
+
+      {!dashboardKeySet && repos.length > 0 ? (
+        <div className="mb-6 rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
+          <p className="font-medium">Heads up: <code>ANTHROPIC_API_KEY</code> isn&apos;t set on this dashboard yet.</p>
+          <p className="mt-1 text-muted-foreground">
+            Wiring up a repo will still create the PR, but you&apos;ll need to add the key as a repo
+            secret manually after merge. Set <code>ANTHROPIC_API_KEY</code> on the dashboard&apos;s
+            environment (Vercel → Settings → Environment Variables) to enable auto-push for every
+            future wire-up.
+          </p>
+        </div>
+      ) : null}
 
       {repos.length === 0 ? (
         <EmptyState />
