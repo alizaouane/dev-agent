@@ -238,6 +238,16 @@ recent_decisions: []
 #     reason: "Too much scope for this quarter; revisit Q4."
 #     revisit_after: "2026-10-01"
 
+# Competitors the PM should watch. Each entry surfaces as a "review
+# competitor X" proposal on /proposals — click "Discuss with PM" to
+# extract feature ideas relevant to your goals. Snooze handles noise.
+competitors: []
+# Example shape:
+# competitors:
+#   - name: "StudioDirector"
+#     url: "https://studiodirector.com/blog"
+#     notes: "Closest direct competitor; watch their pricing changes."
+
 last_updated: "2026-05-04"
 ---
 
