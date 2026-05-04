@@ -277,16 +277,19 @@ an investor asked for X, a customer churned because of Y.)
 export const TEMPLATE_BUG_SCOUT_WORKFLOW_YML = `name: dev-agent · bug-scout
 
 # Periodic bug-scout. Runs an LLM agent against your codebase
-# weekly + on-demand. Findings file as GitHub issues with
+# daily + on-demand. Findings file as GitHub issues with
 # \`kind:bug-scout\` + \`state:proposed\` and surface on the dashboard's
-# /proposals page. Cost ~\$0.30-1.00/scan.
+# /proposals page. Cost ~\$0.30-1.00/scan, ~\$9-30/month at daily
+# cadence — adjust the cron expression if you need it less often.
 #
 # SECURITY: no \`run:\` blocks; only typed inputs forward to the
 # reusable workflow.
 
 on:
   schedule:
-    - cron: '0 9 * * 1'
+    # Daily 09:00 UTC. Findings accumulate as a queue you triage
+    # at your own pace via /proposals on the dashboard.
+    - cron: '0 9 * * *'
   workflow_dispatch:
     inputs:
       focus_paths:
