@@ -357,6 +357,12 @@ jobs:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 `;
 
+export const TEMPLATE_SESSION_LOG_MD = `# Session Log
+
+(no entries yet — the dev-agent and your dev sessions will append here)
+
+`;
+
 /**
  * Files to drop into a target repo when wiring it up. Order doesn't matter
  * for the GitHub API, but is significant for human review of the resulting
@@ -365,6 +371,9 @@ jobs:
  * user is expected to edit before the PM agent has anything useful to do.
  * The bug-scout workflow ships with a daily cron pre-wired; the
  * unfinished-work-scout ships with workflow_dispatch only (manual trigger).
+ * `SESSION_LOG.md` ships empty — every dev cycle and every user-approved
+ * scope appends here, giving the PM agent durable activity context for
+ * grounding (so empty `pm.md` stops mattering).
  */
 export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
   { path: '.dev-agent.yml', content: TEMPLATE_DEV_AGENT_YML },
@@ -375,4 +384,5 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
     content: TEMPLATE_UNFINISHED_WORK_SCOUT_WORKFLOW_YML,
   },
   { path: '.dev-agent/pm.md', content: TEMPLATE_PM_MD },
+  { path: 'SESSION_LOG.md', content: TEMPLATE_SESSION_LOG_MD },
 ];

@@ -146,6 +146,7 @@ jobs:
           show_full_output: 'true'
 
       - name: Parse agent JSON + comment telemetry + flip state
+        id: parse
         if: inputs.invocation_mode == 'live'
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -172,10 +173,37 @@ jobs:
           if [ "$SMOKE_PASSING" = "true" ]; then
             STATUS="success"
             NEW_LABEL="state:staging-deployed"
+            OUTCOME="success"
+            HINT="manual smoke on staging, then promote to prod when ready."
           else
             STATUS="failed (smoke or deploy did not pass)"
             NEW_LABEL="state:blocked"
+            OUTCOME="blocked"
+            HINT="inspect deploy/smoke logs, fix the regression, re-run staging-deploy."
           fi
           BODY=$(printf '🤖 Phase: staging-deploy\nModel: claude-sonnet-4-6\nMode: live\nStatus: %s\nDeploys completed: %s\nSmoke passing: %s\nSummary: %s\nMerge SHA: %s\n' "$STATUS" "$DEPLOYS" "$SMOKE_PASSING" "$SUMMARY" "${GITHUB_SHA}")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
           gh issue edit "$ISSUE_NUMBER" --remove-label state:pr-review --add-label "$NEW_LABEL" || true
+          echo "phase_outcome=${OUTCOME}" >> "$GITHUB_OUTPUT"
+          echo "next_hint=${HINT}" >> "$GITHUB_OUTPUT"
+
+      - name: Append SESSION_LOG.md entry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          PHASE: staging-deploy
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          OUTCOME: ${{ steps.parse.outputs.phase_outcome || 'aborted' }}
+          NEXT_SESSION_HINT: ${{ steps.parse.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
+          TRIGGER: 'PR merged to default branch — staging deploy + smoke verify run.'
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/append-session-log.ts
+          if git diff --quiet -- SESSION_LOG.md; then
+            echo "SESSION_LOG.md unchanged — no commit needed."
+            exit 0
+          fi
+          git config user.name 'dev-agent[bot]'
+          git config user.email 'dev-agent@users.noreply.github.com'
+          git add SESSION_LOG.md
+          git commit -m "chore(dev-agent): session log — staging-deploy issue #${ISSUE_NUMBER}"
+          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

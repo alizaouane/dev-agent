@@ -77,4 +77,10 @@ describe('wire-up-template embedded copy', () => {
       .replace(/\\\$/g, '$');
     expect(normalized).toContain(onDisk);
   });
+
+  it('SESSION_LOG.md on disk matches the embedded TEMPLATE_SESSION_LOG_MD', () => {
+    const onDisk = readFileSync(resolve(tplDir, 'SESSION_LOG.md'), 'utf8');
+    const normalized = embedded.replace(/\\`/g, '`');
+    expect(normalized).toContain(onDisk);
+  });
 });

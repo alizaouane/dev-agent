@@ -76,3 +76,25 @@ jobs:
             --argjson pr "$PR_NUMBER" \
             '{issue_number:$issue, merged_pr:$pr, branches:{staging:"staging", release_target:"main"}, deploy_skills:{staging:[],prod:[]}, commands:{test:"npm test"}}')
           npx tsx lib/cli/render-and-run.ts rollback
+
+      - name: Append SESSION_LOG.md entry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          PHASE: rollback
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          OUTCOME: rolled_back
+          TRIGGER: 'Rollback dispatched — reverting the merge of the implement-phase PR.'
+          NEXT_SESSION_HINT: 'investigate the regression that caused the rollback before retrying the implement phase.'
+          DEFERRED: 'Identify root cause from staging-deploy / smoke logs.'
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/append-session-log.ts
+          if git diff --quiet -- SESSION_LOG.md; then
+            echo "SESSION_LOG.md unchanged — no commit needed."
+            exit 0
+          fi
+          git config user.name 'dev-agent[bot]'
+          git config user.email 'dev-agent@users.noreply.github.com'
+          git add SESSION_LOG.md
+          git commit -m "chore(dev-agent): session log — rollback issue #${ISSUE_NUMBER}"
+          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

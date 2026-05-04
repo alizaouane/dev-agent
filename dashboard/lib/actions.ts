@@ -15,6 +15,7 @@ import {
   writeBugScoutSchedule,
   type SchedulePreset,
 } from './bug-scout-schedule';
+import { appendApprovedScopeEntry } from './session-log';
 
 /**
  * Extract the "Agreed scope" section from the PM agent's final message.
@@ -417,6 +418,26 @@ export async function approveAndStart(formData: FormData): Promise<void> {
     body: issueBody,
     labels: ['kind:user-intent', 'state:implementing'],
   });
+
+  // Record the human decision in SESSION_LOG.md BEFORE dispatching the
+  // workflow. If the workflow run later fails, the audit trail still
+  // shows that the user approved scope X for issue #N at this time.
+  // Best-effort — a 403 / rate-limit / network error here shouldn't
+  // block the dispatch (the issue + workflow are the durable state;
+  // the log is the human-readable mirror).
+  try {
+    await appendApprovedScopeEntry(octokit, owner, repo, default_branch, {
+      issue: issue.data.number,
+      approver: session_username,
+      title: title.slice(0, 100),
+      scope,
+    });
+  } catch (err) {
+    console.warn(
+      `approveAndStart: SESSION_LOG.md append failed for ${owner}/${repo}#${issue.data.number}:`,
+      err,
+    );
+  }
 
   // Dispatch the consumer's wrapper workflow to start the implement phase.
   // The wrapper exposes phase as a `choice` input; we send phase=implement
