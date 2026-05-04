@@ -28,9 +28,8 @@ export async function scoutPendingSpecs(
   owner: string,
   repo: string,
   default_branch: string,
+  specs_dir: string,
 ): Promise<Proposal[]> {
-  const SPECS_DIR = 'docs/specs';
-
   // Step 1: list spec files.
   type SpecFile = { slug: string; path: string };
   let specs: SpecFile[];
@@ -38,7 +37,7 @@ export async function scoutPendingSpecs(
     const resp = await octokit.repos.getContent({
       owner,
       repo,
-      path: SPECS_DIR,
+      path: specs_dir,
       ref: default_branch,
     });
     if (!Array.isArray(resp.data)) return [];

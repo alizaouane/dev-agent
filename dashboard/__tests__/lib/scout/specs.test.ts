@@ -6,8 +6,10 @@ import { scoutPendingSpecs } from '@/lib/scout/specs';
 type SpecListing = { path: string; type: string };
 
 function mockOctokit(opts: {
-  /** Files in docs/specs/ */
+  /** Files in the specs dir */
   specs?: SpecListing[];
+  /** Path the listing call is expected at (default `docs/specs`). */
+  specsDir?: string;
   /** Map from spec slug → list of issue search hits (count = .total_count) */
   issueSearchByQuery?: Record<string, number>;
   /** Map from spec path → file content (markdown) */
@@ -15,8 +17,9 @@ function mockOctokit(opts: {
   specsListError?: number;
   searchError?: boolean;
 }): Octokit {
+  const expectedListing = opts.specsDir ?? 'docs/specs';
   const getContent = vi.fn(async ({ path }: { path: string }) => {
-    if (path === 'docs/specs') {
+    if (path === expectedListing) {
       if (opts.specsListError) {
         throw Object.assign(new Error('boom'), { status: opts.specsListError });
       }
@@ -49,12 +52,12 @@ function mockOctokit(opts: {
 describe('scoutPendingSpecs', () => {
   it('returns empty when there are no specs', async () => {
     const octokit = mockOctokit({ specs: [] });
-    expect(await scoutPendingSpecs(octokit, 'q', 'r', 'main')).toEqual([]);
+    expect(await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs')).toEqual([]);
   });
 
   it('returns empty when docs/specs is missing', async () => {
     const octokit = mockOctokit({ specsListError: 404 });
-    expect(await scoutPendingSpecs(octokit, 'q', 'r', 'main')).toEqual([]);
+    expect(await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs')).toEqual([]);
   });
 
   it('emits a pending_spec proposal for a spec with no tracking issue', async () => {
@@ -65,7 +68,7 @@ describe('scoutPendingSpecs', () => {
         'docs/specs/2026-05-15-foo.md': '# Foo Feature\n\nBody...',
       },
     });
-    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main');
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs');
     expect(proposals).toHaveLength(1);
     expect(proposals[0].source).toBe('pending_spec');
     expect(proposals[0].group).toBe('carry_over');
@@ -79,7 +82,7 @@ describe('scoutPendingSpecs', () => {
       specs: [{ path: 'docs/specs/no-h1.md', type: 'file' }],
       specBodies: { 'docs/specs/no-h1.md': 'No heading here.\nJust body.' },
     });
-    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main');
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs');
     expect(proposals[0].title).toBe('no-h1');
   });
 
@@ -98,7 +101,7 @@ describe('scoutPendingSpecs', () => {
         'docs/specs/dangling.md': '# Dangling',
       },
     });
-    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main');
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs');
     expect(proposals.map((p) => p.meta?.spec_slug)).toEqual(['dangling']);
   });
 
@@ -108,10 +111,23 @@ describe('scoutPendingSpecs', () => {
       searchError: true,
       specBodies: { 'docs/specs/anything.md': '# Anything' },
     });
-    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main');
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs');
     // Search rate-limited — we surface the spec rather than silently
     // hide a possibly-pending commitment.
     expect(proposals).toHaveLength(1);
+  });
+
+  it('honors a custom specs_dir from .dev-agent.yml', async () => {
+    const octokit = mockOctokit({
+      specsDir: 'specs',
+      specs: [{ path: 'specs/2026-05-15-foo.md', type: 'file' }],
+      issueSearchByQuery: {},
+      specBodies: { 'specs/2026-05-15-foo.md': '# Foo' },
+    });
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'specs');
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0].url).toContain('specs/2026-05-15-foo.md');
+    expect(proposals[0].meta?.spec_path).toBe('specs/2026-05-15-foo.md');
   });
 
   it('skips non-markdown entries in docs/specs/', async () => {
@@ -123,7 +139,7 @@ describe('scoutPendingSpecs', () => {
       ],
       specBodies: { 'docs/specs/real.md': '# Real spec' },
     });
-    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main');
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', 'docs/specs');
     expect(proposals).toHaveLength(1);
     expect(proposals[0].meta?.spec_slug).toBe('real');
   });

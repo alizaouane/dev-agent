@@ -3,6 +3,7 @@ import 'server-only';
 import type { Octokit } from '@octokit/rest';
 
 import type { RepoInfo } from '../repos';
+import { loadDevAgentConfig } from '../dev-agent-config';
 import { scoutBugFindings } from './bug-findings';
 import { scoutCompetitorWatch } from './competitive';
 import { scoutSpecDrift } from './drift';
@@ -25,6 +26,12 @@ export { SOURCE_TO_GROUP } from './types';
  * repos this could be parallelized further with a pLimit, but at v1
  * scout load isn't a hot path (runs on `/proposals` page load, not in
  * a request loop).
+ *
+ * Per-repo `.dev-agent.yml` is loaded once before the parallel scout
+ * pass — `scoutPendingSpecs` and `scoutUnfinishedPlans` both need the
+ * configured `artifacts.specs_dir` / `artifacts.plans_dir` paths so
+ * they look at the right directories on consumer repos that don't
+ * follow the dev-agent convention out of the box.
  */
 export async function runAllScouts(
   octokit: Octokit,
@@ -33,11 +40,12 @@ export async function runAllScouts(
   const perRepo = await Promise.all(
     wiredRepos.map(async (r) => {
       try {
+        const config = await loadDevAgentConfig(octokit, r.owner, r.name, r.default_branch);
         const [plans, triage, drift, pendingSpecs, bugFindings, competitive] = await Promise.all([
-          scoutUnfinishedPlans(octokit, r.owner, r.name, r.default_branch),
+          scoutUnfinishedPlans(octokit, r.owner, r.name, r.default_branch, config.plans_dir),
           scoutUntriagedIssues(octokit, r.owner, r.name),
           scoutSpecDrift(octokit, r.owner, r.name, r.default_branch),
-          scoutPendingSpecs(octokit, r.owner, r.name, r.default_branch),
+          scoutPendingSpecs(octokit, r.owner, r.name, r.default_branch, config.specs_dir),
           scoutBugFindings(octokit, r.owner, r.name),
           scoutCompetitorWatch(octokit, r.owner, r.name),
         ]);

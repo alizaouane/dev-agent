@@ -31,19 +31,17 @@ export async function scoutUnfinishedPlans(
   owner: string,
   repo: string,
   default_branch: string,
+  plans_dir: string,
 ): Promise<Proposal[]> {
-  // The plans directory is configured per-repo via `.dev-agent.yml`'s
-  // `artifacts.plans_dir`. The web-app-template ships with `docs/plans`
-  // by default; we hardcode that path here for v1 and add config-driven
-  // discovery in a follow-up if any consumer overrides it.
-  const PLANS_DIR = 'docs/plans';
-
+  // The plans directory is loaded per-repo from `.dev-agent.yml`'s
+  // `artifacts.plans_dir` and passed in. The web-app-template ships with
+  // `docs/plans` as the default but consumers can override it.
   let entries: Array<{ path: string; type?: string }>;
   try {
     const resp = await octokit.repos.getContent({
       owner,
       repo,
-      path: PLANS_DIR,
+      path: plans_dir,
       ref: default_branch,
     });
     if (!Array.isArray(resp.data)) return [];
