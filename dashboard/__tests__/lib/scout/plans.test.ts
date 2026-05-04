@@ -144,4 +144,38 @@ describe('scoutUnfinishedPlans', () => {
     const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [mdFile('huge.md')]);
     expect(proposals.length).toBe(30);
   });
+
+  it('finds unchecked items in files using `* [ ]` format (regression)', async () => {
+    // The pre-filter must not be stricter than parseUncheckedItems —
+    // both accept `*`-bullet checkbox lists.
+    const octokit = mockOctokit({
+      'docs/star-bullets.md': '* [ ] alpha\n* [ ] beta',
+    });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [
+      mdFile('docs/star-bullets.md'),
+    ]);
+    expect(proposals).toHaveLength(2);
+    expect(proposals.map((p) => p.title).sort()).toEqual(['alpha', 'beta']);
+  });
+
+  it('finds unchecked items in files using `1.` numbered list format (regression)', async () => {
+    const octokit = mockOctokit({
+      'docs/numbered.md': '1. [ ] step one\n2. [ ] step two',
+    });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [
+      mdFile('docs/numbered.md'),
+    ]);
+    expect(proposals).toHaveLength(2);
+    expect(proposals.map((p) => p.title).sort()).toEqual(['step one', 'step two']);
+  });
+
+  it('finds unchecked items in files mixing `-`, `*`, and `1.` markers', async () => {
+    const octokit = mockOctokit({
+      'docs/mixed.md': ['- [ ] dash item', '* [ ] star item', '1. [ ] numbered item'].join('\n'),
+    });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [
+      mdFile('docs/mixed.md'),
+    ]);
+    expect(proposals).toHaveLength(3);
+  });
 });

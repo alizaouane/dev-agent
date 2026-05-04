@@ -82,10 +82,12 @@ export async function scoutUnfinishedPlans(
     } catch {
       continue;
     }
-    // Cheap pre-filter: skip the file entirely if no `- [ ]` appears
-    // anywhere in it. Avoids parsing files that obviously have no
-    // unchecked items.
-    if (!/- \[\s\]/.test(raw)) continue;
+    // Cheap pre-filter: skip files with no unchecked checkbox at all.
+    // Mirrors `parseUncheckedItems`'s bullet-marker set (`-`, `*`, or
+    // `1.`-style) so we don't accidentally drop files that use Markdown
+    // task formats other than dashes. A narrower regex would silently
+    // hide plans the parser would otherwise pick up.
+    if (!/(?:^|\n)\s*(?:[-*]|\d+\.)\s+\[\s\]/.test(raw)) continue;
     const items = parseUncheckedItems(owner, repo, default_branch, entry.path, raw);
     out.push(...items.slice(0, MAX_PLAN_PROPOSALS_PER_REPO - out.length));
   }
