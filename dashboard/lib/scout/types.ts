@@ -17,6 +17,8 @@ export type ProposalSource =
   | 'stale_blocked_issue'
   /** Spec in `docs/specs/` referenced by an unresolved `TODO(<slug>)` / `FIXME(<slug>)`. */
   | 'spec_drift'
+  /** Spec in `docs/specs/` with no in-flight or done issue tracking it. */
+  | 'pending_spec'
   /** Issue without any `state:*` label — never entered the pipeline. */
   | 'untriaged_issue';
 
@@ -32,6 +34,7 @@ export const SOURCE_TO_GROUP: Record<ProposalSource, ProposalGroup> = {
   unfinished_plan: 'carry_over',
   stale_blocked_issue: 'carry_over',
   spec_drift: 'carry_over',
+  pending_spec: 'carry_over',
   untriaged_issue: 'new_idea',
 };
 

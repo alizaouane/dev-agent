@@ -9,6 +9,7 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
   unfinished_plan: 'Unfinished plan item',
   stale_blocked_issue: 'Stale blocked issue',
   spec_drift: 'Spec/code drift',
+  pending_spec: 'Pending spec',
   untriaged_issue: 'Untriaged issue',
 };
 
