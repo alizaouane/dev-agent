@@ -24,6 +24,7 @@ export const EXPECTED_PROMPTS = [
   'rollback',
   'scout-digest',
   'drift-check',
+  'pm',
 ] as const;
 
 export type ExpectedCommand = (typeof EXPECTED_COMMANDS)[number];

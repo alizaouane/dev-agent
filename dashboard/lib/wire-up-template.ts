@@ -210,13 +210,69 @@ jobs:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 `;
 
+export const TEMPLATE_PM_MD = `---
+# PM agent's persistent memory. Edit this file directly — the dashboard
+# also lets the PM propose updates after big decisions, but you own the
+# final state. Every field is optional.
+
+# What you're trying to do, period. The PM ranks proposals against these.
+# Use any keys you want; the structure is just \`key: one-line description\`.
+goals:
+  near_term: "Replace this with one sentence about what you're focused on this quarter."
+  # mid_term: "..."
+
+# Things the PM should NOT propose, even if they look reasonable.
+# Examples:
+#   - "operational complexity for the studio owner"
+#   - "anything requiring a backend rewrite"
+#   - "third-party integrations we don't already have a contract with"
+avoid: []
+
+# Decisions you (or the PM) have made. The PM checks this before
+# proposing anything that was rejected/deferred recently.
+recent_decisions: []
+# Example shape:
+# recent_decisions:
+#   - date: "2026-05-10"
+#     decision: "Rejected: mobile-app proposal #45"
+#     reason: "Too much scope for this quarter; revisit Q4."
+#     revisit_after: "2026-10-01"
+
+last_updated: "2026-05-04"
+---
+
+# Product manager notes
+
+This file is your scratchpad for the PM agent. Free-form markdown below
+the frontmatter — the PM reads it as context when reasoning about
+proposals.
+
+## Background
+
+(One paragraph: what does this product do, who's it for, what's the
+shape of the team behind it. The PM uses this to calibrate proposals
+against your reality, not a generic web-app template.)
+
+## Open questions
+
+(Things you're undecided about. The PM may surface relevant proposals
+when answering these.)
+
+## Recent context the PM should know
+
+(Anything that matters that doesn't fit elsewhere — a competitor moved,
+an investor asked for X, a customer churned because of Y.)
+`;
+
 /**
  * Files to drop into a target repo when wiring it up. Order doesn't matter
  * for the GitHub API, but is significant for human review of the resulting
  * PR — we put `.dev-agent.yml` first so reviewers see the config before
- * the workflow that uses it.
+ * the workflow that uses it. `pm.md` ships with placeholder content the
+ * user is expected to edit before the PM agent has anything useful to do.
  */
 export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
   { path: '.dev-agent.yml', content: TEMPLATE_DEV_AGENT_YML },
   { path: '.github/workflows/dev-agent.yml', content: TEMPLATE_WORKFLOW_YML },
+  { path: '.dev-agent/pm.md', content: TEMPLATE_PM_MD },
 ];
