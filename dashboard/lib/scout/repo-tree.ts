@@ -28,10 +28,14 @@ export type MarkdownFile = {
 };
 
 /**
- * Path prefixes we never recurse into. Conventional throw-away or
- * vendored content the user almost certainly doesn't track manual work
- * in. Keep this list short — false negatives (skipping a real plan)
- * are worse than the noise of an extra match.
+ * Path prefixes we never recurse into. Two categories:
+ *   1. Vendored / build output where unchecked checkboxes belong to
+ *      third-party content, not the user's work
+ *      (`node_modules`, `dist`, `.next`, etc.).
+ *   2. Tooling-template directories where checkboxes are placeholders
+ *      meant to be FILLED IN when the template is invoked, not work
+ *      items (`.claude/` slash commands + skill SKILL.md files,
+ *      `.github/` issue + PR templates).
  */
 const EXCLUDED_PREFIXES = [
   'node_modules/',
@@ -43,6 +47,8 @@ const EXCLUDED_PREFIXES = [
   '.git/',
   '.cache/',
   'out/',
+  '.claude/',
+  '.github/',
 ];
 
 function isExcluded(path: string): boolean {

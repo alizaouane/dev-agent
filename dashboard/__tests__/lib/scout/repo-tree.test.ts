@@ -86,6 +86,24 @@ describe('listMarkdownFiles', () => {
     expect(files.map((f) => f.path)).toEqual(['docs/keep.md']);
   });
 
+  it('excludes `.claude/` and `.github/` template directories', async () => {
+    // Slash-command templates and skill SKILL.md files in `.claude/` are
+    // placeholders meant to be filled in when the command runs, not work
+    // items. Same for issue/PR templates in `.github/`. They look like
+    // unchecked plans to a naive walker.
+    const octokit = mockOctokit({
+      tree: [
+        { path: '.claude/commands/feature-contract.md', type: 'blob' },
+        { path: '.claude/skills/foo/SKILL.md', type: 'blob' },
+        { path: '.github/PULL_REQUEST_TEMPLATE.md', type: 'blob' },
+        { path: '.github/ISSUE_TEMPLATE/bug.md', type: 'blob' },
+        { path: 'docs/real-plan.md', type: 'blob' },
+      ],
+    });
+    const files = await listMarkdownFiles(octokit, 'q', 'r', 'main');
+    expect(files.map((f) => f.path)).toEqual(['docs/real-plan.md']);
+  });
+
   it('caps results at 200 to bound downstream API cost', async () => {
     const tree = Array.from({ length: 250 }, (_, i) => ({
       path: `docs/plans/file-${i}.md`,

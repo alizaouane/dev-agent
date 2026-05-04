@@ -138,10 +138,46 @@ describe('scoutUnfinishedPlans', () => {
     expect(proposals[0].title).toBe('real task');
   });
 
-  it('caps the number of proposals per repo at 30 to bound noise', async () => {
+  it('rolls up files with more than 5 unchecked items into one proposal (avoids per-line noise)', async () => {
     const items = Array.from({ length: 50 }, (_, i) => `- [ ] item ${i}`).join('\n');
-    const octokit = mockOctokit({ 'huge.md': items });
-    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [mdFile('huge.md')]);
+    const octokit = mockOctokit({ 'docs/huge.md': items });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [mdFile('docs/huge.md')]);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0].title).toBe('50 unchecked items in huge');
+    expect(proposals[0].url).toBe('https://github.com/q/r/blob/main/docs/huge.md');
+    expect(proposals[0].meta?.item_count).toBe(50);
+    expect(proposals[0].meta?.rolled_up).toBe('true');
+    // Description previews the first few items so the user knows what's
+    // behind the rollup.
+    expect(proposals[0].description).toContain('item 0');
+    expect(proposals[0].description).toContain('item 1');
+    expect(proposals[0].description).toContain('item 2');
+    expect(proposals[0].description).toContain('…');
+  });
+
+  it('keeps per-line granularity for short plans (≤ 5 items)', async () => {
+    const octokit = mockOctokit({
+      'docs/short.md': '- [ ] alpha\n- [ ] beta\n- [ ] gamma',
+    });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [mdFile('docs/short.md')]);
+    expect(proposals).toHaveLength(3);
+    expect(proposals.map((p) => p.title).sort()).toEqual(['alpha', 'beta', 'gamma']);
+    // Per-line proposals deep-link to the line number.
+    expect(proposals[0].url).toMatch(/#L\d+$/);
+  });
+
+  it('caps the number of per-line proposals at MAX_PLAN_PROPOSALS_PER_REPO across many short files', async () => {
+    // 20 files, each with 4 unchecked items (under the rollup threshold)
+    // — but 20 × 4 = 80 total, so the per-repo cap should kick in.
+    const files: Record<string, string> = {};
+    const inputs: ReturnType<typeof mdFile>[] = [];
+    for (let i = 0; i < 20; i++) {
+      const path = `docs/short-${i}.md`;
+      files[path] = ['- [ ] a', '- [ ] b', '- [ ] c', '- [ ] d'].join('\n');
+      inputs.push(mdFile(path));
+    }
+    const octokit = mockOctokit(files);
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', inputs);
     expect(proposals.length).toBe(30);
   });
 
