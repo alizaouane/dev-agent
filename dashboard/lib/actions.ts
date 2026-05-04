@@ -618,3 +618,47 @@ export async function setBugScoutSchedule(formData: FormData): Promise<void> {
 
   revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
 }
+
+/**
+ * Server Action: fire a one-shot "Scan with PM" — dispatches the
+ * unfinished-work-scout workflow on the consumer repo. The workflow
+ * runs an LLM agent (~$0.10–0.30) that reads the repo with read-only
+ * tools and files findings as `kind:unfinished-work` issues, which
+ * then surface on `/proposals` via `scoutUnfinishedWorkFindings`.
+ *
+ * The button is disabled in the UI for ~10 minutes after each click
+ * (via the redirect to /repos/<name>?scan_started=<timestamp>) to
+ * prevent the user accidentally double-firing an expensive run.
+ *
+ * Form fields:
+ *  - `repo` — `owner/name`
+ *
+ * @throws Error on bad input
+ * @throws ForbiddenError if user lacks write perm on the target repo
+ */
+export async function triggerUnfinishedWorkScan(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const repoFull = (formData.get('repo') as string)?.trim() ?? '';
+  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+  const [owner, repo] = repoFull.split('/');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  // Read default branch from the repo rather than trusting form input —
+  // same as setBugScoutSchedule. Prevents the form from triggering
+  // workflows on arbitrary branches the user can write to.
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
+  await octokit.actions.createWorkflowDispatch({
+    owner,
+    repo,
+    workflow_id: 'dev-agent-unfinished-work-scout.yml',
+    ref: default_branch,
+    inputs: {},
+  });
+
+  void session_username;
+
+  revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
+}

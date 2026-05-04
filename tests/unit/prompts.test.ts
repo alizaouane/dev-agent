@@ -33,7 +33,7 @@ describe('prompts/', () => {
     });
   }
 
-  it('contains exactly the expected 7 prompts (no extras)', () => {
+  it('contains exactly the expected prompts (no extras, no missing)', () => {
     const files = readdirSync(promptsDir)
       .filter((f) => f.endsWith('.md'))
       .map((f) => f.replace(/\.md$/, ''))

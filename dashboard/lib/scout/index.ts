@@ -10,6 +10,7 @@ import { scoutUnfinishedPlans } from './plans';
 import { listMarkdownFiles } from './repo-tree';
 import { scoutPendingSpecs } from './specs';
 import { scoutUntriagedIssues } from './triage';
+import { scoutUnfinishedWorkFindings } from './unfinished-work';
 import type { Proposal } from './types';
 
 export type { Proposal, ProposalSource, ProposalGroup } from './types';
@@ -41,15 +42,24 @@ export async function runAllScouts(
     wiredRepos.map(async (r) => {
       try {
         const mdFiles = await listMarkdownFiles(octokit, r.owner, r.name, r.default_branch);
-        const [plans, triage, drift, pendingSpecs, bugFindings, competitive] = await Promise.all([
+        const [plans, triage, drift, pendingSpecs, bugFindings, unfinishedWork, competitive] = await Promise.all([
           scoutUnfinishedPlans(octokit, r.owner, r.name, r.default_branch, mdFiles),
           scoutUntriagedIssues(octokit, r.owner, r.name),
           scoutSpecDrift(octokit, r.owner, r.name, r.default_branch),
           scoutPendingSpecs(octokit, r.owner, r.name, r.default_branch, mdFiles),
           scoutBugFindings(octokit, r.owner, r.name),
+          scoutUnfinishedWorkFindings(octokit, r.owner, r.name),
           scoutCompetitorWatch(octokit, r.owner, r.name),
         ]);
-        return [...plans, ...triage, ...drift, ...pendingSpecs, ...bugFindings, ...competitive];
+        return [
+          ...plans,
+          ...triage,
+          ...drift,
+          ...pendingSpecs,
+          ...bugFindings,
+          ...unfinishedWork,
+          ...competitive,
+        ];
       } catch (err) {
         console.warn(`runAllScouts: failed for ${r.owner}/${r.name}:`, err);
         return [];

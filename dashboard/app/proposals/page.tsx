@@ -11,6 +11,7 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
   spec_drift: 'Spec/code drift',
   pending_spec: 'Pending spec',
   bug_scout_finding: 'Bug-scout finding',
+  unfinished_work_finding: 'Unfinished work (PM scan)',
   competitor_watch: 'Competitor to review',
   untriaged_issue: 'Untriaged issue',
 };
