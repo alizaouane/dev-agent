@@ -83,32 +83,115 @@ export function parseScheduleFromYaml(yaml: string): {
 /**
  * Apply a preset to a workflow YAML string. Returns the new YAML.
  *
- * Strategy: find the active `- cron: '<x>'` line OR the disabled
- * `# - cron: ...` line. Replace it in place. If the file has neither
- * (someone removed the schedule block), insert a fresh schedule block
- * after the `on:` line — this is a recovery path for human edits and
- * not the common case.
+ * **Strategy.** Walk the file line-by-line. When we hit `schedule:`, we
+ * treat its indented body as a unit and rewrite it: the FIRST cron
+ * entry (active or commented-out) becomes the canonical line for the
+ * chosen preset, and every additional cron entry inside the block is
+ * dropped. This matters because GitHub Actions allows multiple
+ * `on.schedule.cron` entries — a hand-edited file with two crons
+ * wasn't fully normalized by the previous single-regex approach, so
+ * "Off" left the second cron firing. Comments and blank lines inside
+ * the schedule block are preserved.
+ *
+ * Recovery path: if there's no `schedule:` key at all (someone deleted
+ * it), inject a fresh schedule block after the `on:` line. Throws if
+ * `on:` is also missing — refusing to mutate a file we don't recognize.
  */
 export function applyPresetToYaml(yaml: string, preset: SchedulePreset): string {
-  const cronLineRe = /^(\s*)(?:#\s*)?-\s+cron:\s*['"][^'"]+['"].*$/m;
-  const indent = yaml.match(cronLineRe)?.[1] ?? '    ';
+  const lines = yaml.split('\n');
+  const out: string[] = [];
 
-  const newLine =
-    preset === 'off'
-      ? `${indent}# - cron: '0 9 * * *'  # disabled — only workflow_dispatch fires this workflow`
-      : `${indent}- cron: '${PRESET_TO_CRON[preset]}'`;
+  let inSchedule = false;
+  let scheduleIndent = 0;
+  let cronEmitted = false;
+  let foundScheduleKey = false;
 
-  if (cronLineRe.test(yaml)) {
-    return yaml.replace(cronLineRe, newLine);
+  const isCronLine = (line: string): boolean =>
+    /^\s*(?:#\s*)?-\s+cron:\s*['"][^'"]+['"]/.test(line);
+
+  const indentOf = (line: string): number => {
+    const m = line.match(/^(\s*)/);
+    return m ? m[1].length : 0;
+  };
+
+  const canonicalCronLine = (indent: number): string => {
+    const pad = ' '.repeat(indent);
+    return preset === 'off'
+      ? `${pad}# - cron: '0 9 * * *'  # disabled — only workflow_dispatch fires this workflow`
+      : `${pad}- cron: '${PRESET_TO_CRON[preset]}'`;
+  };
+
+  for (const line of lines) {
+    // Open a schedule block.
+    if (!inSchedule && /^\s*schedule:\s*$/.test(line)) {
+      foundScheduleKey = true;
+      inSchedule = true;
+      scheduleIndent = indentOf(line);
+      cronEmitted = false;
+      out.push(line);
+      continue;
+    }
+
+    if (inSchedule) {
+      // Determine if this line is still inside the schedule block. The
+      // block contains anything indented MORE than `schedule:` itself,
+      // plus blank lines (which YAML treats as part of the surrounding
+      // block).
+      const isBlank = line.trim() === '';
+      const stillInside = isBlank || indentOf(line) > scheduleIndent;
+
+      if (!stillInside) {
+        // We've left the schedule block. If we never wrote a canonical
+        // cron (block was empty or only had comments), emit one now so
+        // the file remains valid. Then fall through to handle the
+        // boundary line normally.
+        if (!cronEmitted) {
+          out.push(canonicalCronLine(scheduleIndent + 2));
+          cronEmitted = true;
+        }
+        inSchedule = false;
+        out.push(line);
+        continue;
+      }
+
+      // Inside the schedule block.
+      if (isCronLine(line)) {
+        if (!cronEmitted) {
+          out.push(canonicalCronLine(indentOf(line)));
+          cronEmitted = true;
+        }
+        // Subsequent cron entries — drop them entirely.
+        continue;
+      }
+
+      // Comment / blank / nested non-cron content — preserve.
+      out.push(line);
+      continue;
+    }
+
+    // Outside any schedule block — pass through.
+    out.push(line);
   }
-  // Recovery path: no cron line at all. Inject a schedule block after `on:`.
+
+  // If the file ended while we were still inside the schedule block
+  // and never emitted a cron, emit one now.
+  if (inSchedule && !cronEmitted) {
+    out.push(canonicalCronLine(scheduleIndent + 2));
+  }
+
+  if (foundScheduleKey) {
+    return out.join('\n');
+  }
+
+  // Recovery path: no `schedule:` key found anywhere. Inject a fresh
+  // block after the `on:` line.
   const onLineRe = /^on:\s*$/m;
   if (!onLineRe.test(yaml)) {
     throw new Error('Workflow file has no `on:` block — refusing to mutate.');
   }
   return yaml.replace(
     onLineRe,
-    `on:\n  schedule:\n${newLine}`,
+    `on:\n  schedule:\n${canonicalCronLine(4)}`,
   );
 }
 

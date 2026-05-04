@@ -118,6 +118,71 @@ describe('applyPresetToYaml', () => {
     const broken = 'name: nope\njobs:\n  x:\n    runs-on: ubuntu-latest\n';
     expect(() => applyPresetToYaml(broken, 'daily')).toThrow(/no `on:`/);
   });
+
+  // Reviewer-flagged: GitHub Actions allows multiple on.schedule.cron
+  // entries. The previous single-regex approach left additional crons
+  // active when the user picked "off" or any other preset, so the
+  // workflow kept firing. The schedule block must be normalized as a
+  // unit — exactly one cron line afterward.
+
+  const TWO_CRONS_YAML = TEMPLATE_YAML.replace(
+    "    - cron: '0 9 * * *'",
+    "    - cron: '0 9 * * *'\n    - cron: '0 21 * * *'",
+  );
+
+  it('off: comments out the first cron AND removes additional crons', () => {
+    const out = applyPresetToYaml(TWO_CRONS_YAML, 'off');
+    // Only one cron-shaped line should remain, and it must be the
+    // disabled-comment form. The hand-added second cron (0 21 * * *)
+    // must be gone.
+    const cronLines = out
+      .split('\n')
+      .filter((l) => /-\s+cron:/.test(l));
+    expect(cronLines).toHaveLength(1);
+    expect(cronLines[0]).toMatch(/^\s*#\s*-\s+cron: '0 9 \* \* \*'\s+#\s*disabled/);
+    expect(out).not.toContain('0 21');
+  });
+
+  it('weekly: collapses two active crons to a single canonical line', () => {
+    const out = applyPresetToYaml(TWO_CRONS_YAML, 'weekly');
+    const cronLines = out
+      .split('\n')
+      .filter((l) => /-\s+cron:/.test(l));
+    expect(cronLines).toHaveLength(1);
+    expect(cronLines[0]).toMatch(/^\s*-\s+cron: '0 9 \* \* 1'$/);
+    expect(out).not.toContain('0 21');
+    expect(out).not.toContain("'0 9 * * *'"); // also gone
+  });
+
+  it('daily: collapses mixed (one active + one commented) to a single active line', () => {
+    const mixed = TEMPLATE_YAML.replace(
+      "    - cron: '0 9 * * *'",
+      "    - cron: '0 9 * * *'\n    # - cron: '0 21 * * *'",
+    );
+    const out = applyPresetToYaml(mixed, 'daily');
+    const cronLines = out
+      .split('\n')
+      .filter((l) => /-\s+cron:/.test(l));
+    expect(cronLines).toHaveLength(1);
+    expect(cronLines[0]).toMatch(/^\s*-\s+cron: '0 9 \* \* \*'$/);
+    expect(out).not.toContain('0 21');
+  });
+
+  it('off: preserves user comments inside the schedule block while normalizing crons', () => {
+    const yamlWithCommentBetweenCrons = TEMPLATE_YAML.replace(
+      "    - cron: '0 9 * * *'",
+      "    - cron: '0 9 * * *'\n    # we wanted a second tick because mornings are busy\n    - cron: '0 21 * * *'",
+    );
+    const out = applyPresetToYaml(yamlWithCommentBetweenCrons, 'off');
+    // The user's explanatory comment lives on, even though both crons
+    // are normalized to a single disabled line.
+    expect(out).toContain('we wanted a second tick because mornings are busy');
+    const cronLines = out
+      .split('\n')
+      .filter((l) => /-\s+cron:/.test(l));
+    expect(cronLines).toHaveLength(1);
+    expect(cronLines[0]).toMatch(/^\s*#\s*-\s+cron: '0 9 \* \* \*'\s+#\s*disabled/);
+  });
 });
 
 describe('readBugScoutSchedule', () => {
