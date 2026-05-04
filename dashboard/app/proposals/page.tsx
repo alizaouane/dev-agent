@@ -4,6 +4,16 @@ import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
 import { partitionBySnooze } from '@/lib/scout/snooze';
 import { snoozeProposal, unsnoozeProposal } from '@/lib/actions';
+import {
+  categorizeProposals,
+  categorizationCacheKey,
+  getCachedCategorization,
+  setCachedCategorization,
+  CATEGORY_LABELS,
+  CATEGORY_DESCRIPTIONS,
+  PROPOSAL_CATEGORIES,
+  type ProposalCategory,
+} from '@/lib/categorize-proposals';
 
 const SOURCE_LABEL: Record<ProposalSource, string> = {
   unfinished_plan: 'Unfinished plan item',
@@ -68,6 +78,25 @@ export default async function ProposalsPage(props: {
   const carryOver = active.filter((p) => p.group === 'carry_over');
   const newIdeas = active.filter((p) => p.group === 'new_idea');
 
+  // PM-driven categorization. The LLM groups proposals into themes
+  // (cleanup / implementation / tech_debt / investigation) so the user
+  // can read the queue by topic instead of chronologically. Cached for
+  // 30 min keyed on the proposal-set hash so reloads are free.
+  let categories: Map<string, ProposalCategory> | null = null;
+  let categorizationCacheHit = false;
+  const dashboardKeySet = Boolean(process.env.ANTHROPIC_API_KEY);
+  if (active.length > 0 && dashboardKeySet) {
+    const key = categorizationCacheKey(active);
+    const cached = getCachedCategorization(key);
+    if (cached) {
+      categories = cached;
+      categorizationCacheHit = true;
+    } else {
+      categories = await categorizeProposals(active);
+      if (categories) setCachedCategorization(key, categories);
+    }
+  }
+
   return (
     <div>
       <h1 className="mb-2 text-2xl font-semibold">Proposals</h1>
@@ -104,8 +133,36 @@ export default async function ProposalsPage(props: {
             </>
           )}
         </div>
+      ) : categories ? (
+        <>
+          <p className="mb-4 text-xs text-muted-foreground">
+            Grouped by theme by the PM agent
+            {categorizationCacheHit ? ' (cached, regenerates when the queue changes or after 30 min)' : ''}.
+            Carry-over commitments still rank above new ideas within each theme.
+          </p>
+          {PROPOSAL_CATEGORIES.map((cat) => {
+            const items = active
+              .filter((p) => categories?.get(p.id) === cat)
+              .sort((a, b) => {
+                // Carry-over above new-idea within a category (preserves
+                // the existing "finish what you started" prioritization).
+                if (a.group !== b.group) return a.group === 'carry_over' ? -1 : 1;
+                return 0;
+              });
+            return (
+              <Section
+                key={cat}
+                title={CATEGORY_LABELS[cat]}
+                description={CATEGORY_DESCRIPTIONS[cat]}
+                proposals={items}
+              />
+            );
+          })}
+        </>
       ) : (
         <>
+          {/* Categorization unavailable (no API key, or LLM fail). Fall
+              back to the original carry-over / new-ideas grouping. */}
           <Section
             title="Carry-over commitments"
             description="Work you already started or committed to. Finish these before starting something new."
