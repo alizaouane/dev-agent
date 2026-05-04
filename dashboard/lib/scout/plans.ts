@@ -4,60 +4,70 @@ import type { Octokit } from '@octokit/rest';
 
 import type { Proposal } from './types';
 import { SOURCE_TO_GROUP } from './types';
+import type { MarkdownFile } from './repo-tree';
 
 /**
- * Scan `docs/plans/*.md` in a repo for unchecked `- [ ]` items and emit
- * each one as a Proposal. The first non-empty line of context after the
- * checkbox becomes the description, so the user sees what the unchecked
- * item is actually about — not just the bare checkbox text.
+ * Scan every markdown file in the repo for unchecked `- [ ]` items and
+ * emit each one as a Proposal. The first non-empty line of context after
+ * the checkbox becomes the description, so the user sees what the
+ * unchecked item is actually about — not just the bare checkbox text.
  *
- * **Scope:** carry-over commitments. These are decisions the user already
- * made (the plan was written, presumably approved); finishing them costs
- * less decision-time than evaluating a new pitch. They rank above new
- * scout findings by default.
+ * **Discovery model.** No directory convention required. The shared
+ * `listMarkdownFiles` walk supplies every `.md` in the repo (less
+ * obvious noise like node_modules); we apply a small filename denylist
+ * to avoid surfacing checklist items that almost-never represent
+ * "unfinished work" (release-template checklists in the README,
+ * contribution checklists in CONTRIBUTING, etc.).
  *
- * Implementation notes:
- * - Uses Octokit's tree listing to enumerate plan files lazily; reading
- *   the whole `docs/plans/` directory recursively avoids per-file
- *   discovery round-trips on repos with many plans.
- * - Plans missing the directory entirely are not an error — every repo
- *   that uses dev-agent has the directory configured by `.dev-agent.yml`,
- *   but a fresh consumer may not have populated it yet.
- * - The line-number anchor (`#L42`) lets the user click a proposal and
- *   land on the exact unchecked box in GitHub's web UI.
+ * **Scope.** Carry-over commitments. These are decisions the user
+ * already made (the plan was written, presumably approved); finishing
+ * them costs less decision-time than evaluating a new pitch. They rank
+ * above new scout findings by default.
  */
+
+/**
+ * Filenames we skip even if they contain `- [ ]` items. These files
+ * conventionally include checkboxes that aren't real work items —
+ * release templates, contribution checklists, security policies. Match
+ * is case-insensitive on the basename only.
+ */
+const PLAN_FILENAME_DENYLIST = [
+  'README.md',
+  'CHANGELOG.md',
+  'CONTRIBUTING.md',
+  'CODE_OF_CONDUCT.md',
+  'SECURITY.md',
+  'LICENSE.md',
+  'PULL_REQUEST_TEMPLATE.md',
+  'ISSUE_TEMPLATE.md',
+];
+
+/**
+ * Cap on plan-derived proposals per repo per pass. A long roadmap with
+ * 200 unchecked boxes shouldn't drown the proposal queue; users who
+ * want all of them open the file. Items that fit are surfaced in
+ * tree-order (alphabetical-ish by file, then by line number).
+ */
+const MAX_PLAN_PROPOSALS_PER_REPO = 30;
+
+function isPlanFilenameDenied(filename: string): boolean {
+  const lower = filename.toLowerCase();
+  return PLAN_FILENAME_DENYLIST.some((d) => d.toLowerCase() === lower);
+}
+
 export async function scoutUnfinishedPlans(
   octokit: Octokit,
   owner: string,
   repo: string,
   default_branch: string,
+  mdFiles: MarkdownFile[],
 ): Promise<Proposal[]> {
-  // The plans directory is configured per-repo via `.dev-agent.yml`'s
-  // `artifacts.plans_dir`. The web-app-template ships with `docs/plans`
-  // by default; we hardcode that path here for v1 and add config-driven
-  // discovery in a follow-up if any consumer overrides it.
-  const PLANS_DIR = 'docs/plans';
-
-  let entries: Array<{ path: string; type?: string }>;
-  try {
-    const resp = await octokit.repos.getContent({
-      owner,
-      repo,
-      path: PLANS_DIR,
-      ref: default_branch,
-    });
-    if (!Array.isArray(resp.data)) return [];
-    entries = resp.data
-      .filter((e) => e.type === 'file' && e.path?.endsWith('.md'))
-      .map((e) => ({ path: e.path as string }));
-  } catch {
-    // Missing directory or transient error — degrade silently. The
-    // dashboard shouldn't blow up because one repo doesn't have plans.
-    return [];
-  }
+  const candidates = mdFiles.filter((f) => !isPlanFilenameDenied(f.filename));
+  if (candidates.length === 0) return [];
 
   const out: Proposal[] = [];
-  for (const entry of entries) {
+  for (const entry of candidates) {
+    if (out.length >= MAX_PLAN_PROPOSALS_PER_REPO) break;
     let raw: string;
     try {
       const fileResp = await octokit.repos.getContent({
@@ -72,7 +82,12 @@ export async function scoutUnfinishedPlans(
     } catch {
       continue;
     }
-    out.push(...parseUncheckedItems(owner, repo, default_branch, entry.path, raw));
+    // Cheap pre-filter: skip the file entirely if no `- [ ]` appears
+    // anywhere in it. Avoids parsing files that obviously have no
+    // unchecked items.
+    if (!/- \[\s\]/.test(raw)) continue;
+    const items = parseUncheckedItems(owner, repo, default_branch, entry.path, raw);
+    out.push(...items.slice(0, MAX_PLAN_PROPOSALS_PER_REPO - out.length));
   }
 
   return out;
@@ -125,7 +140,7 @@ export function parseUncheckedItems(
       group: SOURCE_TO_GROUP.unfinished_plan,
       repo: `${owner}/${repo}`,
       title: title.length > 100 ? title.slice(0, 97) + '...' : title,
-      description: `Unchecked item in \`${planSlug}\`${headingPart}, line ${lineNumber}.`,
+      description: `Unchecked item in \`${path}\`${headingPart}, line ${lineNumber}.`,
       url: `https://github.com/${owner}/${repo}/blob/${ref}/${path}#L${lineNumber}`,
       meta: { plan_file: path, line: lineNumber, heading: lastHeading ?? '' },
     });

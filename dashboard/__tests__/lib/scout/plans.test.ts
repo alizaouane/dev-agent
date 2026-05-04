@@ -2,6 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import type { Octokit } from '@octokit/rest';
 
 import { parseUncheckedItems, scoutUnfinishedPlans } from '@/lib/scout/plans';
+import type { MarkdownFile } from '@/lib/scout/repo-tree';
+
+function mdFile(path: string): MarkdownFile {
+  const filename = path.replace(/^.*\//, '');
+  return { path, filename, slug: filename.replace(/\.md$/, '') };
+}
 
 describe('parseUncheckedItems', () => {
   it('extracts unchecked `- [ ]` items with surrounding heading context', () => {
@@ -65,19 +71,9 @@ describe('parseUncheckedItems', () => {
 });
 
 describe('scoutUnfinishedPlans', () => {
-  function mockOctokit(opts: {
-    listing?: Array<{ path: string; type: string }>;
-    files?: Record<string, string>;
-    listingError?: number;
-  }): Octokit {
+  function mockOctokit(files: Record<string, string>): Octokit {
     const getContent = vi.fn(async ({ path }: { path: string }) => {
-      if (path === 'docs/plans') {
-        if (opts.listingError) {
-          throw Object.assign(new Error('boom'), { status: opts.listingError });
-        }
-        return { data: opts.listing ?? [] };
-      }
-      const fileContent = opts.files?.[path];
+      const fileContent = files[path];
       if (fileContent === undefined) {
         throw Object.assign(new Error('Not Found'), { status: 404 });
       }
@@ -91,18 +87,15 @@ describe('scoutUnfinishedPlans', () => {
     return { repos: { getContent } } as unknown as Octokit;
   }
 
-  it('returns proposals from every plan file in docs/plans', async () => {
+  it('walks every supplied md file and emits one proposal per unchecked item', async () => {
     const octokit = mockOctokit({
-      listing: [
-        { path: 'docs/plans/a.md', type: 'file' },
-        { path: 'docs/plans/b.md', type: 'file' },
-      ],
-      files: {
-        'docs/plans/a.md': '- [ ] from a',
-        'docs/plans/b.md': '- [ ] from b\n- [ ] another from b',
-      },
+      'docs/plans/a.md': '- [ ] from a',
+      'notes/b.md': '- [ ] from b\n- [ ] another from b',
     });
-    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main');
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [
+      mdFile('docs/plans/a.md'),
+      mdFile('notes/b.md'),
+    ]);
     expect(proposals).toHaveLength(3);
     expect(proposals.map((p) => p.title).sort()).toEqual([
       'another from b',
@@ -111,22 +104,44 @@ describe('scoutUnfinishedPlans', () => {
     ]);
   });
 
-  it('returns empty array when docs/plans directory is missing', async () => {
-    const octokit = mockOctokit({ listingError: 404 });
-    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main');
+  it('returns empty when given no files', async () => {
+    const octokit = mockOctokit({});
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', []);
     expect(proposals).toEqual([]);
   });
 
-  it('skips non-markdown entries in docs/plans', async () => {
+  it('skips files in the noise denylist (README, CHANGELOG, etc.)', async () => {
     const octokit = mockOctokit({
-      listing: [
-        { path: 'docs/plans/README.md', type: 'file' },
-        { path: 'docs/plans/diagram.png', type: 'file' },
-        { path: 'docs/plans/subdir', type: 'dir' },
-      ],
-      files: { 'docs/plans/README.md': '- [ ] one item' },
+      'README.md': '- [ ] release-template item',
+      'CHANGELOG.md': '- [ ] migration step',
+      'docs/real-plan.md': '- [ ] genuine work',
     });
-    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main');
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [
+      mdFile('README.md'),
+      mdFile('CHANGELOG.md'),
+      mdFile('docs/real-plan.md'),
+    ]);
     expect(proposals).toHaveLength(1);
+    expect(proposals[0].title).toBe('genuine work');
+  });
+
+  it('skips files with no unchecked checkboxes (cheap pre-filter)', async () => {
+    const octokit = mockOctokit({
+      'plain.md': '# Just a doc\n\nProse only, no checkboxes.',
+      'with-tasks.md': '- [ ] real task',
+    });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [
+      mdFile('plain.md'),
+      mdFile('with-tasks.md'),
+    ]);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0].title).toBe('real task');
+  });
+
+  it('caps the number of proposals per repo at 30 to bound noise', async () => {
+    const items = Array.from({ length: 50 }, (_, i) => `- [ ] item ${i}`).join('\n');
+    const octokit = mockOctokit({ 'huge.md': items });
+    const proposals = await scoutUnfinishedPlans(octokit, 'q', 'r', 'main', [mdFile('huge.md')]);
+    expect(proposals.length).toBe(30);
   });
 });
