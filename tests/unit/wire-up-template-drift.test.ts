@@ -48,4 +48,21 @@ describe('wire-up-template embedded copy', () => {
     const normalized = embedded.replace(/\\`/g, '`');
     expect(normalized).toContain(onDisk);
   });
+
+  it('bug-scout workflow on disk matches the embedded TEMPLATE_BUG_SCOUT_WORKFLOW_YML', () => {
+    const onDisk = readFileSync(
+      resolve(tplDir, '.github/workflows/dev-agent-bug-scout.yml'),
+      'utf8',
+    );
+    // Same TS-template-literal escapes as the main workflow:
+    //   `${{` → `\${{` (would otherwise interpolate)
+    //   `` ` `` → `` \` `` (would otherwise close the literal)
+    //   `\$0.30-1.00` → `\\$0.30-1.00` (the dollar sign is escaped to
+    //     prevent template-literal interpolation of `$N`)
+    const normalized = embedded
+      .replace(/\\\$\{\{/g, '${{')
+      .replace(/\\`/g, '`')
+      .replace(/\\\$/g, '$');
+    expect(normalized).toContain(onDisk);
+  });
 });

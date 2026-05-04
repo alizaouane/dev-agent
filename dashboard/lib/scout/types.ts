@@ -19,6 +19,8 @@ export type ProposalSource =
   | 'spec_drift'
   /** Spec in `docs/specs/` with no in-flight or done issue tracking it. */
   | 'pending_spec'
+  /** Issue filed by the bug-scout agent — security/logic/code-smell finding. */
+  | 'bug_scout_finding'
   /** Issue without any `state:*` label — never entered the pipeline. */
   | 'untriaged_issue';
 
@@ -35,6 +37,8 @@ export const SOURCE_TO_GROUP: Record<ProposalSource, ProposalGroup> = {
   stale_blocked_issue: 'carry_over',
   spec_drift: 'carry_over',
   pending_spec: 'carry_over',
+  // Bug findings ARE existing problems — carry-over by nature.
+  bug_scout_finding: 'carry_over',
   untriaged_issue: 'new_idea',
 };
 

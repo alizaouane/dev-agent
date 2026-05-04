@@ -1,0 +1,203 @@
+name: dev-agent · phase-bug-scout
+
+# Phase: bug-scout. Periodically runs an LLM agent against the consumer's
+# repo, looking for security vulnerabilities, broken logic, and likely-bug
+# code smells. Each finding is filed as a GitHub issue with labels
+# `kind:bug-scout` + `state:proposed` so it surfaces on the dashboard's
+# /proposals page.
+#
+# Triggers:
+#   - workflow_call: invoked by the consumer's wrapper (or by the engine
+#     for testing).
+#   - workflow_dispatch: manual button for ad-hoc scans.
+#
+# Cost: each scan is one claude-sonnet-4-6 agent run, typically 10-30 turns
+# reading code. ~$0.30-1.00 per scan. Default cadence (set by the consumer
+# in their wrapper) is weekly.
+#
+# SECURITY: no untrusted strings flow into `run:` blocks via ${{ ... }};
+# event inputs (paths) are forwarded through env vars and only used as
+# positional args. The agent runs with read-only tools (Read/Glob/Grep/
+# Bash) — it cannot mutate the repo.
+
+on:
+  workflow_call:
+    inputs:
+      config_path:
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      focus_paths:
+        description: 'Comma-separated globs to prioritize'
+        required: false
+        type: string
+        default: ''
+      ignore_paths:
+        description: 'Comma-separated globs to skip'
+        required: false
+        type: string
+        default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
+      invocation_mode:
+        required: false
+        type: string
+        default: 'live'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: 'examples/test-repo/.dev-agent.yml'
+      focus_paths:
+        description: 'Globs to prioritize (e.g. lib/auth/**,app/api/**)'
+        required: false
+        type: string
+        default: ''
+      ignore_paths:
+        description: 'Globs to skip'
+        required: false
+        type: string
+        default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
+      invocation_mode:
+        description: 'live (real agent) or stub (no agent — for tests)'
+        required: false
+        type: string
+        default: 'live'
+
+jobs:
+  bug-scout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - run: npm ci
+
+      - name: Convert .dev-agent.yml to JSON for jq
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          jq -e . /tmp/config.json > /dev/null
+
+      - name: Render system prompt
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+          FOCUS_PATHS: ${{ inputs.focus_paths }}
+          IGNORE_PATHS: ${{ inputs.ignore_paths }}
+        run: |
+          set -euo pipefail
+          CONSUMER_ROOT=$(dirname "$CONFIG_PATH")
+          [ "$CONSUMER_ROOT" = "." ] && CONSUMER_ROOT="."
+          export PROMPT_VARS_JSON=$(jq -nc \
+            --arg consumer_root "$CONSUMER_ROOT" \
+            --arg primary_language "$(jq -r '.commands.test // "" | if test("npm|tsx|node") then "typescript" elif test("python|pytest") then "python" else "polyglot" end' /tmp/config.json)" \
+            --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
+            --arg typecheck "$(jq -r '.commands.typecheck // "npm run typecheck"' /tmp/config.json)" \
+            --arg lint "$(jq -r '.commands.lint // ""' /tmp/config.json)" \
+            --arg focus_paths "$FOCUS_PATHS" \
+            --arg ignore_paths "$IGNORE_PATHS" \
+            '{consumer_root:$consumer_root, primary_language:$primary_language, commands:{test:$test, typecheck:$typecheck, lint:(if ($lint|length) > 0 then $lint else null end)}, focus_paths:$focus_paths, ignore_paths:$ignore_paths}')
+          if [ -z "$PROMPT_VARS_JSON" ]; then
+            echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
+            exit 1
+          fi
+          npx tsx lib/cli/render-prompt.ts bug-scout > /tmp/system-prompt.md
+
+      - name: Build agent prompt
+        id: build
+        run: |
+          set -euo pipefail
+          {
+            echo "# Bug-scout scan"
+            echo ""
+            echo "Scan the consumer's repo for real bugs. Read carefully; emit findings only when you're confident."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## System / discipline (read carefully)"
+            echo ""
+            cat /tmp/system-prompt.md
+          } > /tmp/agent-prompt.md
+          echo "prompt_path=/tmp/agent-prompt.md" >> "$GITHUB_OUTPUT"
+
+      - name: Skip live agent (stub mode)
+        if: inputs.invocation_mode == 'stub'
+        run: |
+          echo "stub mode — no agent invocation, no issues filed"
+
+      - name: Run Claude Code (live agent)
+        id: claude
+        if: inputs.invocation_mode == 'live'
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: ${{ steps.build.outputs.prompt_path }}
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite'
+          show_full_output: 'true'
+
+      - name: Parse findings + file issues
+        if: inputs.invocation_mode == 'live'
+        env:
+          EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
+          GH_TOKEN: ${{ github.token }}
+          REPO_OWNER: ${{ github.repository_owner }}
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          RESULT_TEXT=$(jq -r '[.[] | select(.type=="result") | .result // empty] | last // ""' "$EXEC_FILE" 2>/dev/null || echo "")
+          AGENT_JSON=$(printf '%s' "$RESULT_TEXT" | awk '/```json/{flag=1;next} /```/{flag=0} flag' | tr -d '\n')
+          [ -z "$AGENT_JSON" ] && AGENT_JSON='{"findings":[],"summary":"(no JSON output)","scanned_files_estimate":0}'
+
+          FINDING_COUNT=$(printf '%s' "$AGENT_JSON" | jq '.findings | length' 2>/dev/null || echo "0")
+          SUMMARY=$(printf '%s' "$AGENT_JSON" | jq -r '.summary // "(no summary)"' 2>/dev/null || echo "(parse failed)")
+          SCANNED=$(printf '%s' "$AGENT_JSON" | jq -r '.scanned_files_estimate // 0' 2>/dev/null || echo "0")
+
+          echo "Findings: $FINDING_COUNT, scanned ~$SCANNED files"
+          echo "Summary: $SUMMARY"
+
+          printf '%s' "$AGENT_JSON" | jq -c '.findings[]' | while IFS= read -r FINDING; do
+            TITLE=$(printf '%s' "$FINDING" | jq -r '.title')
+            SEV=$(printf '%s' "$FINDING" | jq -r '.severity')
+            CAT=$(printf '%s' "$FINDING" | jq -r '.category')
+            FILE=$(printf '%s' "$FINDING" | jq -r '.file')
+            LINE=$(printf '%s' "$FINDING" | jq -r '.line // ""')
+            DESC=$(printf '%s' "$FINDING" | jq -r '.description')
+            FIX=$(printf '%s' "$FINDING" | jq -r '.suggested_fix')
+
+            ANCHOR="$FILE"
+            if [ -n "$LINE" ] && [ "$LINE" != "null" ]; then
+              ANCHOR="$FILE:$LINE"
+            fi
+
+            BODY=$(printf '**Bug-scout finding**\n\n- Severity: `%s`\n- Category: `%s`\n- Location: `%s`\n\n## Description\n\n%s\n\n## Suggested fix\n\n%s\n\n---\n\nFiled by the dev-agent bug-scout from run %s. To dismiss without acting, close this issue.\n' "$SEV" "$CAT" "$ANCHOR" "$DESC" "$FIX" "$GITHUB_RUN_ID")
+
+            ISSUE_TITLE="[bug-scout/$SEV] $TITLE"
+
+            EXISTING=$(gh issue list --repo "$REPO_OWNER/$REPO_NAME" --state open --search "in:title \"$ISSUE_TITLE\"" --json number --jq '.[0].number' 2>/dev/null || true)
+            if [ -n "$EXISTING" ]; then
+              echo "Skipping duplicate: #$EXISTING (\"$ISSUE_TITLE\")"
+              continue
+            fi
+
+            gh issue create \
+              --repo "$REPO_OWNER/$REPO_NAME" \
+              --title "$ISSUE_TITLE" \
+              --body "$BODY" \
+              --label "kind:bug-scout" \
+              --label "state:proposed" \
+              --label "severity:$SEV" \
+              --label "bug-category:$CAT" || true
+          done

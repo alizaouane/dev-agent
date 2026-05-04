@@ -11,7 +11,12 @@ const PHASE_WORKFLOWS = [
   'phase-promote-to-prod.yml',
   'phase-smoke-verify.yml',
   'phase-rollback.yml',
+  'phase-bug-scout.yml',
 ];
+
+// Workflows that take an `issue_number` input. phase-bug-scout doesn't —
+// it operates on the whole repo, not a specific issue.
+const ISSUE_NUMBER_WORKFLOWS = PHASE_WORKFLOWS.filter((w) => w !== 'phase-bug-scout.yml');
 
 const ALL_REUSABLE = [...PHASE_WORKFLOWS, 'orch-sweep.yml'];
 
@@ -44,7 +49,7 @@ describe('.github/workflows/', () => {
   }
 
   describe('reusable phase workflows', () => {
-    for (const wf of PHASE_WORKFLOWS) {
+    for (const wf of ISSUE_NUMBER_WORKFLOWS) {
       it(`${wf} declares workflow_call with issue_number input`, () => {
         const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
         const parsed = yaml.load(raw) as { on?: { workflow_call?: { inputs?: Record<string, unknown> } } };
