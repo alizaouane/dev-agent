@@ -63,11 +63,11 @@ export default async function NextPage() {
         <Link href="/proposals" className="underline">
           /proposals
         </Link>
-        ) and picks a single thing worth doing. If you disagree, head to{' '}
+        ) and picks a single thing worth doing. If you disagree,{' '}
         <Link href="/intent" className="underline">
-          /intent
+          brainstorm with the PM
         </Link>{' '}
-        to argue with it.
+        to argue it through.
       </p>
 
       {recommendationError ? (
@@ -101,7 +101,7 @@ export default async function NextPage() {
           href="/intent"
           className="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
         >
-          Discuss with PM
+          Brainstorm with PM
         </Link>
         <form action={regenerateRecommendation}>
           <button

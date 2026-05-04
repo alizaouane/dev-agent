@@ -24,9 +24,10 @@ export default async function IntentPage(props: {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-semibold">Drop intent</h1>
+      <h1 className="mb-2 text-2xl font-semibold">Brainstorm with the PM</h1>
       <p className="mb-6 max-w-2xl text-sm text-muted-foreground">
-        Pitch an idea to the PM agent. It reads your repo&apos;s
+        Chat with the PM agent to bring a new idea, sharpen scope, or argue
+        through a tradeoff. It reads your repo&apos;s
         <code className="mx-1">.dev-agent/pm.md</code>
         for context (goals, things to avoid, recent decisions) and pushes back
         before scope creep can take root. When you&apos;re aligned, approve and
