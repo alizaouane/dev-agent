@@ -6,6 +6,7 @@ describe('renderPrompt', () => {
     const out = renderPrompt('implement', {
       spec_path: 'docs/specs/foo.md',
       branch_name: 'feat/bar',
+      issue_number: 42,
       commands: { test: 'npm test', typecheck: 'tsc', lint: 'eslint' },
       guardrails: {
         blocked_paths: ['supabase/migrations/**'],
@@ -13,6 +14,7 @@ describe('renderPrompt', () => {
         max_files_changed: 30,
         max_lines_changed: 800,
       },
+      audit_skills: { pre_pr: [] },
     });
     expect(out).toContain('docs/specs/foo.md');
     expect(out).toContain('feat/bar');
