@@ -494,3 +494,114 @@ export async function approveAndStart(formData: FormData): Promise<void> {
   revalidatePath('/');
   redirect(`/features/${issue.data.number}?repo=${encodeURIComponent(repoFull)}`);
 }
+
+/**
+ * Server Action: open a PR replacing `.dev-agent/pm.md` with the PM's
+ * proposed content. Compounds the PM's value over time — each
+ * meaningful chat can leave the PM smarter for next time without the
+ * user manually editing pm.md.
+ *
+ * Flow:
+ *  1. Verify write permission on the target repo.
+ *  2. Read the current pm.md (used to detect no-op updates and to
+ *     anchor the PR description).
+ *  3. Create branch `chore/pm-md-update-<timestamp>` off the default
+ *     branch. Timestamp suffix avoids collisions when multiple chats
+ *     produce updates within the same minute.
+ *  4. Commit the new file content.
+ *  5. Open a PR with body explaining what the PM proposed.
+ *
+ * Form fields:
+ *  - `repo`        — `owner/name`
+ *  - `new_content` — the full replacement file body (frontmatter + body)
+ *  - `summary`     — one-line summary the PM provided alongside the
+ *                    block, used as the PR title and commit message.
+ *                    Optional; falls back to a generic title.
+ *
+ * @throws if `new_content` is empty after trimming
+ * @throws ForbiddenError if user lacks write perm
+ */
+export async function applyPmMdUpdate(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const repoFull = (formData.get('repo') as string).trim();
+  const newContent = (formData.get('new_content') as string).trim();
+  const summary = ((formData.get('summary') as string) ?? '').trim();
+
+  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+  if (!newContent) throw new Error('new_content is empty — nothing to apply');
+
+  const [owner, repo] = repoFull.split('/');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  // Resolve the default branch tip. If pm.md doesn't exist or the repo
+  // is empty, the PR will create the file fresh.
+  const repoInfo = await octokit.repos.get({ owner, repo });
+  const default_branch = repoInfo.data.default_branch ?? 'main';
+  const ref = await octokit.git.getRef({
+    owner,
+    repo,
+    ref: `heads/${default_branch}`,
+  });
+  const tipSha = ref.data.object.sha;
+
+  // Read the existing pm.md (if any) so the commit can be a true update
+  // — createOrUpdateFileContents requires the current SHA when the file
+  // already exists, otherwise it 422s.
+  let existingSha: string | undefined;
+  try {
+    const existing = await octokit.repos.getContent({
+      owner,
+      repo,
+      path: '.dev-agent/pm.md',
+      ref: default_branch,
+    });
+    if (!Array.isArray(existing.data) && 'sha' in existing.data) {
+      existingSha = existing.data.sha as string;
+    }
+  } catch {
+    // 404: file doesn't exist yet (e.g., wire-up PR still pending).
+    // The commit below will create it.
+  }
+
+  // Branch name with a date suffix so concurrent updates don't collide
+  // and so the PR list is naturally ordered.
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const branchName = `chore/pm-md-update-${stamp}`;
+
+  await octokit.git.createRef({
+    owner,
+    repo,
+    ref: `refs/heads/${branchName}`,
+    sha: tipSha,
+  });
+
+  await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path: '.dev-agent/pm.md',
+    message: summary || 'chore(pm.md): update PM agent memory',
+    content: Buffer.from(newContent, 'utf8').toString('base64'),
+    branch: branchName,
+    sha: existingSha,
+  });
+
+  const prBody = [
+    `Updates \`.dev-agent/pm.md\` with content the PM agent proposed during a brainstorm chat.`,
+    ``,
+    `Triggered by @${session_username} from the dev-agent dashboard.`,
+    ``,
+    `Review the diff carefully — the PM's proposal reflects what it learned from the conversation, but you own the final state of pm.md.`,
+  ].join('\n');
+
+  const pr = await octokit.pulls.create({
+    owner,
+    repo,
+    title: summary || 'chore(pm.md): update PM agent memory',
+    head: branchName,
+    base: default_branch,
+    body: prBody,
+  });
+
+  redirect(pr.data.html_url);
+}

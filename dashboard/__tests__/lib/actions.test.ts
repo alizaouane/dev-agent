@@ -5,6 +5,7 @@ const mockOctokit = {
     getCollaboratorPermissionLevel: vi.fn(),
     getContent: vi.fn(),
     createOrUpdateFileContents: vi.fn(),
+    get: vi.fn(),
   },
   issues: {
     create: vi.fn(),
@@ -371,6 +372,109 @@ describe('approveAndStart', () => {
       '## Agreed scope\n\nA real scope block to clear the converged check.',
     );
     await expect(approveAndStart(fd)).rejects.toThrow(/lacks write/);
+  });
+});
+
+describe('applyPmMdUpdate', () => {
+  it('opens a PR replacing .dev-agent/pm.md with the proposed content', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({
+      data: { default_branch: 'main' },
+    });
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'tip' } } });
+    mockOctokit.repos.getContent.mockResolvedValueOnce({
+      data: { sha: 'old-pm-sha', content: 'irrelevant', encoding: 'base64' },
+    });
+    mockOctokit.git.createRef.mockResolvedValueOnce({});
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({});
+    mockOctokit.pulls.create.mockResolvedValueOnce({
+      data: { html_url: 'https://github.com/q/r/pull/12' },
+    });
+
+    const { applyPmMdUpdate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('new_content', '---\ngoals: {}\n---\n\nUpdated body.');
+    fd.append('summary', 'chore(pm.md): record refund decision');
+
+    try {
+      await applyPmMdUpdate(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:.*\/pull\/12/);
+    }
+
+    // Branch was created off main tip.
+    expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
+      expect.objectContaining({ sha: 'tip' }),
+    );
+    // The branch name carries a date-stamp prefix.
+    const refArg = mockOctokit.git.createRef.mock.calls[0][0];
+    expect(refArg.ref).toMatch(/^refs\/heads\/chore\/pm-md-update-\d{4}-\d{2}-\d{2}T/);
+
+    // File was committed with the existing sha (so the API treats it as
+    // an update rather than a create-conflict).
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '.dev-agent/pm.md',
+        sha: 'old-pm-sha',
+        message: 'chore(pm.md): record refund decision',
+      }),
+    );
+
+    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        head: refArg.ref.replace('refs/heads/', ''),
+        base: 'main',
+        title: 'chore(pm.md): record refund decision',
+      }),
+    );
+  });
+
+  it('creates the file fresh when pm.md does not yet exist on the default branch', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({
+      data: { default_branch: 'main' },
+    });
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'tip' } } });
+    // 404 on getContent — no existing pm.md
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.createRef.mockResolvedValueOnce({});
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({});
+    mockOctokit.pulls.create.mockResolvedValueOnce({
+      data: { html_url: 'https://github.com/q/r/pull/13' },
+    });
+
+    const { applyPmMdUpdate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('new_content', 'fresh content');
+
+    try {
+      await applyPmMdUpdate(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__/);
+    }
+
+    // No `sha` arg means the API will create rather than update.
+    const fileArg = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    expect(fileArg.sha).toBeUndefined();
+  });
+
+  it('rejects empty new_content', async () => {
+    const { applyPmMdUpdate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('new_content', '   ');
+    await expect(applyPmMdUpdate(fd)).rejects.toThrow(/empty/);
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { applyPmMdUpdate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('new_content', 'content');
+    await expect(applyPmMdUpdate(fd)).rejects.toThrow(/lacks write/);
   });
 
   it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
