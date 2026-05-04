@@ -7,6 +7,7 @@ import { scoutBugFindings } from './bug-findings';
 import { scoutCompetitorWatch } from './competitive';
 import { scoutSpecDrift } from './drift';
 import { scoutUnfinishedPlans } from './plans';
+import { listMarkdownFiles } from './repo-tree';
 import { scoutPendingSpecs } from './specs';
 import { scoutUntriagedIssues } from './triage';
 import type { Proposal } from './types';
@@ -25,6 +26,12 @@ export { SOURCE_TO_GROUP } from './types';
  * repos this could be parallelized further with a pLimit, but at v1
  * scout load isn't a hot path (runs on `/proposals` page load, not in
  * a request loop).
+ *
+ * **Shared tree walk.** Both spec + plan scouts auto-discover markdown
+ * files anywhere in the repo (no `docs/specs/` / `docs/plans/`
+ * convention required). We do the recursive tree listing once per
+ * repo and pass the result to both scouts — half the API calls of
+ * having each scout walk independently.
  */
 export async function runAllScouts(
   octokit: Octokit,
@@ -33,11 +40,12 @@ export async function runAllScouts(
   const perRepo = await Promise.all(
     wiredRepos.map(async (r) => {
       try {
+        const mdFiles = await listMarkdownFiles(octokit, r.owner, r.name, r.default_branch);
         const [plans, triage, drift, pendingSpecs, bugFindings, competitive] = await Promise.all([
-          scoutUnfinishedPlans(octokit, r.owner, r.name, r.default_branch),
+          scoutUnfinishedPlans(octokit, r.owner, r.name, r.default_branch, mdFiles),
           scoutUntriagedIssues(octokit, r.owner, r.name),
           scoutSpecDrift(octokit, r.owner, r.name, r.default_branch),
-          scoutPendingSpecs(octokit, r.owner, r.name, r.default_branch),
+          scoutPendingSpecs(octokit, r.owner, r.name, r.default_branch, mdFiles),
           scoutBugFindings(octokit, r.owner, r.name),
           scoutCompetitorWatch(octokit, r.owner, r.name),
         ]);

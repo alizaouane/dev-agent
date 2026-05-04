@@ -4,13 +4,21 @@ import type { Octokit } from '@octokit/rest';
 
 import type { Proposal } from './types';
 import { SOURCE_TO_GROUP } from './types';
+import type { MarkdownFile } from './repo-tree';
 
 /**
- * Enumerate `docs/specs/*.md` and surface each spec as a Proposal —
- * an approved commitment that hasn't been turned into shipped code
+ * Find spec-shaped markdown files in the repo and surface each as a
+ * Proposal — a written design that hasn't been turned into shipped code
  * yet. Specs are upstream of plans and code; once approved they're
  * arguably the highest-signal "what to build next" data the engine
- * has, and they were silently invisible to /proposals before.
+ * has.
+ *
+ * **Discovery model.** No directory convention required. We classify
+ * every `.md` file in the repo (from the shared tree walk) using a
+ * small heuristic — the file is "spec-shaped" if its path or filename
+ * matches one of:
+ *   - filename starts with a date prefix (`YYYY-MM-DD-…`)
+ *   - path contains `/specs/` / `/spec/` / `/design/` / `/rfc/` / `/rfcs/`
  *
  * **Filtering: emit a spec only if no issue currently references it.**
  * The matching heuristic is intentionally simple — search open and
@@ -23,41 +31,44 @@ import { SOURCE_TO_GROUP } from './types';
  * but we don't realize it) hide a commitment forever — worse. The
  * conservative choice is to err toward surfacing.
  */
+
+const DATE_PREFIX_RE = /^\d{4}-\d{2}-\d{2}/;
+const SPEC_PATH_RE = /(^|\/)(specs?|design(?:-docs)?|rfcs?)\//i;
+
+/**
+ * Cap on spec proposals per repo per pass. Specs are usually long-lived
+ * and few; 30 is well above the count any realistic repo carries
+ * unimplemented at once. Avoids drowning the queue if a heuristic match
+ * goes wrong and matches every README in `apps/<service>/README.md`-
+ * style monorepos.
+ */
+const MAX_SPEC_PROPOSALS_PER_REPO = 30;
+
+export function isSpecShaped(file: MarkdownFile): boolean {
+  return DATE_PREFIX_RE.test(file.filename) || SPEC_PATH_RE.test(file.path);
+}
+
 export async function scoutPendingSpecs(
   octokit: Octokit,
   owner: string,
   repo: string,
   default_branch: string,
+  mdFiles: MarkdownFile[],
 ): Promise<Proposal[]> {
-  const SPECS_DIR = 'docs/specs';
+  // We deliberately DO NOT slice the candidate list before the
+  // reference-by-issue filter. If the first 30 spec-shaped files are
+  // all already tracked, an early slice would return zero proposals
+  // even though untracked specs sit just past position 30 in the tree.
+  // The cap is applied to the EMITTED proposal list at the bottom of
+  // this function, after referenced specs have been dropped.
+  const candidates = mdFiles.filter(isSpecShaped);
+  if (candidates.length === 0) return [];
 
-  // Step 1: list spec files.
-  type SpecFile = { slug: string; path: string };
-  let specs: SpecFile[];
-  try {
-    const resp = await octokit.repos.getContent({
-      owner,
-      repo,
-      path: SPECS_DIR,
-      ref: default_branch,
-    });
-    if (!Array.isArray(resp.data)) return [];
-    specs = resp.data
-      .filter((e) => e.type === 'file' && e.path?.endsWith('.md'))
-      .map((e) => {
-        const path = e.path as string;
-        return { path, slug: path.replace(/^.*\//, '').replace(/\.md$/, '') };
-      });
-  } catch {
-    return [];
-  }
-  if (specs.length === 0) return [];
-
-  // Step 2: per-spec, check whether any issue references the slug. We
-  // do this in parallel; per-call failures (rate limits, search index
-  // lag) drop the spec to "no match found" so we err toward surfacing.
+  // Per-spec, check whether any issue references the slug. We do this
+  // in parallel; per-call failures (rate limits, search index lag) drop
+  // the spec to "no match found" so we err toward surfacing.
   const out = await Promise.all(
-    specs.map(async (s) => {
+    candidates.map(async (s) => {
       const referenced = await isSpecReferencedByIssue(octokit, owner, repo, s.slug);
       if (referenced) return null;
 
@@ -77,7 +88,7 @@ export async function scoutPendingSpecs(
     }),
   );
 
-  return out.filter((p): p is Proposal => p !== null);
+  return out.filter((p): p is Proposal => p !== null).slice(0, MAX_SPEC_PROPOSALS_PER_REPO);
 }
 
 /**
