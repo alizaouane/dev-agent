@@ -50,9 +50,54 @@ const PLAN_FILENAME_DENYLIST = [
  */
 const MAX_PLAN_PROPOSALS_PER_REPO = 30;
 
+/**
+ * Threshold above which a single file's unchecked items get rolled up
+ * into ONE proposal ("N unchecked items in <file>") instead of one
+ * proposal per checkbox. Avoids drowning `/proposals` when a single
+ * file has 60 placeholder checkboxes — e.g. a feature-contract template
+ * with a long Acceptance Criteria block.
+ *
+ * 5 is the sweet spot: a normal plan (2-3 unchecked steps left in a
+ * sprint) keeps per-line granularity so the user can deep-link to the
+ * exact line; long files collapse to a single roll-up entry that links
+ * to the file head.
+ */
+const PER_FILE_ROLLUP_THRESHOLD = 5;
+
 function isPlanFilenameDenied(filename: string): boolean {
   const lower = filename.toLowerCase();
   return PLAN_FILENAME_DENYLIST.some((d) => d.toLowerCase() === lower);
+}
+
+/**
+ * Build a single roll-up Proposal that summarizes many unchecked items
+ * in one file. Used when a file has more than `PER_FILE_ROLLUP_THRESHOLD`
+ * items so we don't flood the queue with line-level proposals from a
+ * single source. The user clicks through to the file to see them all.
+ */
+function rollupProposal(
+  owner: string,
+  repo: string,
+  ref: string,
+  path: string,
+  items: Proposal[],
+): Proposal {
+  const planSlug = path.replace(/^.*\//, '').replace(/\.md$/, '');
+  const previewCount = Math.min(3, items.length);
+  const previewTitles = items
+    .slice(0, previewCount)
+    .map((i) => i.title)
+    .join(' · ');
+  return {
+    id: `unfinished_plan:${owner}/${repo}:${planSlug}`,
+    source: 'unfinished_plan',
+    group: SOURCE_TO_GROUP.unfinished_plan,
+    repo: `${owner}/${repo}`,
+    title: `${items.length} unchecked items in ${planSlug}`,
+    description: `${path} — ${previewTitles}${items.length > previewCount ? ` · …` : ''}`,
+    url: `https://github.com/${owner}/${repo}/blob/${ref}/${path}`,
+    meta: { plan_file: path, item_count: items.length, rolled_up: 'true' },
+  };
 }
 
 export async function scoutUnfinishedPlans(
@@ -89,7 +134,17 @@ export async function scoutUnfinishedPlans(
     // hide plans the parser would otherwise pick up.
     if (!/(?:^|\n)\s*(?:[-*]|\d+\.)\s+\[\s\]/.test(raw)) continue;
     const items = parseUncheckedItems(owner, repo, default_branch, entry.path, raw);
-    out.push(...items.slice(0, MAX_PLAN_PROPOSALS_PER_REPO - out.length));
+    if (items.length === 0) continue;
+    if (items.length > PER_FILE_ROLLUP_THRESHOLD) {
+      // Long checklist (e.g. a 60-item feature-contract template). Emit
+      // ONE proposal pointing at the file rather than 60 per-line ones —
+      // the user couldn't realistically triage that many anyway.
+      out.push(rollupProposal(owner, repo, default_branch, entry.path, items));
+    } else {
+      // Short plan — keep per-line granularity so the user can deep-link
+      // to the exact unchecked box in GitHub.
+      out.push(...items.slice(0, MAX_PLAN_PROPOSALS_PER_REPO - out.length));
+    }
   }
 
   return out;
