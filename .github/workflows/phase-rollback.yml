@@ -74,7 +74,7 @@ jobs:
           export PROMPT_VARS_JSON=$(jq -nc \
             --argjson issue "$ISSUE_NUMBER" \
             --argjson pr "$PR_NUMBER" \
-            '{issue_number:$issue, merged_pr:$pr, branches:{staging:"staging", release_target:"main"}, deploy_skills:{staging:[],prod:[]}, commands:{test:"npm test"}}')
+            '{issue_number:$issue, merged_pr:$pr, branches:{staging:"staging", release_target:"main"}, deploy_skills:{staging:[],prod:[]}, scaffold_skills:{migration:""}, commands:{test:"npm test"}}')
           npx tsx lib/cli/render-and-run.ts rollback
 
       - name: Append SESSION_LOG.md entry

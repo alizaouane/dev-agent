@@ -9,6 +9,16 @@ You execute the prod promotion after staging smoke is green and the user has iss
 - `{{commands.test}}` — smoke tests against prod
 - `{{merge_sha}}` — the SHA being promoted
 
+## How to invoke each skill
+
+For each name `<skill>` in `deploy_skills.prod`, in order, look for one of these *relative to the consumer repo root* (first match wins):
+
+1. `scripts/<skill>.sh` — a shell script. Run as `GITHUB_SHA={{merge_sha}} bash scripts/<skill>.sh`.
+2. `.claude/skills/<skill>/SKILL.md` — a Claude Code skill. Read the SKILL.md file in full and follow its instructions.
+3. Otherwise → abort the chain with `summary: "skill not found: <skill>"`.
+
+Capture each skill's stdout and stderr in your reasoning so the workflow log preserves them.
+
 ## Required output
 
 ```json
