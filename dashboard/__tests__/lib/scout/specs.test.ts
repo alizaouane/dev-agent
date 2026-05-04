@@ -144,4 +144,39 @@ describe('scoutPendingSpecs', () => {
     // hide a possibly-pending commitment.
     expect(proposals).toHaveLength(1);
   });
+
+  it('caps proposals AFTER the referenced-by-issue filter, not before (regression)', async () => {
+    // Reviewer-flagged: if the cap is applied to the raw candidate set,
+    // a tree where the first 30 spec-shaped files are all already tracked
+    // would return zero proposals — even though untracked specs sit later
+    // in the tree. Cap must apply to emitted proposals.
+    //
+    // Scenario: 35 spec-shaped files. First 30 ('tracked-N.md') are all
+    // referenced by issues. The remaining 5 ('open-N.md') are untracked.
+    // After the fix, all 5 untracked specs surface despite being past
+    // the previous slice point.
+    const trackedCount = 30;
+    const openCount = 5;
+    const issueSearchByQuery: Record<string, number> = {};
+    const specBodies: Record<string, string> = {};
+    const inputs: ReturnType<typeof mdFile>[] = [];
+
+    for (let i = 0; i < trackedCount; i++) {
+      const slug = `tracked-${i}`;
+      inputs.push(mdFile(`specs/${slug}.md`));
+      issueSearchByQuery[`"${slug}" repo:q/r type:issue`] = 1;
+      specBodies[`specs/${slug}.md`] = `# Tracked ${i}`;
+    }
+    for (let i = 0; i < openCount; i++) {
+      const slug = `open-${i}`;
+      inputs.push(mdFile(`specs/${slug}.md`));
+      issueSearchByQuery[`"${slug}" repo:q/r type:issue`] = 0;
+      specBodies[`specs/${slug}.md`] = `# Open ${i}`;
+    }
+
+    const octokit = mockOctokit({ issueSearchByQuery, specBodies });
+    const proposals = await scoutPendingSpecs(octokit, 'q', 'r', 'main', inputs);
+    expect(proposals).toHaveLength(openCount);
+    expect(proposals.every((p) => String(p.meta?.spec_slug).startsWith('open-'))).toBe(true);
+  });
 });

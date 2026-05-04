@@ -55,7 +55,13 @@ export async function scoutPendingSpecs(
   default_branch: string,
   mdFiles: MarkdownFile[],
 ): Promise<Proposal[]> {
-  const candidates = mdFiles.filter(isSpecShaped).slice(0, MAX_SPEC_PROPOSALS_PER_REPO);
+  // We deliberately DO NOT slice the candidate list before the
+  // reference-by-issue filter. If the first 30 spec-shaped files are
+  // all already tracked, an early slice would return zero proposals
+  // even though untracked specs sit just past position 30 in the tree.
+  // The cap is applied to the EMITTED proposal list at the bottom of
+  // this function, after referenced specs have been dropped.
+  const candidates = mdFiles.filter(isSpecShaped);
   if (candidates.length === 0) return [];
 
   // Per-spec, check whether any issue references the slug. We do this
@@ -82,7 +88,7 @@ export async function scoutPendingSpecs(
     }),
   );
 
-  return out.filter((p): p is Proposal => p !== null);
+  return out.filter((p): p is Proposal => p !== null).slice(0, MAX_SPEC_PROPOSALS_PER_REPO);
 }
 
 /**
