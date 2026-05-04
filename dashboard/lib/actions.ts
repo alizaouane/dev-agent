@@ -13,14 +13,25 @@ import { evictRecommendationsForUser } from './next-cache';
 
 /**
  * Extract the "Agreed scope" section from the PM agent's final message.
- * The PM is prompted to end with `## Agreed scope\n\n<...>` when the
- * user has converged on something to build. Returns null if no such
- * section is present (which means the user clicked Approve too early).
+ * Tolerant of minor PM-emission variations:
+ *   - 2+ leading hashes (`##`, `###`)
+ *   - case insensitive (`Agreed Scope`, `AGREED SCOPE`)
+ *   - optional trailing punctuation (`Agreed scope:`, `Agreed scope.`)
+ *   - extra whitespace around the heading
+ *
+ * Body extraction stops at the next `## `-or-deeper heading so a later
+ * `## pm.md update` block doesn't get accidentally swallowed into the
+ * scope. Returns null if no such section is present.
  */
 function extractAgreedScope(pmMessage: string): string | null {
-  const match = pmMessage.match(/##\s*Agreed scope\s*\n([\s\S]*?)$/i);
-  if (!match) return null;
-  const body = match[1].trim();
+  const headingRe = /^#{2,}\s*Agreed\s+Scope\s*[:\-—]?\s*$/im;
+  const headingMatch = pmMessage.match(headingRe);
+  if (!headingMatch || headingMatch.index === undefined) return null;
+  const after = pmMessage.slice(headingMatch.index + headingMatch[0].length);
+  // Stop at the next H2-or-deeper heading (so unrelated trailing
+  // sections like `## pm.md update` don't bleed into the scope).
+  const stopMatch = after.match(/^#{2,}\s+\S/m);
+  const body = (stopMatch && stopMatch.index !== undefined ? after.slice(0, stopMatch.index) : after).trim();
   return body.length > 0 ? body : null;
 }
 

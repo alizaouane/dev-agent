@@ -132,7 +132,11 @@ export function PmChat({
   const isStreaming = status === 'streaming' || status === 'submitted';
   const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant');
   const lastAssistantText = lastAssistantMessage ? extractText(lastAssistantMessage) : '';
-  const hasAgreedScope = /##\s*Agreed scope/i.test(lastAssistantText);
+  // Mirror lib/actions.ts extractAgreedScope's heading regex so the
+  // button activates exactly when the server-side parser will find a
+  // scope. Minor heading variations (extra hashes, trailing colon,
+  // capitalization) shouldn't strand the user with a disabled button.
+  const hasAgreedScope = /^#{2,}\s*Agreed\s+Scope\s*[:\-—]?\s*$/im.test(lastAssistantText);
   const proposedPmMd = lastAssistantText ? extractPmMdUpdate(lastAssistantText) : null;
   const [pmUpdateErr, setPmUpdateErr] = useState<string | null>(null);
   const [applyingPmUpdate, startPmUpdateTransition] = useTransition();

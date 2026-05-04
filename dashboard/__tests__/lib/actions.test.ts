@@ -317,6 +317,75 @@ describe('approveAndStart', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
+  it('accepts heading variations: extra hashes, capitalization, trailing punctuation', async () => {
+    mockOctokit.issues.create.mockResolvedValue({ data: { number: 100 } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
+
+    const { approveAndStart } = await import('@/lib/actions');
+    const variations = [
+      '### AGREED SCOPE\n\nbuild the thing.',
+      '## Agreed Scope:\n\nbuild the thing.',
+      '## Agreed scope —\n\nbuild the thing.',
+    ];
+    for (const variant of variations) {
+      mockOctokit.issues.create.mockClear();
+      const fd = new FormData();
+      fd.append('repo', 'q/r');
+      fd.append('title', 'X');
+      fd.append('pm_final_message', variant);
+      try {
+        await approveAndStart(fd);
+      } catch (e) {
+        // redirect
+        if (!(e instanceof Error) || !e.message.includes('NEXT_REDIRECT') && !e.message.includes('__redirect__')) throw e;
+      }
+      expect(mockOctokit.issues.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.stringContaining('build the thing'),
+        }),
+      );
+    }
+  });
+
+  it("stops scope extraction at the next H2-or-deeper heading (e.g. ## pm.md update doesn't bleed in)", async () => {
+    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 101 } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { approveAndStart } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('title', 'X');
+    fd.append(
+      'pm_final_message',
+      [
+        'Sounds good.',
+        '',
+        '## Agreed scope',
+        '',
+        'Build the refund button.',
+        '',
+        '## pm.md update',
+        '',
+        '```markdown',
+        '---',
+        'goals: { q2: "x" }',
+        '---',
+        '```',
+      ].join('\n'),
+    );
+    try {
+      await approveAndStart(fd);
+    } catch (e) {
+      // redirect
+      if (!(e instanceof Error) || (!e.message.includes('NEXT_REDIRECT') && !e.message.includes('__redirect__'))) throw e;
+    }
+    const body = mockOctokit.issues.create.mock.calls[0][0].body as string;
+    expect(body).toContain('Build the refund button.');
+    // The pm.md update block must NOT be in the issue body.
+    expect(body).not.toContain('pm.md update');
+    expect(body).not.toContain('goals: { q2:');
+  });
+
   it('refuses without write permission on the target repo', async () => {
     mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
       data: { permission: 'read' },
