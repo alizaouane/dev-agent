@@ -8,11 +8,19 @@ import { PmChat } from '@/components/pm-chat';
  * idea, the PM agent pushes back / surfaces conflicts / scopes it, and
  * when they're aligned the user clicks "Approve and start" to file the
  * issue + dispatch the implement workflow.
+ *
+ * Query params:
+ *  - `prefill` — initial text to seed the chat input with (e.g. when
+ *    the user clicks a proposal on `/proposals`).
+ *  - `repo` — `owner/name` to pre-select in the repo dropdown.
  */
-export default async function IntentPage() {
+export default async function IntentPage(props: {
+  searchParams: Promise<{ prefill?: string; repo?: string }>;
+}) {
   const octokit = await getOctokit();
   const repos = wiredRepos(await listAllowedRepos(octokit));
   const dashboardKeySet = Boolean(process.env.ANTHROPIC_API_KEY);
+  const { prefill, repo: prefillRepo } = await props.searchParams;
 
   return (
     <div>
@@ -38,7 +46,11 @@ export default async function IntentPage() {
         </div>
       ) : null}
 
-      <PmChat repos={repos} />
+      <PmChat
+        repos={repos}
+        initialInput={prefill ?? ''}
+        initialRepo={prefillRepo ?? null}
+      />
     </div>
   );
 }
