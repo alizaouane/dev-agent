@@ -13,7 +13,11 @@ const mockOctokit = {
     createComment: vi.fn(),
     update: vi.fn(),
   },
-  actions: { createWorkflowDispatch: vi.fn() },
+  actions: {
+    createWorkflowDispatch: vi.fn(),
+    getRepoPublicKey: vi.fn(),
+    createOrUpdateRepoSecret: vi.fn(),
+  },
   git: {
     getRef: vi.fn(),
     createRef: vi.fn(),
@@ -24,6 +28,13 @@ const mockOctokit = {
     create: vi.fn(),
   },
 };
+
+// Stub pushRepoSecret entirely — the real implementation is exercised
+// in gh-secrets.test.ts. Here we just want to assert that wireUpRepo
+// calls (or skips) it correctly based on env state.
+vi.mock('@/lib/gh-secrets', () => ({
+  pushRepoSecret: vi.fn(),
+}));
 
 vi.mock('@/lib/gh', () => ({
   getOctokit: vi.fn(() => Promise.resolve(mockOctokit)),
@@ -150,6 +161,16 @@ describe('wireUpRepo', () => {
     return Object.assign(new Error('Not Found'), { status: 404 });
   }
 
+  // Reset env between tests so secret-push paths don't leak across.
+  const ORIGINAL_KEY = process.env.ANTHROPIC_API_KEY;
+  beforeEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+  afterEach(() => {
+    if (ORIGINAL_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = ORIGINAL_KEY;
+  });
+
   it('opens a PR on a normal repo (default branch tip exists)', async () => {
     // Repo is not yet wired up, has commits on main, no existing wire-up PR.
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
@@ -264,5 +285,110 @@ describe('wireUpRepo', () => {
     fd.append('owner', 'q');
     fd.append('repo', 'r');
     await expect(wireUpRepo(fd)).rejects.toThrow(/lacks write/);
+  });
+
+  it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
+    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    mockOctokit.git.createRef.mockResolvedValueOnce({});
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+    mockOctokit.pulls.create.mockResolvedValueOnce({
+      data: { html_url: 'https://github.com/q/r/pull/1' },
+    });
+
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    (pushRepoSecret as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    fd.append('default_branch', 'main');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__/);
+    }
+
+    expect(pushRepoSecret).toHaveBeenCalledWith({
+      octokit: expect.anything(),
+      owner: 'q',
+      repo: 'r',
+      name: 'ANTHROPIC_API_KEY',
+      value: 'sk-ant-test',
+    });
+    // PR body should reflect the auto-push.
+    const prBody = mockOctokit.pulls.create.mock.calls[0][0].body as string;
+    expect(prBody).toMatch(/pushed to this repo's Actions secrets automatically/);
+  });
+
+  it('falls back gracefully when ANTHROPIC_API_KEY is not configured on the dashboard', async () => {
+    // No env var set.
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
+    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    mockOctokit.git.createRef.mockResolvedValueOnce({});
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+    mockOctokit.pulls.create.mockResolvedValueOnce({
+      data: { html_url: 'https://github.com/q/r/pull/2' },
+    });
+
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    (pushRepoSecret as ReturnType<typeof vi.fn>).mockClear();
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    fd.append('default_branch', 'main');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__/);
+    }
+
+    // pushRepoSecret should NOT have been called — no key to push.
+    expect(pushRepoSecret).not.toHaveBeenCalled();
+    // PR body should explain the manual step.
+    const prBody = mockOctokit.pulls.create.mock.calls[0][0].body as string;
+    expect(prBody).toMatch(/NOT auto-pushed/);
+  });
+
+  it('still opens the PR when secret-push fails (e.g. user lacks admin perm)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'abc' } } });
+    mockOctokit.pulls.list.mockResolvedValueOnce({ data: [] });
+    mockOctokit.git.createRef.mockResolvedValueOnce({});
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+    mockOctokit.pulls.create.mockResolvedValueOnce({
+      data: { html_url: 'https://github.com/q/r/pull/3' },
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    (pushRepoSecret as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      Object.assign(new Error('Resource not accessible by integration'), { status: 403 }),
+    );
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    fd.append('default_branch', 'main');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__/);
+    }
+
+    // PR was still opened despite the secret-push failure.
+    expect(mockOctokit.pulls.create).toHaveBeenCalled();
+    // PR body explains the failure so the user knows to paste manually.
+    const prBody = mockOctokit.pulls.create.mock.calls[0][0].body as string;
+    expect(prBody).toMatch(/Tried to push.*automatically but failed/);
+    warnSpy.mockRestore();
   });
 });
