@@ -3,6 +3,7 @@ import 'server-only';
 import type { Octokit } from '@octokit/rest';
 
 import type { RepoInfo } from '../repos';
+import { scoutSpecDrift } from './drift';
 import { scoutUnfinishedPlans } from './plans';
 import { scoutUntriagedIssues } from './triage';
 import type { Proposal } from './types';
@@ -29,11 +30,12 @@ export async function runAllScouts(
   const perRepo = await Promise.all(
     wiredRepos.map(async (r) => {
       try {
-        const [plans, triage] = await Promise.all([
+        const [plans, triage, drift] = await Promise.all([
           scoutUnfinishedPlans(octokit, r.owner, r.name, r.default_branch),
           scoutUntriagedIssues(octokit, r.owner, r.name),
+          scoutSpecDrift(octokit, r.owner, r.name, r.default_branch),
         ]);
-        return [...plans, ...triage];
+        return [...plans, ...triage, ...drift];
       } catch (err) {
         console.warn(`runAllScouts: failed for ${r.owner}/${r.name}:`, err);
         return [];
