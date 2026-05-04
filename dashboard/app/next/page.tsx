@@ -1,31 +1,14 @@
 import Link from 'next/link';
 import { getOctokit, getCurrentUsername } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
-import { runAllScouts, type Proposal } from '@/lib/scout';
+import { runAllScouts } from '@/lib/scout';
 import { recommendNext } from '@/lib/recommend-next';
-
-/**
- * In-memory TTL cache for the PM recommendation, keyed by username +
- * the set of proposal ids currently in the queue.
- *
- * Why in-memory: Next.js' `unstable_cache` runs callbacks in an
- * isolated scope that can't access cookies/headers (so it can't reach
- * the user's session via `getOctokit()`). The single-user deployment
- * shape here means a module-scope Map is enough to dedupe rapid
- * refreshes within a warm Vercel instance — cold starts evict, which
- * is fine. Multi-tenant later: swap to a session-aware backing store.
- */
-type CacheEntry = { recommendation: string; expires: number };
-const RECOMMENDATION_CACHE = new Map<string, CacheEntry>();
-const RECOMMENDATION_TTL_MS = 30 * 60 * 1000;
-
-function cacheKey(username: string, proposals: Proposal[]): string {
-  // Sort to make the key invariant under proposal-list order changes.
-  // Two visits with the same set of items dedupe even if scout sources
-  // run in different orders.
-  const ids = [...proposals.map((p) => p.id)].sort().join('|');
-  return `${username}::${ids}`;
-}
+import {
+  getCachedRecommendation,
+  recommendationCacheKey,
+  setCachedRecommendation,
+} from '@/lib/next-cache';
+import { regenerateRecommendation } from '@/lib/actions';
 
 /**
  * "What should I do next?" — PM agent picks a single highest-value item
@@ -57,19 +40,15 @@ export default async function NextPage() {
   let cacheHit = false;
 
   const username = await getCurrentUsername();
-  const key = cacheKey(username, proposals);
-  const now = Date.now();
-  const cached = RECOMMENDATION_CACHE.get(key);
-  if (cached && cached.expires > now) {
-    recommendation = cached.recommendation;
+  const key = recommendationCacheKey(username, proposals);
+  const cached = getCachedRecommendation(key);
+  if (cached) {
+    recommendation = cached;
     cacheHit = true;
   } else {
     try {
       recommendation = await recommendNext({ octokit, wiredRepos: repos, proposals });
-      RECOMMENDATION_CACHE.set(key, {
-        recommendation,
-        expires: now + RECOMMENDATION_TTL_MS,
-      });
+      setCachedRecommendation(key, recommendation);
     } catch (err) {
       recommendationError = err instanceof Error ? err.message : String(err);
     }
@@ -117,13 +96,21 @@ export default async function NextPage() {
         </>
       ) : null}
 
-      <div className="mt-6">
+      <div className="mt-6 flex flex-wrap gap-2">
         <Link
           href="/intent"
           className="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
         >
           Discuss with PM
         </Link>
+        <form action={regenerateRecommendation}>
+          <button
+            type="submit"
+            className="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
+          >
+            Regenerate (uses tokens)
+          </button>
+        </form>
       </div>
     </div>
   );

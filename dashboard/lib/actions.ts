@@ -9,6 +9,7 @@ import { ForbiddenError } from './errors';
 import { WIRE_UP_FILES } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
 import { snoozeProposalId, unsnoozeProposalId } from './scout/snooze';
+import { evictRecommendationsForUser } from './next-cache';
 
 /**
  * Extract the "Agreed scope" section from the PM agent's final message.
@@ -545,4 +546,18 @@ export async function unsnoozeProposal(formData: FormData): Promise<void> {
   if (!proposalId) throw new Error('proposal_id required');
   unsnoozeProposalId(username, proposalId);
   revalidatePath('/proposals');
+}
+
+/**
+ * Server Action: drop the user's cached /next recommendations and
+ * revalidate so the next page load runs a fresh PM call.
+ *
+ * Used by the "Regenerate" button on /next when the user wants a
+ * fresh recommendation without waiting for the 30-min TTL or for
+ * the proposal queue to change.
+ */
+export async function regenerateRecommendation(): Promise<void> {
+  const username = await getCurrentUsername();
+  evictRecommendationsForUser(username);
+  revalidatePath('/next');
 }
