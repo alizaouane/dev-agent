@@ -197,9 +197,9 @@ export async function abandonFeature(formData: FormData): Promise<void> {
 }
 
 /**
- * Server Action: dispatch the `phase-rollback.yml` workflow on `main` for a
- * given issue, then post an audit comment so the timeline records who
- * triggered it.
+ * Server Action: dispatch the `phase-rollback.yml` workflow on the
+ * consumer's default branch for a given issue, then post an audit
+ * comment so the timeline records who triggered it.
  *
  * Inputs are typed by the workflow's `workflow_dispatch.inputs` schema, so
  * this is not a shell-injection vector — the workflow consumes them as
@@ -217,11 +217,17 @@ export async function dispatchRollback(formData: FormData): Promise<void> {
   const [owner, repo] = repoFull.split('/');
   await assertWritePermission(octokit, owner, repo, session_username);
 
+  // Dispatch on the consumer's actual default branch (which is staging
+  // in the dev-agent two-branch model). Hardcoding `'main'` here used to
+  // 404 on any consumer whose default branch was named anything else.
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
   await octokit.actions.createWorkflowDispatch({
     owner,
     repo,
     workflow_id: 'phase-rollback.yml',
-    ref: 'main',
+    ref: default_branch,
     inputs: { issue_number: String(issue_number), invocation_mode: 'live' },
   });
   await octokit.issues.createComment({
@@ -384,6 +390,15 @@ export async function approveAndStart(formData: FormData): Promise<void> {
   const [owner, repo] = repoFull.split('/');
   await assertWritePermission(octokit, owner, repo, session_username);
 
+  // Resolve the consumer's actual default branch BEFORE creating the
+  // issue — that way if `repos.get` 403s (perms) or the repo is missing,
+  // we fail fast without leaving an orphan issue. The default branch is
+  // staging in the dev-agent two-branch model; hardcoding `'main'` used
+  // to 404 the workflow_dispatch on any consumer that named theirs
+  // differently (which was the production-blocking bug.)
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
   // Issue body doubles as the spec the implement agent reads. Phase 2a's
   // "spec_path = placeholder, treat issue body as spec" path handles the
   // missing docs/specs/<slug>.md case; we lean on that here.
@@ -410,7 +425,7 @@ export async function approveAndStart(formData: FormData): Promise<void> {
     owner,
     repo,
     workflow_id: 'dev-agent.yml',
-    ref: 'main',
+    ref: default_branch,
     inputs: {
       phase: 'implement',
       issue_number: String(issue.data.number),

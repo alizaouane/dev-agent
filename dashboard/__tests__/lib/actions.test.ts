@@ -152,6 +152,7 @@ describe('abandonFeature', () => {
 
 describe('dispatchRollback', () => {
   it('dispatches phase-rollback.yml with the right inputs', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     const { dispatchRollback } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
@@ -162,6 +163,21 @@ describe('dispatchRollback', () => {
         workflow_id: 'phase-rollback.yml',
         inputs: { issue_number: '5', invocation_mode: 'live' },
       }),
+    );
+  });
+
+  it("dispatches on the repo's actual default branch, not a hardcoded 'main' (regression)", async () => {
+    // Production bug: the rollback dispatch hardcoded ref='main', which
+    // 404s on any consumer whose default branch is named differently.
+    // Use 'develop' so a future regression to 'main' fails this test loudly.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
+    const { dispatchRollback } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    await dispatchRollback(fd);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'develop' }),
     );
   });
 });
@@ -358,6 +374,7 @@ describe('wireUpRepo', () => {
 
 describe('approveAndStart', () => {
   it('files an issue with the agreed scope and dispatches the implement workflow', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 77 } });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
 
@@ -413,6 +430,32 @@ describe('approveAndStart', () => {
     );
   });
 
+  it("dispatches on the repo's actual default branch, not a hardcoded 'main' (regression)", async () => {
+    // Production bug: the implement dispatch hardcoded ref='main',
+    // which 404s on any consumer whose default branch is named
+    // differently. Use 'develop' so a future regression to 'main'
+    // fails this test loudly.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
+    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 99 } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { approveAndStart } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('title', 'X');
+    fd.append('pm_final_message', '## Agreed scope\n\nbuild it.');
+
+    try {
+      await approveAndStart(fd);
+    } catch {
+      // redirect throws by design.
+    }
+
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'develop' }),
+    );
+  });
+
   it('refuses when the PM message has no "## Agreed scope" section', async () => {
     const { approveAndStart } = await import('@/lib/actions');
     const fd = new FormData();
@@ -426,6 +469,7 @@ describe('approveAndStart', () => {
   });
 
   it('accepts heading variations: extra hashes, capitalization, trailing punctuation', async () => {
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
     mockOctokit.issues.create.mockResolvedValue({ data: { number: 100 } });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
 
@@ -456,6 +500,7 @@ describe('approveAndStart', () => {
   });
 
   it("stops scope extraction at the next H2-or-deeper heading (e.g. ## pm.md update doesn't bleed in)", async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 101 } });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
 
