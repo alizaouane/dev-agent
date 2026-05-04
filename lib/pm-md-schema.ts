@@ -38,6 +38,23 @@ export const pmDecisionSchema = z.object({
 export type PmDecision = z.infer<typeof pmDecisionSchema>;
 
 /**
+ * One competitor the PM should keep an eye on. The competitive scout
+ * emits a "go review them" proposal per entry; the user clicks
+ * "Discuss with PM" to dig in. Snooze handles re-surfacing noise.
+ *
+ * We store URL + name only at v1. Per-competitor `last_reviewed`
+ * date or hash-of-content checks are reasonable future enhancements
+ * if surfacing-every-load becomes annoying despite snoozing.
+ */
+export const pmCompetitorSchema = z.object({
+  name: z.string().min(1),
+  url: z.string().url(),
+  notes: z.string().optional(),
+});
+
+export type PmCompetitor = z.infer<typeof pmCompetitorSchema>;
+
+/**
  * Frontmatter fields the PM agent reads to make ranking decisions.
  *
  * `goals` is keyed by an arbitrary slug (the user picks — "q2_2026",
@@ -50,6 +67,8 @@ export const pmFrontmatterSchema = z.object({
   goals: z.record(z.string(), z.string()).optional(),
   avoid: z.array(z.string()).optional(),
   recent_decisions: z.array(pmDecisionSchema).optional(),
+  /** Competitors the user wants the PM to watch. */
+  competitors: z.array(pmCompetitorSchema).optional(),
   /** ISO-8601 date — when the user (or PM) last touched the file. */
   last_updated: z
     .string()

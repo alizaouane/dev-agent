@@ -21,6 +21,8 @@ export type ProposalSource =
   | 'pending_spec'
   /** Issue filed by the bug-scout agent — security/logic/code-smell finding. */
   | 'bug_scout_finding'
+  /** Competitor declared in pm.md frontmatter — surfaced as a "review them" prompt. */
+  | 'competitor_watch'
   /** Issue without any `state:*` label — never entered the pipeline. */
   | 'untriaged_issue';
 
@@ -39,6 +41,7 @@ export const SOURCE_TO_GROUP: Record<ProposalSource, ProposalGroup> = {
   pending_spec: 'carry_over',
   // Bug findings ARE existing problems — carry-over by nature.
   bug_scout_finding: 'carry_over',
+  competitor_watch: 'new_idea',
   untriaged_issue: 'new_idea',
 };
 
