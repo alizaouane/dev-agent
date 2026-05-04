@@ -1,7 +1,9 @@
 import Link from 'next/link';
-import { getOctokit } from '@/lib/gh';
+import { getCurrentUsername, getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
+import { partitionBySnooze } from '@/lib/scout/snooze';
+import { snoozeProposal, unsnoozeProposal } from '@/lib/actions';
 
 const SOURCE_LABEL: Record<ProposalSource, string> = {
   unfinished_plan: 'Unfinished plan item',
@@ -21,13 +23,23 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
  *     issue reports, future scout sources).
  *
  * Each proposal links to the underlying GitHub artifact (plan file,
- * issue, etc.) and offers a "Discuss with PM" button that pre-loads
- * the brainstorm chat with the proposal text so the user can decide
- * whether to ship it.
+ * issue, etc.) and offers two affordances:
+ *  - **Discuss with PM** → pre-loads /intent with this proposal as the
+ *    pitch. Use when you want to engage with it.
+ *  - **Snooze 7d** → moves the proposal to a collapsed "Snoozed" section
+ *    so it stops appearing on every page load. Use when you've decided
+ *    "not now" but don't want to dismiss the underlying artifact.
+ *
+ * Query params:
+ *  - `?show_snoozed=1` — render the snoozed section (default hidden)
  */
-export default async function ProposalsPage() {
+export default async function ProposalsPage(props: {
+  searchParams: Promise<{ show_snoozed?: string }>;
+}) {
   const octokit = await getOctokit();
   const repos = wiredRepos(await listAllowedRepos(octokit));
+  const { show_snoozed } = await props.searchParams;
+  const showSnoozed = show_snoozed === '1';
 
   if (repos.length === 0) {
     return (
@@ -47,9 +59,11 @@ export default async function ProposalsPage() {
     );
   }
 
+  const username = await getCurrentUsername();
   const proposals = await runAllScouts(octokit, repos);
-  const carryOver = proposals.filter((p) => p.group === 'carry_over');
-  const newIdeas = proposals.filter((p) => p.group === 'new_idea');
+  const { active, snoozed } = partitionBySnooze(username, proposals);
+  const carryOver = active.filter((p) => p.group === 'carry_over');
+  const newIdeas = active.filter((p) => p.group === 'new_idea');
 
   return (
     <div>
@@ -59,13 +73,33 @@ export default async function ProposalsPage() {
         {repos.length} wired-up{' '}
         {repos.length === 1 ? 'repo' : 'repos'}. Carry-over commitments rank above new ideas —
         finishing what&apos;s already in motion is usually higher leverage than starting
-        something new.
+        something new. Snooze anything you&apos;ve decided &ldquo;not now&rdquo; on to keep
+        the list tight.
       </p>
 
-      {proposals.length === 0 ? (
+      {active.length === 0 ? (
         <div className="rounded-md border border-border bg-card p-6 text-center text-sm text-muted-foreground">
-          Nothing in the queue. Either you&apos;re caught up — or the PM doesn&apos;t see
-          enough signal yet (no plans with unchecked items, no untriaged issues).
+          Nothing in the active queue.
+          {snoozed.length > 0 ? (
+            <>
+              {' '}
+              {snoozed.length} snoozed{' '}
+              {snoozed.length === 1 ? 'proposal' : 'proposals'} —{' '}
+              <Link
+                href="/proposals?show_snoozed=1"
+                className="underline"
+              >
+                review them
+              </Link>
+              .
+            </>
+          ) : (
+            <>
+              {' '}
+              Either you&apos;re caught up — or the PM doesn&apos;t see enough signal yet
+              (no plans with unchecked items, no untriaged issues).
+            </>
+          )}
         </div>
       ) : (
         <>
@@ -81,6 +115,31 @@ export default async function ProposalsPage() {
           />
         </>
       )}
+
+      {snoozed.length > 0 ? (
+        <div className="mt-10 border-t border-border pt-6">
+          <div className="mb-4 flex items-center justify-between">
+            <p className="text-sm text-muted-foreground">
+              {snoozed.length} snoozed{' '}
+              {snoozed.length === 1 ? 'proposal' : 'proposals'}.
+            </p>
+            <Link
+              href={showSnoozed ? '/proposals' : '/proposals?show_snoozed=1'}
+              className="text-sm underline"
+            >
+              {showSnoozed ? 'Hide snoozed' : 'Show snoozed'}
+            </Link>
+          </div>
+          {showSnoozed ? (
+            <Section
+              title="Snoozed"
+              description="Hidden until you un-snooze or the 7-day timer expires."
+              proposals={snoozed}
+              snoozedView
+            />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -89,10 +148,12 @@ function Section({
   title,
   description,
   proposals,
+  snoozedView = false,
 }: {
   title: string;
   description: string;
   proposals: Proposal[];
+  snoozedView?: boolean;
 }) {
   if (proposals.length === 0) return null;
   return (
@@ -103,7 +164,10 @@ function Section({
       <p className="mb-4 text-sm text-muted-foreground">{description}</p>
       <ul className="divide-y divide-border rounded-md border border-border">
         {proposals.map((p) => (
-          <li key={p.id} className="flex flex-col gap-2 p-4 sm:flex-row sm:items-start sm:justify-between">
+          <li
+            key={p.id}
+            className="flex flex-col gap-2 p-4 sm:flex-row sm:items-start sm:justify-between"
+          >
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-2">
                 <span className="rounded bg-muted px-2 py-0.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
@@ -121,13 +185,36 @@ function Section({
               </a>
               <p className="mt-1 text-sm text-muted-foreground">{p.description}</p>
             </div>
-            <div className="shrink-0">
-              <Link
-                href={`/intent?prefill=${encodeURIComponent(buildPmPrefill(p))}&repo=${encodeURIComponent(p.repo)}`}
-                className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
-              >
-                Discuss with PM
-              </Link>
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {snoozedView ? (
+                <form action={unsnoozeProposal}>
+                  <input type="hidden" name="proposal_id" value={p.id} />
+                  <button
+                    type="submit"
+                    className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+                  >
+                    Un-snooze
+                  </button>
+                </form>
+              ) : (
+                <>
+                  <Link
+                    href={`/intent?prefill=${encodeURIComponent(buildPmPrefill(p))}&repo=${encodeURIComponent(p.repo)}`}
+                    className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+                  >
+                    Discuss with PM
+                  </Link>
+                  <form action={snoozeProposal}>
+                    <input type="hidden" name="proposal_id" value={p.id} />
+                    <button
+                      type="submit"
+                      className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+                    >
+                      Snooze 7d
+                    </button>
+                  </form>
+                </>
+              )}
             </div>
           </li>
         ))}
