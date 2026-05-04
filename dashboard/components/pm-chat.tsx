@@ -33,11 +33,26 @@ import { approveAndStart } from '@/lib/actions';
  * on the client. Reloading the page resets the chat — persistence
  * across sessions is intentionally Phase 3.2.5, not v1.
  */
-export function PmChat({ repos }: { repos: RepoInfo[] }) {
+export function PmChat({
+  repos,
+  initialInput = '',
+  initialRepo = null,
+}: {
+  repos: RepoInfo[];
+  initialInput?: string;
+  initialRepo?: string | null;
+}) {
+  // Pre-select the repo from the URL if it's actually wired up — otherwise
+  // fall back to the first wired repo. Defends against query-param tampering
+  // and stale links to repos that have since been unwired.
+  const initialRepoMatch =
+    initialRepo && repos.some((r) => `${r.owner}/${r.name}` === initialRepo)
+      ? initialRepo
+      : null;
   const [repo, setRepo] = useState(
-    repos[0] ? `${repos[0].owner}/${repos[0].name}` : '',
+    initialRepoMatch ?? (repos[0] ? `${repos[0].owner}/${repos[0].name}` : ''),
   );
-  const [input, setInput] = useState('');
+  const [input, setInput] = useState(initialInput);
   const [title, setTitle] = useState('');
   const [approveErr, setApproveErr] = useState<string | null>(null);
   const [approving, startApproveTransition] = useTransition();
