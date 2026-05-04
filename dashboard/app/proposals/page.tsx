@@ -10,6 +10,7 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
   stale_blocked_issue: 'Stale blocked issue',
   spec_drift: 'Spec/code drift',
   pending_spec: 'Pending spec',
+  recurring_ci_failure: 'Recurring CI failure',
   untriaged_issue: 'Untriaged issue',
 };
 
