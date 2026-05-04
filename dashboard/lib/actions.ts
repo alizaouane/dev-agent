@@ -218,26 +218,41 @@ export async function dispatchRollback(formData: FormData): Promise<void> {
 }
 
 /**
- * Server Action: open a PR against `owner/repo` that adds the dev-agent
- * onboarding files (.dev-agent.yml + .github/workflows/dev-agent.yml).
+ * Server Action: wire up dev-agent on `owner/repo` by committing the
+ * onboarding files directly to the default branch.
+ *
+ * Files dropped:
+ *  - .dev-agent.yml
+ *  - .github/workflows/dev-agent.yml
+ *  - .dev-agent/pm.md
  *
  * Flow:
- *  1. Verify the user has write permission on the target repo.
- *  2. Resolve the default branch's tip commit.
- *  3. Check for an existing onboarding PR — if one is already open from
- *     `chore/wire-up-dev-agent`, redirect to it (idempotent on retries).
- *  4. Create a new branch `chore/wire-up-dev-agent` from the default tip.
- *  5. Use createOrUpdateFileContents for each WIRE_UP_FILES entry. We
- *     don't pre-check whether the file exists — if it does, the API
- *     returns 422 and the action surfaces the conflict to the caller.
- *  6. Open the PR with a clear body explaining the next steps.
+ *  1. Verify the user has write permission.
+ *  2. Pre-check: if .dev-agent.yml already exists on the default
+ *     branch, bail out (the repo is already wired up).
+ *  3. Push the dashboard's ANTHROPIC_API_KEY into the consumer's
+ *     Actions secrets (if the dashboard env has it).
+ *  4. Commit each WIRE_UP_FILES entry directly to the default branch.
+ *     `createOrUpdateFileContents` without a `branch` arg targets the
+ *     repo default; it also handles the empty-repo case by creating
+ *     the initial commit + branch ref.
+ *  5. Redirect back to /repos so the user lands somewhere actionable
+ *     in the dashboard, not on a github.com page.
+ *
+ * **No PR is opened.** The wire-up files are well-tested in the
+ * engine repo, the user is the only reviewer, and a PR for two
+ * config files just adds friction. If the consumer's default branch
+ * is protected (requires PRs), `createOrUpdateFileContents` will 422
+ * and the error surfaces in the wire-up button's inline error state
+ * — the user can either relax protection or manually drop the
+ * template files from `examples/web-app-template/`.
  *
  * Form fields:
  *  - `owner` — repo owner (org or user)
  *  - `repo`  — repo name
+ *  - `default_branch` — defaults to `main` if absent
  *
- * @throws Error if the repo already has .dev-agent.yml on the default branch
- *   (the user should be using the wired flow, not re-wiring).
+ * @throws Error if the repo already has .dev-agent.yml on the default branch.
  * @throws ForbiddenError if user lacks write perm.
  */
 export async function wireUpRepo(formData: FormData): Promise<void> {
@@ -251,8 +266,8 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
   await assertWritePermission(octokit, owner, repo, session_username);
 
   // Defensive: if the repo already has .dev-agent.yml on its default branch,
-  // bail out. The user is on /repos which derived `wired_up` server-side,
-  // so this is mostly a guard against TOCTOU races, not a UX path.
+  // bail out. /repos derives `wired_up` server-side so this is mostly a
+  // TOCTOU guard.
   try {
     await octokit.repos.getContent({ owner, repo, path: '.dev-agent.yml', ref: default_branch });
     throw new Error(`${owner}/${repo} is already wired up`);
@@ -262,26 +277,12 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
     // 404 is the happy path: file doesn't exist, proceed.
   }
 
-  // Resolve the default branch tip — needed as the parent for the new branch.
-  // Empty repos (no initial commit) 404 here; we fall back to direct commits
-  // on the default branch since there's nothing to PR against anyway.
-  let tipSha: string | undefined;
-  try {
-    const ref = await octokit.git.getRef({ owner, repo, ref: `heads/${default_branch}` });
-    tipSha = ref.data.object.sha;
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status !== 404) throw err;
-  }
-
-  // Try to push the dashboard's ANTHROPIC_API_KEY into the consumer repo's
-  // Actions secrets so the user doesn't have to paste it manually. We do
-  // this BEFORE creating files / opening the PR so the PR body can honestly
-  // reflect whether the secret is already in place. Failures here are
-  // non-fatal: we just fall back to the manual instruction in the PR body.
+  // Push the dashboard's ANTHROPIC_API_KEY into the consumer repo's Actions
+  // secrets so the user doesn't have to paste it manually. Failures (e.g.,
+  // user has write but not admin perm — secrets require admin) are non-
+  // fatal; we log and continue. The user will see a workflow run fail later
+  // with a missing-secret error if push didn't succeed.
   const dashboardKey = process.env.ANTHROPIC_API_KEY;
-  let secretPushed: 'pushed' | 'skipped-no-dashboard-key' | 'failed' = 'skipped-no-dashboard-key';
-  let secretPushError: string | undefined;
   if (dashboardKey) {
     try {
       await pushRepoSecret({
@@ -291,78 +292,18 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
         name: 'ANTHROPIC_API_KEY',
         value: dashboardKey,
       });
-      secretPushed = 'pushed';
     } catch (err) {
-      // Most likely a 403 if the user has write but not admin perm on the
-      // repo — secrets require admin. Don't block the wire-up; surface the
-      // failure in the PR body so the user knows to paste manually.
-      secretPushed = 'failed';
-      secretPushError = err instanceof Error ? err.message : String(err);
-      console.warn(`pushRepoSecret failed for ${owner}/${repo}:`, err);
+      console.warn(`wireUpRepo: pushRepoSecret failed for ${owner}/${repo}:`, err);
     }
   }
 
-  if (tipSha === undefined) {
-    // Empty-repo onboarding path: commit each template file directly to the
-    // default branch. Without a `branch` parameter, createOrUpdateFileContents
-    // targets the repo's default branch and creates the initial commit + ref
-    // if needed. There's no PR — the repo had no history to compare against.
-    for (const f of WIRE_UP_FILES) {
-      await octokit.repos.createOrUpdateFileContents({
-        owner,
-        repo,
-        path: f.path,
-        message: `chore(dev-agent): add ${f.path}`,
-        content: Buffer.from(f.content, 'utf8').toString('base64'),
-      });
-    }
-    revalidatePath('/repos');
-    redirect(`https://github.com/${owner}/${repo}`);
-  }
-
-  const wireBranch = 'chore/wire-up-dev-agent';
-
-  // Idempotency: if a wire-up PR is already open from this branch, redirect
-  // there rather than failing or duplicating work.
-  const existing = await octokit.pulls.list({
-    owner,
-    repo,
-    head: `${owner}:${wireBranch}`,
-    state: 'open',
-    per_page: 1,
-  });
-  if (existing.data.length > 0) {
-    redirect(existing.data[0].html_url);
-  }
-
-  // Create the branch (or reset if it exists from a prior aborted run).
-  try {
-    await octokit.git.createRef({
-      owner,
-      repo,
-      ref: `refs/heads/${wireBranch}`,
-      sha: tipSha,
-    });
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status === 422) {
-      // Branch already exists — fast-forward it to the default tip so the
-      // file commits below land on a clean base.
-      await octokit.git.updateRef({
-        owner,
-        repo,
-        ref: `heads/${wireBranch}`,
-        sha: tipSha,
-        force: true,
-      });
-    } else {
-      throw err;
-    }
-  }
-
-  // Commit each template file. createOrUpdateFileContents is one commit per
-  // file — that's fine here (two files); a tree+commit dance would be needed
-  // only for larger payloads.
+  // Direct-commit each template file to the default branch. Without a
+  // `branch` arg, createOrUpdateFileContents targets the repo's default
+  // and handles both populated and empty repos uniformly.
+  // ESLint disable: per-file commits are intentionally serial — Octokit's
+  // createOrUpdateFileContents takes a branch HEAD lock per call, so
+  // parallel calls would race on the same branch ref.
+  // eslint-disable-next-line no-restricted-syntax
   for (const f of WIRE_UP_FILES) {
     await octokit.repos.createOrUpdateFileContents({
       owner,
@@ -370,47 +311,15 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
       path: f.path,
       message: `chore(dev-agent): add ${f.path}`,
       content: Buffer.from(f.content, 'utf8').toString('base64'),
-      branch: wireBranch,
     });
   }
 
-  // Secret-status line in the PR body adapts based on what actually
-  // happened during the wire-up. Honesty matters here — silently
-  // claiming the secret was set when push failed would leave the user
-  // chasing a "missing ANTHROPIC_API_KEY" workflow failure later.
-  const secretLine =
-    secretPushed === 'pushed'
-      ? `- ✅ \`ANTHROPIC_API_KEY\` was pushed to this repo's Actions secrets automatically. No paste needed.`
-      : secretPushed === 'failed'
-        ? `- ⚠️ Tried to push \`ANTHROPIC_API_KEY\` automatically but failed (${secretPushError ?? 'see logs'}). Add it manually: Settings → Secrets and variables → Actions.`
-        : `- ℹ️ \`ANTHROPIC_API_KEY\` was NOT auto-pushed (the dashboard's own env var is unset). Add it as a repo secret: Settings → Secrets and variables → Actions.`;
-
-  const prBody = [
-    `Wires up [dev-agent](https://github.com/alizaouane/dev-agent) on this repo.`,
-    ``,
-    `**What this PR does:**`,
-    `- Adds \`.dev-agent.yml\` (config: which commands to run, which paths to never touch, cost caps).`,
-    `- Adds \`.github/workflows/dev-agent.yml\` (calls dev-agent's reusable workflows pinned at \`@v1\`).`,
-    secretLine,
-    ``,
-    `**Next steps after merge:**`,
-    `1. Tune \`.dev-agent.yml\` for your stack (commands, deploy_skills, guardrails).`,
-    `2. File a feature issue, then trigger the agent: \`gh workflow run dev-agent.yml -f phase=implement -f issue_number=<N>\`.`,
-    ``,
-    `Triggered by @${session_username} from the dev-agent dashboard.`,
-  ].join('\n');
-
-  const pr = await octokit.pulls.create({
-    owner,
-    repo,
-    title: 'chore: wire up dev-agent',
-    head: wireBranch,
-    base: default_branch,
-    body: prBody,
-  });
+  // Suppress "unused" on session_username — kept here in case we want to
+  // audit-log the wire-up later.
+  void session_username;
 
   revalidatePath('/repos');
-  redirect(pr.data.html_url);
+  redirect('/repos');
 }
 
 /**

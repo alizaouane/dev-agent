@@ -54,7 +54,7 @@ export default async function ReposPage() {
           />
           <RepoSection
             title={`Available to wire up (${unwired.length})`}
-            description="These repos are accessible to your GitHub token but don't have dev-agent yet. Click a repo to open a PR that adds the template config."
+            description="These repos are accessible to your GitHub token but don't have dev-agent yet. Wire-up commits the template config + workflow directly to the default branch — no PR review noise."
             repos={unwired}
             wired={false}
           />
