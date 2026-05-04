@@ -7,8 +7,9 @@ import {
   readPmNotesFromRepo,
   renderPmSystemPrompt,
 } from '@/lib/pm-prompt';
+import { buildPmTools } from '@/lib/pm-tools';
 import { anthropic } from '@ai-sdk/anthropic';
-import { convertToModelMessages, streamText, type UIMessage } from 'ai';
+import { convertToModelMessages, stepCountIs, streamText, type UIMessage } from 'ai';
 
 /**
  * Streaming chat with the PM agent. The browser POSTs `{ messages, repo }`
@@ -90,10 +91,24 @@ export async function POST(req: Request) {
 
   const modelMessages = await convertToModelMessages(messages);
 
+  // Read-only tools that let the PM browse the repo on demand instead
+  // of asking the user to type out repo facts. The PM uses tools when
+  // the question requires grounding it doesn't have (e.g. "what does
+  // this repo do?" or "what's in CLAUDE.md line 114?"). All tools are
+  // server-side Octokit calls under the user's existing auth — no new
+  // permissions, no sandbox.
+  //
+  // stopWhen: stepCountIs(8) bounds the tool-loop depth. Most turns
+  // need 1–3 tool calls; 8 is generous headroom for a multi-file dive
+  // without runaway cost.
+  const tools = buildPmTools({ octokit, repo });
+
   const result = streamText({
     model: anthropic('claude-opus-4-7'),
     system: systemPrompt,
     messages: modelMessages,
+    tools,
+    stopWhen: stepCountIs(8),
   });
 
   return result.toUIMessageStreamResponse();

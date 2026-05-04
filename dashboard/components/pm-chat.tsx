@@ -131,7 +131,7 @@ export function PmChat({
 
   const isStreaming = status === 'streaming' || status === 'submitted';
   const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant');
-  const lastAssistantText = lastAssistantMessage ? extractText(lastAssistantMessage) : '';
+  const lastAssistantText = lastAssistantMessage ? extractMessageText(lastAssistantMessage) : '';
   // Mirror lib/actions.ts extractAgreedScope's heading regex so the
   // button activates exactly when the server-side parser will find a
   // scope. Minor heading variations (extra hashes, trailing colon,
@@ -264,7 +264,7 @@ export function PmChat({
                 <div className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
                   {m.role === 'user' ? 'You' : 'PM'}
                 </div>
-                <div className="whitespace-pre-wrap leading-relaxed">{extractText(m)}</div>
+                <MessageBody message={m} />
               </div>
             ))
           )}
@@ -373,12 +373,100 @@ export function PmChat({
 }
 
 /**
- * UIMessage in AI SDK v6 stores content as a `parts` array of typed
- * fragments (text, reasoning, tool calls, ...). Pull just the text.
+ * Pull the concatenated text from a UIMessage's parts. Used by the
+ * approve-and-start flow to extract the "Agreed scope" block from the
+ * PM's last response. Tool calls and reasoning are skipped.
  */
-function extractText(m: UIMessage): string {
+function extractMessageText(m: UIMessage): string {
   return m.parts
     .filter((p): p is { type: 'text'; text: string } => p.type === 'text')
     .map((p) => p.text)
     .join('');
+}
+
+/**
+ * UIMessage in AI SDK v6 stores content as a `parts` array of typed
+ * fragments. Render text fragments as prose and tool-call fragments as
+ * compact telemetry lines so the user can see what the PM is reading
+ * (e.g. "🔍 read README.md") without dropping into a debug panel.
+ */
+function MessageBody({ message }: { message: UIMessage }) {
+  return (
+    <div className="flex flex-col gap-2">
+      {message.parts.map((part, i) => {
+        if (part.type === 'text') {
+          return (
+            <div
+              key={`${message.id}-${i}`}
+              className="whitespace-pre-wrap leading-relaxed"
+            >
+              {(part as { text: string }).text}
+            </div>
+          );
+        }
+        if (typeof part.type === 'string' && part.type.startsWith('tool-')) {
+          return <ToolCallLine key={`${message.id}-${i}`} part={part as unknown as ToolPart} />;
+        }
+        // Other part types (reasoning, source, etc.) — silent for now.
+        return null;
+      })}
+    </div>
+  );
+}
+
+type ToolPart = {
+  type: string; // "tool-read_file" etc.
+  state?: 'input-streaming' | 'input-available' | 'output-available' | 'output-error';
+  input?: unknown;
+  output?: unknown;
+  errorText?: string;
+};
+
+/**
+ * Render a single tool call as a one-line telemetry hint. We pick the
+ * most-useful argument per tool (e.g. the path for read_file, the
+ * query for search_code) so the user sees what the PM is actually
+ * looking at, not a generic "tool ran" string.
+ */
+function ToolCallLine({ part }: { part: ToolPart }) {
+  const toolName = part.type.replace(/^tool-/, '');
+  const summary = describeToolCall(toolName, part.input);
+  const failed = part.state === 'output-error';
+  const pending = part.state === 'input-streaming' || part.state === 'input-available';
+  return (
+    <div
+      className={
+        failed
+          ? 'flex items-center gap-2 rounded bg-destructive/10 px-2 py-1 font-mono text-xs text-destructive'
+          : 'flex items-center gap-2 rounded bg-muted/40 px-2 py-1 font-mono text-xs text-muted-foreground'
+      }
+    >
+      <span aria-hidden>{pending ? '⋯' : failed ? '⚠' : '🔍'}</span>
+      <span className="truncate">{summary}</span>
+    </div>
+  );
+}
+
+function describeToolCall(toolName: string, input: unknown): string {
+  if (typeof input !== 'object' || input === null) return toolName;
+  const args = input as Record<string, unknown>;
+  switch (toolName) {
+    case 'read_file': {
+      const range = args.range as { start?: number; end?: number } | undefined;
+      const rangeText = range && range.start && range.end ? ` (lines ${range.start}–${range.end})` : '';
+      return `read ${args.path}${rangeText}`;
+    }
+    case 'list_directory':
+      return `list ${args.path || '/'}`;
+    case 'search_code':
+      return `search "${args.query}"${args.path_glob ? ` in ${args.path_glob}` : ''}`;
+    case 'read_recent_commits':
+      return `read recent commits${args.limit ? ` (${args.limit})` : ''}`;
+    case 'read_pipeline':
+      return 'read in-flight pipeline';
+    case 'read_proposals':
+      return 'read /proposals queue';
+    default:
+      return toolName;
+  }
 }
