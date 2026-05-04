@@ -233,6 +233,47 @@ describe('setBugScoutSchedule', () => {
   });
 });
 
+describe('triggerUnfinishedWorkScan', () => {
+  it('rejects bad input (missing /)', async () => {
+    const { triggerUnfinishedWorkScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'just-a-name');
+    await expect(triggerUnfinishedWorkScan(fd)).rejects.toThrow(/owner\/name format/);
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { triggerUnfinishedWorkScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    await expect(triggerUnfinishedWorkScan(fd)).rejects.toThrow(/lacks write/);
+  });
+
+  it('dispatches the unfinished-work-scout workflow on the repo default branch', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({
+      data: { default_branch: 'develop' },
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { triggerUnfinishedWorkScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    await triggerUnfinishedWorkScan(fd);
+
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        workflow_id: 'dev-agent-unfinished-work-scout.yml',
+        ref: 'develop',
+        inputs: {},
+      }),
+    );
+  });
+});
+
 function notFound() {
   return Object.assign(new Error('Not Found'), { status: 404 });
 }
@@ -257,7 +298,7 @@ describe('wireUpRepo', () => {
 
     // All three template files committed without a `branch` param, so they
     // land on the repo's default branch.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(4);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(5);
     for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
       expect(call[0].branch).toBeUndefined();
     }
@@ -286,7 +327,7 @@ describe('wireUpRepo', () => {
       expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(4);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(5);
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
@@ -598,7 +639,7 @@ describe('applyPmMdUpdate', () => {
       value: 'sk-ant-test',
     });
     // Files were committed directly to the default branch (no PR flow).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(4);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(5);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
@@ -623,7 +664,7 @@ describe('applyPmMdUpdate', () => {
 
     expect(pushRepoSecret).not.toHaveBeenCalled();
     // Files still committed even without the secret.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(4);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(5);
   });
 
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
@@ -649,7 +690,7 @@ describe('applyPmMdUpdate', () => {
     }
 
     // The wire-up still landed all three files; only the secret push failed.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(4);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(5);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

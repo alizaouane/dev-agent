@@ -65,4 +65,16 @@ describe('wire-up-template embedded copy', () => {
       .replace(/\\\$/g, '$');
     expect(normalized).toContain(onDisk);
   });
+
+  it('unfinished-work-scout workflow on disk matches the embedded TEMPLATE_UNFINISHED_WORK_SCOUT_WORKFLOW_YML', () => {
+    const onDisk = readFileSync(
+      resolve(tplDir, '.github/workflows/dev-agent-unfinished-work-scout.yml'),
+      'utf8',
+    );
+    const normalized = embedded
+      .replace(/\\\$\{\{/g, '${{')
+      .replace(/\\`/g, '`')
+      .replace(/\\\$/g, '$');
+    expect(normalized).toContain(onDisk);
+  });
 });

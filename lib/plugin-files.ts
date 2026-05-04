@@ -26,6 +26,7 @@ export const EXPECTED_PROMPTS = [
   'drift-check',
   'pm',
   'bug-scout',
+  'unfinished-work-scout',
 ] as const;
 
 export type ExpectedCommand = (typeof EXPECTED_COMMANDS)[number];

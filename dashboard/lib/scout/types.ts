@@ -21,6 +21,14 @@ export type ProposalSource =
   | 'pending_spec'
   /** Issue filed by the bug-scout agent — security/logic/code-smell finding. */
   | 'bug_scout_finding'
+  /**
+   * Issue filed by the unfinished-work scout LLM — stubs, half-shipped
+   * features, abandoned migrations, untracked specs, skipped tests.
+   * Distinct from the heuristic `unfinished_plan` source: the LLM uses
+   * judgment to find things regex can't (e.g. a stub buried in a service
+   * file, not in a checkbox list).
+   */
+  | 'unfinished_work_finding'
   /** Competitor declared in pm.md frontmatter — surfaced as a "review them" prompt. */
   | 'competitor_watch'
   /** Issue without any `state:*` label — never entered the pipeline. */
@@ -41,6 +49,9 @@ export const SOURCE_TO_GROUP: Record<ProposalSource, ProposalGroup> = {
   pending_spec: 'carry_over',
   // Bug findings ARE existing problems — carry-over by nature.
   bug_scout_finding: 'carry_over',
+  // Unfinished work the LLM found is, by definition, in-flight: code
+  // that was started and abandoned. Carry-over.
+  unfinished_work_finding: 'carry_over',
   competitor_watch: 'new_idea',
   untriaged_issue: 'new_idea',
 };
