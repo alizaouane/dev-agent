@@ -8,7 +8,11 @@ import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
 import { WIRE_UP_FILES } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
-import { snoozeProposalId, unsnoozeProposalId } from './scout/snooze';
+import {
+  parseRepoFromProposalId,
+  snoozeProposalPersistent,
+  unsnoozeProposalPersistent,
+} from './scout/snooze';
 import { evictRecommendationsForUser } from './next-cache';
 import {
   SCHEDULE_PRESETS,
@@ -571,32 +575,58 @@ export async function applyPmMdUpdate(formData: FormData): Promise<void> {
 
 /**
  * Server Action: snooze a proposal so it stops appearing on /proposals
- * for ~a week. In-memory store; no consumer-repo write.
+ * for ~a week. Writes to the consumer repo's `.dev-agent/pm.md`
+ * frontmatter `snoozed_proposals` list, so the snooze survives Vercel
+ * cold starts (the in-memory Map this used to be evaporated on every
+ * cold start, so triage compounded zero).
+ *
+ * Routing: the proposal id encodes `<source>:<owner>/<repo>:<key>`. We
+ * parse owner/repo and write to that repo's pm.md.
  *
  * Form fields:
  *  - `proposal_id` — the stable id from the Proposal type
  */
 export async function snoozeProposal(formData: FormData): Promise<void> {
-  const username = await getCurrentUsername();
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
   const proposalId = ((formData.get('proposal_id') as string) ?? '').trim();
   if (!proposalId) throw new Error('proposal_id required');
-  snoozeProposalId(username, proposalId);
+
+  const route = parseRepoFromProposalId(proposalId);
+  if (!route) {
+    throw new Error(
+      `cannot snooze: proposal id "${proposalId}" doesn't include owner/repo`,
+    );
+  }
+  await assertWritePermission(octokit, route.owner, route.repo, session_username);
+
+  await snoozeProposalPersistent(octokit, proposalId);
   revalidatePath('/proposals');
 }
 
 /**
  * Server Action: undo a snooze (used by the "Show snoozed" view's
- * Un-snooze button). Idempotent — succeeds even if the entry doesn't
- * exist anymore (e.g., expired before the user clicked).
+ * Un-snooze button). Idempotent — succeeds even if the entry isn't
+ * there. Like `snoozeProposal`, this writes the consumer's pm.md.
  *
  * Form fields:
  *  - `proposal_id`
  */
 export async function unsnoozeProposal(formData: FormData): Promise<void> {
-  const username = await getCurrentUsername();
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
   const proposalId = ((formData.get('proposal_id') as string) ?? '').trim();
   if (!proposalId) throw new Error('proposal_id required');
-  unsnoozeProposalId(username, proposalId);
+
+  const route = parseRepoFromProposalId(proposalId);
+  if (!route) {
+    throw new Error(
+      `cannot unsnooze: proposal id "${proposalId}" doesn't include owner/repo`,
+    );
+  }
+  await assertWritePermission(octokit, route.owner, route.repo, session_username);
+
+  await unsnoozeProposalPersistent(octokit, proposalId);
   revalidatePath('/proposals');
 }
 

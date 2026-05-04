@@ -55,6 +55,28 @@ export const pmCompetitorSchema = z.object({
 export type PmCompetitor = z.infer<typeof pmCompetitorSchema>;
 
 /**
+ * One snoozed proposal — the user has decided "not now" and doesn't
+ * want to see it on `/proposals` until `expires` passes.
+ *
+ * Persisting in `pm.md` frontmatter rather than a separate store means
+ * the snooze survives Vercel cold starts (the in-memory Map that was
+ * here pre-2026-05-05 evaporated on every cold start, so triage
+ * compounded zero). It's also legible — the user can hand-edit pm.md
+ * to bulk-unsnooze.
+ *
+ * `id` is the full proposal id (`<source>:<owner>/<repo>:<key>`) — the
+ * server action parses owner/repo from the id to route the write to
+ * the correct repo's pm.md.
+ */
+export const snoozedProposalSchema = z.object({
+  id: z.string().min(1),
+  /** ISO-8601 date (`YYYY-MM-DD`) when the snooze expires. */
+  expires: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD'),
+});
+
+export type SnoozedProposal = z.infer<typeof snoozedProposalSchema>;
+
+/**
  * Frontmatter fields the PM agent reads to make ranking decisions.
  *
  * `goals` is keyed by an arbitrary slug (the user picks — "q2_2026",
@@ -69,6 +91,8 @@ export const pmFrontmatterSchema = z.object({
   recent_decisions: z.array(pmDecisionSchema).optional(),
   /** Competitors the user wants the PM to watch. */
   competitors: z.array(pmCompetitorSchema).optional(),
+  /** Active snoozes — proposals the user said "not now" to. Self-pruning: writers drop expired entries on every snooze/unsnooze. */
+  snoozed_proposals: z.array(snoozedProposalSchema).optional(),
   /** ISO-8601 date — when the user (or PM) last touched the file. */
   last_updated: z
     .string()

@@ -1,8 +1,8 @@
 import Link from 'next/link';
-import { getCurrentUsername, getOctokit } from '@/lib/gh';
+import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
-import { partitionBySnooze } from '@/lib/scout/snooze';
+import { loadSnoozeMap, partitionBySnooze } from '@/lib/scout/snooze';
 import { snoozeProposal, unsnoozeProposal } from '@/lib/actions';
 import {
   categorizeProposals,
@@ -73,9 +73,15 @@ export default async function ProposalsPage(props: {
     );
   }
 
-  const username = await getCurrentUsername();
-  const proposals = await runAllScouts(octokit, repos);
-  const { active, snoozed } = partitionBySnooze(username, proposals);
+  // Run scouts + load persistent snoozes in parallel — both pay
+  // network for ~the same few hundred ms; serial would double the wait.
+  // Snoozes are read from each consumer repo's `.dev-agent/pm.md`
+  // frontmatter so they survive Vercel cold starts.
+  const [proposals, snoozeMap] = await Promise.all([
+    runAllScouts(octokit, repos),
+    loadSnoozeMap(octokit, repos),
+  ]);
+  const { active, snoozed } = partitionBySnooze(proposals, snoozeMap);
   const carryOver = active.filter((p) => p.group === 'carry_over');
   const newIdeas = active.filter((p) => p.group === 'new_idea');
 
