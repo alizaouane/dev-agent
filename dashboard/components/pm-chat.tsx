@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useEffect, useState, useTransition } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, type UIMessage } from 'ai';
 import { Button } from '@/components/ui/button';
@@ -15,6 +15,7 @@ import {
 } from '@/components/ui/select';
 import type { RepoInfo } from '@/lib/repos';
 import { approveAndStart } from '@/lib/actions';
+import { clearDraft, loadDraft, saveDraft } from '@/lib/pm-chat-draft';
 
 /**
  * Streaming chat with the PM agent for in-browser idea intake.
@@ -29,10 +30,13 @@ import { approveAndStart } from '@/lib/actions';
  *      issue with the agreed scope as body, dispatches the implement
  *      workflow, and redirects to the feature page.
  *
- * Conversation state is held entirely in the AI SDK's `messages` array
- * on the client. Reloading the page resets the chat — persistence
- * across sessions is intentionally Phase 3.2.5, not v1.
+ * Persistence (Phase 3.2.5): the chat survives page reloads via
+ * localStorage. Messages, the selected repo, the title input, and the
+ * input draft are persisted; on approve-and-start, the draft is
+ * cleared. The localStorage helpers live in lib/pm-chat-draft.ts so
+ * they can be unit-tested in isolation.
  */
+
 export function PmChat({
   repos,
   initialInput = '',
@@ -42,20 +46,50 @@ export function PmChat({
   initialInput?: string;
   initialRepo?: string | null;
 }) {
-  // Pre-select the repo from the URL if it's actually wired up — otherwise
-  // fall back to the first wired repo. Defends against query-param tampering
-  // and stale links to repos that have since been unwired.
+  // First-paint state: we can't read localStorage during server render
+  // (no `window`), and Next.js will hydration-warn if SSR HTML differs
+  // from the first client render. So we defer the draft hydration to a
+  // post-mount effect, and start with the URL/server-provided defaults.
   const initialRepoMatch =
     initialRepo && repos.some((r) => `${r.owner}/${r.name}` === initialRepo)
       ? initialRepo
       : null;
-  const [repo, setRepo] = useState(
-    initialRepoMatch ?? (repos[0] ? `${repos[0].owner}/${repos[0].name}` : ''),
-  );
+  const defaultRepo = initialRepoMatch ?? (repos[0] ? `${repos[0].owner}/${repos[0].name}` : '');
+
+  const [repo, setRepo] = useState(defaultRepo);
   const [input, setInput] = useState(initialInput);
   const [title, setTitle] = useState('');
   const [approveErr, setApproveErr] = useState<string | null>(null);
   const [approving, startApproveTransition] = useTransition();
+  // Hydrated state stays null until the first client effect runs; the
+  // second pass replaces server defaults with persisted values without
+  // a hydration mismatch.
+  const [hydratedFromDraft, setHydratedFromDraft] = useState(false);
+  const [persistedMessages, setPersistedMessages] = useState<UIMessage[] | undefined>(undefined);
+
+  useEffect(() => {
+    // Only hydrate when there are no URL-provided overrides; if the user
+    // arrived via /proposals?prefill=..., they want a fresh chat seeded
+    // with that pitch, not whatever stale draft they left behind.
+    if (initialInput || initialRepo) {
+      setHydratedFromDraft(true);
+      return;
+    }
+    const draft = loadDraft();
+    if (draft) {
+      if (draft.repo && repos.some((r) => `${r.owner}/${r.name}` === draft.repo)) {
+        setRepo(draft.repo);
+      }
+      setTitle(draft.title);
+      setInput(draft.input);
+      if (draft.messages.length > 0) {
+        setPersistedMessages(draft.messages);
+      }
+    }
+    setHydratedFromDraft(true);
+    // Intentional: only run once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const transport = new DefaultChatTransport({
     api: '/api/pm-chat',
@@ -64,9 +98,35 @@ export function PmChat({
     body: () => ({ repo }),
   });
 
-  const { messages, sendMessage, status, error } = useChat({
+  const { messages, sendMessage, status, error, setMessages } = useChat({
     transport,
+    messages: persistedMessages,
   });
+
+  // After the post-mount hydration runs, push the persisted messages
+  // into the AI SDK's chat instance. The `messages` option in useChat
+  // is only honored on first render of the underlying Chat — for
+  // changes after that, we use setMessages explicitly.
+  useEffect(() => {
+    if (hydratedFromDraft && persistedMessages && messages.length === 0) {
+      setMessages(persistedMessages);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydratedFromDraft, persistedMessages]);
+
+  // Save draft whenever any meaningful field changes, but not before
+  // hydration completes (would otherwise overwrite the just-loaded
+  // draft with the empty defaults).
+  useEffect(() => {
+    if (!hydratedFromDraft) return;
+    if (messages.length === 0 && !input && !title && repo === defaultRepo) {
+      // Nothing worth persisting; clear any existing draft to avoid
+      // surfacing it on the next visit.
+      clearDraft();
+      return;
+    }
+    saveDraft({ repo, title, input, messages });
+  }, [hydratedFromDraft, messages, repo, title, input, defaultRepo]);
 
   const isStreaming = status === 'streaming' || status === 'submitted';
   const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant');
@@ -93,13 +153,36 @@ export function PmChat({
         fd.append('repo', repo);
         fd.append('title', title.trim());
         fd.append('pm_final_message', lastAssistantText);
+        // Clear the draft optimistically — approveAndStart redirects on
+        // success and we don't want the redirected feature page to keep
+        // surfacing the same draft on the next /intent visit.
+        clearDraft();
         await approveAndStart(fd);
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('NEXT_REDIRECT')) throw e;
+        // approveAndStart threw a real error before redirect; restore
+        // the draft so the user can retry without retyping.
+        saveDraft({ repo, title, input, messages });
         setApproveErr(msg);
       }
     });
+  }
+
+  function onClearConversation() {
+    if (messages.length === 0 && !input && !title) return;
+    if (
+      !window.confirm(
+        'Clear the current conversation and start a new one? Persisted draft will be deleted.',
+      )
+    ) {
+      return;
+    }
+    setMessages([]);
+    setInput('');
+    setTitle('');
+    setApproveErr(null);
+    clearDraft();
   }
 
   if (repos.length === 0) {
@@ -183,7 +266,16 @@ export function PmChat({
             }}
             disabled={isStreaming}
           />
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <Button
+              type="button"
+              onClick={onClearConversation}
+              disabled={isStreaming || (messages.length === 0 && !input && !title)}
+              variant="ghost"
+              size="sm"
+            >
+              Clear conversation
+            </Button>
             <Button onClick={onSend} disabled={isStreaming || !input.trim()}>
               {isStreaming ? 'Sending…' : 'Send'}
             </Button>
