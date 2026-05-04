@@ -13,13 +13,13 @@
 
 A first attempt (#49, closed) detected recurring CI failures as a "bug signal." That's a runtime signal, not a code-scanning agent. The user clarified: they want an LLM agent that **reads the codebase regularly** for security vulnerabilities, broken logic, and likely-bug code smells.
 
-**Intended outcome.** A weekly scheduled scan that runs Claude over the consumer's codebase, files real findings as GitHub issues, and surfaces them on the dashboard's `/proposals` page distinguishably from feature requests. Each finding is actionable: file path + line + suggested fix.
+**Intended outcome.** A daily scheduled scan that runs Claude over the consumer's codebase, files real findings as GitHub issues, and surfaces them on the dashboard's `/proposals` page distinguishably from feature requests. Each finding is actionable: file path + line + suggested fix.
 
 ---
 
 ## Goals
 
-- **Weekly cadence by default.** Cron set in the consumer's wrapper workflow; user can tighten or loosen.
+- **Daily cadence by default.** Cron set in the consumer's wrapper workflow; user can loosen if cost matters more than freshness.
 - **Read-only.** The agent must not mutate the repo. Tools restricted to `Bash Read Glob Grep TodoWrite`.
 - **Real bugs only.** Three categories ranked by severity (security > broken_logic > code_smell). Not findings: style, naming, missing comments, lint-catchable items.
 - **Structured findings.** JSON schema with `severity`, `category`, `file`, `line`, `title`, `description`, `suggested_fix`. The workflow parses it and files one issue per finding.
@@ -32,7 +32,7 @@ A first attempt (#49, closed) detected recurring CI failures as a "bug signal." 
 
 - **Auto-fix.** The agent doesn't propose PR-level fixes; that's the implement workflow's job. A bug-scout finding becomes a `state:proposed` issue; if the user wants it fixed, they kick off the implement phase from there (manually or via the PM chat).
 - **External dependency scanning.** `npm audit` / `pip-audit` etc. are deterministic tools the user can wire separately. Bug-scout focuses on what an LLM reading the code can find.
-- **Continuous (per-commit) scanning.** Weekly is the right cadence — per-commit would be expensive AND noisy. The carry-over nature of the queue means findings persist until acted on.
+- **Continuous (per-commit) scanning.** Daily is the right cadence — per-commit would be expensive AND noisy. The carry-over nature of the queue means findings persist until acted on, and at daily cadence the freshest signal lands fast without flooding CI.
 
 ---
 
@@ -94,7 +94,7 @@ Rendered on `/proposals` under the carry-over section with the existing Discuss-
 
 ### 4. Consumer wrapper: `examples/web-app-template/.github/workflows/dev-agent-bug-scout.yml`
 
-Drops in via wire-up. Schedules the cron at `0 9 * * 1` (Monday 09:00 UTC) and exposes `workflow_dispatch` for ad-hoc scans with optional focus / ignore paths. Delegates to the reusable `phase-bug-scout.yml` pinned at `@v1`.
+Drops in via wire-up. Schedules the cron at `0 9 * * *` (daily 09:00 UTC) and exposes `workflow_dispatch` for ad-hoc scans with optional focus / ignore paths. Delegates to the reusable `phase-bug-scout.yml` pinned at `@v1`.
 
 ---
 
@@ -103,19 +103,19 @@ Drops in via wire-up. Schedules the cron at `0 9 * * 1` (Monday 09:00 UTC) and e
 | Component | Cost |
 |---|---|
 | One scan (claude-sonnet-4-6, ~30 turns reading code) | $0.30–$1.00 |
-| Default cadence (weekly) | $1–$4 / month / repo |
+| Default cadence (daily, ~30/month) | $9–$30 / month / repo |
 | Manual dispatch | One scan worth of tokens per click |
 
-The cost is on the consumer repo's Anthropic key (auto-pushed during wire-up by Phase 3.0.5). Reasonable for a real product; tightenable to bi-weekly or monthly by editing the cron in the wrapper.
+The cost is on the consumer repo's Anthropic key (auto-pushed during wire-up by Phase 3.0.5). At ~$10–$30/month per repo this is the most expensive scout source by an order of magnitude — the user can loosen the cron to `0 9 * * 1-5` (weekdays only, ~$7–$20) or `0 9 * * 1` (weekly, ~$1–$4) by editing the wrapper.
 
 ---
 
 ## Acceptance criteria
 
-- [x] Weekly cron scans the consumer's repo and files findings as `kind:bug-scout` + `state:proposed` issues.
+- [x] Daily cron scans the consumer's repo and files findings as `kind:bug-scout` + `state:proposed` issues.
 - [x] Manual dispatch via the wrapper's `workflow_dispatch` works with optional focus / ignore overrides.
 - [x] The agent has read-only tool access (cannot mutate the repo even if the prompt told it to).
-- [x] Re-running on the same week doesn't create duplicate open issues for the same title.
+- [x] Re-running the scan doesn't create duplicate open issues for the same title.
 - [x] Findings appear on `/proposals` under the `bug_scout_finding` source, sorted by severity then age.
 - [x] Findings carry severity / category as labels for filtering / future automation.
 - [x] Wire-up template ships with the bug-scout cron pre-installed (drift test enforces).
