@@ -282,3 +282,91 @@ describe('buildPmTools — read_pipeline + read_proposals', () => {
     });
   });
 });
+
+describe('buildPmTools — read_session_log', () => {
+  const SAMPLE_LOG = [
+    '# Session Log',
+    '',
+    '## 2026-05-04 14:30 UTC — implement — issue #42',
+    '',
+    '**Trigger:** newest entry.',
+    '',
+    '**Outcome:** success',
+    '',
+    '---',
+    '',
+    '## 2026-05-03 10:00 UTC — staging-deploy — issue #41',
+    '',
+    '**Trigger:** older entry.',
+    '',
+    '**Outcome:** success',
+    '',
+    '---',
+    '',
+  ].join('\n');
+
+  it('returns recent entries newest-first when SESSION_LOG.md exists', async () => {
+    const getContent = vi.fn(async () => ({
+      data: {
+        type: 'file',
+        encoding: 'base64',
+        content: Buffer.from(SAMPLE_LOG).toString('base64'),
+      },
+    }));
+    const tools = buildPmTools({ octokit: mockOctokit({ getContent }), repo: REPO });
+    const result = await tools.read_session_log.execute!(
+      { limit: 5 },
+      { messages: [], toolCallId: 't1' },
+    );
+    const r = result as { entries: string[]; entry_count: number; truncated: boolean };
+    expect(r.entry_count).toBe(2);
+    expect(r.entries[0]).toContain('issue #42');
+    expect(r.entries[1]).toContain('issue #41');
+    expect(r.truncated).toBe(false);
+  });
+
+  it('respects the `limit` argument', async () => {
+    const getContent = vi.fn(async () => ({
+      data: {
+        type: 'file',
+        encoding: 'base64',
+        content: Buffer.from(SAMPLE_LOG).toString('base64'),
+      },
+    }));
+    const tools = buildPmTools({ octokit: mockOctokit({ getContent }), repo: REPO });
+    const result = await tools.read_session_log.execute!(
+      { limit: 1 },
+      { messages: [], toolCallId: 't1' },
+    );
+    const r = result as { entries: string[]; entry_count: number };
+    expect(r.entry_count).toBe(1);
+    expect(r.entries[0]).toContain('issue #42');
+  });
+
+  it('returns an empty array with a friendly note when the log file is absent (404)', async () => {
+    const getContent = vi.fn(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    const tools = buildPmTools({ octokit: mockOctokit({ getContent }), repo: REPO });
+    const result = await tools.read_session_log.execute!(
+      { limit: 5 },
+      { messages: [], toolCallId: 't1' },
+    );
+    expect(result).toMatchObject({
+      entries: [],
+      note: expect.stringContaining('no SESSION_LOG.md'),
+    });
+  });
+
+  it('returns an error object on non-404 failures (rate limit, etc.)', async () => {
+    const getContent = vi.fn(async () => {
+      throw Object.assign(new Error('rate limited'), { status: 429 });
+    });
+    const tools = buildPmTools({ octokit: mockOctokit({ getContent }), repo: REPO });
+    const result = await tools.read_session_log.execute!(
+      { limit: 5 },
+      { messages: [], toolCallId: 't1' },
+    );
+    expect(String((result as { error?: string }).error)).toMatch(/rate limited/);
+  });
+});

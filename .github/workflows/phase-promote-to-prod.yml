@@ -68,3 +68,24 @@ jobs:
           MODEL=$(jq -r '.model' result.json)
           BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: stub-success (live wiring in 1d)\n' "$MODEL" "$INVOCATION_MODE")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+
+      - name: Append SESSION_LOG.md entry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          PHASE: promote-to-prod
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          OUTCOME: success
+          TRIGGER: 'Staging → release_target promotion approved by user.'
+          NEXT_SESSION_HINT: 'manual smoke on production once the promote PR merges and the deploy completes.'
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/append-session-log.ts
+          if git diff --quiet -- SESSION_LOG.md; then
+            echo "SESSION_LOG.md unchanged — no commit needed."
+            exit 0
+          fi
+          git config user.name 'dev-agent[bot]'
+          git config user.email 'dev-agent@users.noreply.github.com'
+          git add SESSION_LOG.md
+          git commit -m "chore(dev-agent): session log — promote-to-prod issue #${ISSUE_NUMBER}"
+          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

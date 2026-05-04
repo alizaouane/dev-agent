@@ -171,6 +171,7 @@ jobs:
           show_full_output: 'true'
 
       - name: Comment telemetry + flip state
+        id: telemetry
         if: inputs.invocation_mode == 'live'
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -186,8 +187,33 @@ jobs:
           if [ -z "$PR_NUMBER" ]; then
             BODY=$(printf '🤖 Phase: implement\nModel: claude-sonnet-4-6\nMode: live\nStatus: agent-no-pr (the agent ran but did not open a PR; check logs)\n')
             gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+            echo "phase_outcome=blocked" >> "$GITHUB_OUTPUT"
+            echo "pr_url=" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           BODY=$(printf '🤖 Phase: implement\nModel: claude-sonnet-4-6\nMode: live\nStatus: success\nBranch: %s\nPR: #%s\n' "$BRANCH_NAME" "$PR_NUMBER")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
           gh issue edit "$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review || true
+          echo "phase_outcome=success" >> "$GITHUB_OUTPUT"
+          echo "pr_url=https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: Append SESSION_LOG.md entry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          PHASE: implement
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          OUTCOME: ${{ steps.telemetry.outputs.phase_outcome || 'aborted' }}
+          PR_URL: ${{ steps.telemetry.outputs.pr_url }}
+          NEXT_SESSION_HINT: ${{ steps.telemetry.outputs.phase_outcome == 'success' && 'review the PR against the agreed scope and merge to default branch (= staging) when ready.' || 'inspect the implement-phase logs and decide whether to retry, abandon, or hand-edit the scope.' }}
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/append-session-log.ts
+          if git diff --quiet -- SESSION_LOG.md; then
+            echo "SESSION_LOG.md unchanged — no commit needed."
+            exit 0
+          fi
+          git config user.name 'dev-agent[bot]'
+          git config user.email 'dev-agent@users.noreply.github.com'
+          git add SESSION_LOG.md
+          git commit -m "chore(dev-agent): session log — implement issue #${ISSUE_NUMBER}"
+          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

@@ -37,6 +37,13 @@ const MAX_COMMITS = 50;
 /** Hard cap on code-search hits per call. */
 const MAX_SEARCH_HITS = 20;
 
+/** Hard cap on session-log entries returned per call (newest-first). */
+const MAX_SESSION_LOG_ENTRIES = 20;
+
+/** Hard cap on total bytes returned by `read_session_log` to keep the
+ * conversation context bounded — entries can run thousands of words. */
+const MAX_SESSION_LOG_BYTES = 80_000;
+
 export type PmToolContext = {
   octokit: Octokit;
   /** The repo being chatted about — `owner/name`. */
@@ -250,6 +257,67 @@ export function buildPmTools(ctx: PmToolContext) {
           return { proposals };
         } catch (err) {
           return { error: `read_proposals failed: ${(err as Error).message}` };
+        }
+      },
+    }),
+
+    read_session_log: tool({
+      description:
+        "Read recent entries from the consumer's `SESSION_LOG.md` (root of the repo). This is the PRIMARY grounding source — every cycle (implement / staging-deploy / promote / rollback) and every user-approved scope is appended here. Read this on the first turn of every conversation about an unfamiliar repo BEFORE reading the README.",
+      inputSchema: z.object({
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_SESSION_LOG_ENTRIES)
+          .default(5)
+          .describe(`How many recent entries to return (max ${MAX_SESSION_LOG_ENTRIES}).`),
+      }),
+      execute: async ({ limit }) => {
+        try {
+          const resp = await ctx.octokit.repos.getContent({
+            owner: ctx.repo.owner,
+            repo: ctx.repo.name,
+            path: 'SESSION_LOG.md',
+            ref: ctx.repo.default_branch,
+          });
+          const data = resp.data as { type?: string; content?: string; encoding?: string };
+          if (data.type !== 'file' || !data.content || data.encoding !== 'base64') {
+            return { entries: [], note: 'SESSION_LOG.md present but not a file at repo root.' };
+          }
+          const raw = Buffer.from(data.content, 'base64').toString('utf8');
+          // Entries split on `---` separator. Drop the H1 + intro that
+          // precedes the first entry; a stub-only log returns an empty
+          // entries array (and the note explains why).
+          const blocks = raw.split(/\n---\s*\n/);
+          const entries = blocks
+            .map((b) => b.trim())
+            .filter((b) => b.length > 0 && /^##\s+/m.test(b))
+            .slice(0, limit);
+          // Cap total bytes to keep the conversation context bounded —
+          // long entries can run thousands of words. If we exceed, trim
+          // older entries first.
+          let total = 0;
+          const capped: string[] = [];
+          for (const e of entries) {
+            const size = Buffer.byteLength(e, 'utf8');
+            if (total + size > MAX_SESSION_LOG_BYTES) break;
+            total += size;
+            capped.push(e);
+          }
+          return {
+            entries: capped,
+            entry_count: capped.length,
+            truncated: capped.length < entries.length,
+          };
+        } catch (err) {
+          if ((err as { status?: number }).status === 404) {
+            return {
+              entries: [],
+              note: 'no SESSION_LOG.md at repo root yet — the dev-agent and dev sessions will append here on first cycle.',
+            };
+          }
+          return { error: `read_session_log failed: ${(err as Error).message}` };
         }
       },
     }),

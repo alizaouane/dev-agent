@@ -466,6 +466,8 @@ function describeToolCall(toolName: string, input: unknown): string {
       return 'read in-flight pipeline';
     case 'read_proposals':
       return 'read /proposals queue';
+    case 'read_session_log':
+      return `read SESSION_LOG.md${args.limit ? ` (last ${args.limit})` : ''}`;
     default:
       return toolName;
   }
