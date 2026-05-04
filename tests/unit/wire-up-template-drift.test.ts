@@ -42,4 +42,10 @@ describe('wire-up-template embedded copy', () => {
       .replace(/\\`/g, '`');
     expect(normalized).toContain(onDisk);
   });
+
+  it('pm.md on disk matches the embedded TEMPLATE_PM_MD', () => {
+    const onDisk = readFileSync(resolve(tplDir, '.dev-agent/pm.md'), 'utf8');
+    const normalized = embedded.replace(/\\`/g, '`');
+    expect(normalized).toContain(onDisk);
+  });
 });

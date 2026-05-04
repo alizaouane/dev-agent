@@ -198,8 +198,9 @@ describe('wireUpRepo', () => {
     expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
       expect.objectContaining({ ref: 'refs/heads/chore/wire-up-dev-agent', sha: 'abc123' }),
     );
-    // Both template files were committed via the wire-up branch.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    // All template files (.dev-agent.yml, workflow, pm.md) were committed
+    // via the wire-up branch.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
     expect(mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0]).toMatchObject({
       branch: 'chore/wire-up-dev-agent',
     });
@@ -232,7 +233,7 @@ describe('wireUpRepo', () => {
 
     // Template files were committed WITHOUT a `branch` parameter, so they
     // hit the repo's default branch (creating it if needed).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(2);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(3);
     for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
       expect(call[0].branch).toBeUndefined();
     }
