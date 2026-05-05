@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
+import { enrichProposalsWithFreshness, type FreshnessHint } from '@/lib/scout/freshness';
 import { loadSnoozeMap, partitionBySnooze } from '@/lib/scout/snooze';
 import { resolveProposalAction, snoozeProposal, unsnoozeProposal } from '@/lib/actions';
 import {
@@ -86,6 +87,14 @@ export default async function ProposalsPage(props: {
   const carryOver = active.filter((p) => p.group === 'carry_over');
   const newIdeas = active.filter((p) => p.group === 'new_idea');
 
+  // Freshness check: per-source deterministic heuristics that flag
+  // proposals already addressed elsewhere (merged PR mentions the spec,
+  // file modified after the bug-scout issue was filed, etc.). Hinted
+  // proposals render dimmed with a "Likely already done" pill; the
+  // user still has to click Resolve. Only applied to active proposals
+  // — snoozed rows are off the user's radar by definition.
+  const freshnessMap = await enrichProposalsWithFreshness(octokit, active);
+
   // PM-driven categorization. The LLM groups proposals into themes
   // (cleanup / implementation / tech_debt / investigation) so the user
   // can read the queue by topic instead of chronologically. Cached for
@@ -163,6 +172,7 @@ export default async function ProposalsPage(props: {
                 title={CATEGORY_LABELS[cat]}
                 description={CATEGORY_DESCRIPTIONS[cat]}
                 proposals={items}
+                freshnessMap={freshnessMap}
               />
             );
           })}
@@ -175,11 +185,13 @@ export default async function ProposalsPage(props: {
             title="Carry-over commitments"
             description="Work you already started or committed to. Finish these before starting something new."
             proposals={carryOver}
+            freshnessMap={freshnessMap}
           />
           <Section
             title="New ideas"
             description="Things you haven't decided on yet. Discuss with the PM to figure out if they're worth doing."
             proposals={newIdeas}
+            freshnessMap={freshnessMap}
           />
         </>
       )}
@@ -217,11 +229,19 @@ function Section({
   description,
   proposals,
   snoozedView = false,
+  freshnessMap,
 }: {
   title: string;
   description: string;
   proposals: Proposal[];
   snoozedView?: boolean;
+  /**
+   * Optional per-proposal freshness hints. When present, hinted
+   * proposals render dimmed with a "Likely already done" pill above
+   * the title. Snoozed sections don't pass this — those rows are off
+   * the user's radar by definition.
+   */
+  freshnessMap?: Map<string, FreshnessHint>;
 }) {
   if (proposals.length === 0) return null;
   return (
@@ -260,10 +280,15 @@ function Section({
           </span>
         </summary>
       <ul className="divide-y divide-border rounded-md border border-border">
-        {proposals.map((p) => (
+        {proposals.map((p) => {
+          const hint = freshnessMap?.get(p.id);
+          return (
           <li
             key={p.id}
-            className="flex flex-col gap-2 p-4 sm:flex-row sm:items-start sm:justify-between"
+            data-likely-done={hint ? 'true' : undefined}
+            className={`flex flex-col gap-2 p-4 sm:flex-row sm:items-start sm:justify-between ${
+              hint ? 'opacity-60' : ''
+            }`}
           >
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-baseline gap-2">
@@ -271,6 +296,14 @@ function Section({
                   {SOURCE_LABEL[p.source]}
                 </span>
                 <span className="text-xs text-muted-foreground">{p.repo}</span>
+                {hint ? (
+                  <span
+                    className="rounded bg-amber-500/15 px-2 py-0.5 text-xs font-medium text-amber-700 dark:text-amber-400"
+                    title={hint.reason}
+                  >
+                    Likely already done — {hint.reason}
+                  </span>
+                ) : null}
               </div>
               <a
                 href={p.url}
@@ -349,7 +382,8 @@ function Section({
               )}
             </div>
           </li>
-        ))}
+          );
+        })}
         </ul>
       </details>
     </section>
