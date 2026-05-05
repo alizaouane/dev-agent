@@ -138,3 +138,31 @@ describe('scaffold_skills.migration (rollback)', () => {
     ).not.toThrow();
   });
 });
+
+describe('phase-rollback.yml render block reads scaffold_skills from config', () => {
+  // Reviewer-flagged: hardcoding scaffold_skills.migration to "" meant
+  // consumers with non-default migration paths got the fallback every
+  // time. The render block must pull it from .dev-agent.yml.
+  const wfPath = resolve(__dirname, '../../.github/workflows/phase-rollback.yml');
+  const raw = readFileSync(wfPath, 'utf8');
+
+  it('parses .dev-agent.yml to JSON before rendering (matches the staging-deploy pattern)', () => {
+    expect(raw).toMatch(/npx tsx lib\/cli\/config-to-json\.ts/);
+    expect(raw).toMatch(/jq -e \. \/tmp\/config\.json/);
+  });
+
+  it('reads scaffold_skills.migration from the parsed config (not a hardcoded "")', () => {
+    expect(raw).toMatch(/scaffold_skills\.migration\s*\/\/\s*""/);
+    expect(raw).not.toMatch(/scaffold_skills:\{migration:""\}/);
+  });
+
+  it('reads deploy_skills.staging and deploy_skills.prod from the parsed config', () => {
+    expect(raw).toMatch(/\.deploy_skills\.staging\s*\/\/\s*\[\]/);
+    expect(raw).toMatch(/\.deploy_skills\.prod\s*\/\/\s*\[\]/);
+  });
+
+  it('reads branches.staging (nullable) and branches.release_target from the parsed config', () => {
+    expect(raw).toMatch(/\.branches\.staging\s*\/\/\s*""/);
+    expect(raw).toMatch(/\.branches\.release_target\s*\/\/\s*"main"/);
+  });
+});

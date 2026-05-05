@@ -62,7 +62,15 @@ jobs:
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-      - name: Render rollback prompt (stub)
+      - name: Convert .dev-agent.yml to JSON for jq
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          jq -e . /tmp/config.json > /dev/null
+
+      - name: Render rollback prompt
         env:
           MODEL: claude-sonnet-4-6
           INVOCATION_MODE: ${{ inputs.invocation_mode }}
@@ -71,10 +79,26 @@ jobs:
           PR_NUMBER: ${{ steps.merge.outputs.pr }}
         run: |
           set -euo pipefail
+          # Pull every prompt var from the consumer's `.dev-agent.yml`
+          # rather than hardcoding stubs. Specifically:
+          # - `scaffold_skills.migration` lets the agent dual-resolve a
+          #   custom migration scaffold skill (e.g. when migrations
+          #   aren't under `supabase/migrations/`).
+          # - `branches.staging` / `branches.release_target` may be
+          #   `null` / `"main"` / `"develop"` etc. depending on the
+          #   consumer's branching model.
+          # - `deploy_skills.{staging,prod}` carry the redeploy chain
+          #   the rollback runs after the revert PR merges.
           export PROMPT_VARS_JSON=$(jq -nc \
             --argjson issue "$ISSUE_NUMBER" \
             --argjson pr "$PR_NUMBER" \
-            '{issue_number:$issue, merged_pr:$pr, branches:{staging:"staging", release_target:"main"}, deploy_skills:{staging:[],prod:[]}, scaffold_skills:{migration:""}, commands:{test:"npm test"}}')
+            --arg staging "$(jq -r '.branches.staging // ""' /tmp/config.json)" \
+            --arg target "$(jq -r '.branches.release_target // "main"' /tmp/config.json)" \
+            --argjson dskstaging "$(jq -c '.deploy_skills.staging // []' /tmp/config.json)" \
+            --argjson dskprod "$(jq -c '.deploy_skills.prod // []' /tmp/config.json)" \
+            --arg sksmigration "$(jq -r '.scaffold_skills.migration // ""' /tmp/config.json)" \
+            --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
+            '{issue_number:$issue, merged_pr:$pr, branches:{staging:(if ($staging|length) > 0 then $staging else null end), release_target:$target}, deploy_skills:{staging:$dskstaging, prod:$dskprod}, scaffold_skills:{migration:$sksmigration}, commands:{test:$test}}')
           npx tsx lib/cli/render-and-run.ts rollback
 
       - name: Append SESSION_LOG.md entry
