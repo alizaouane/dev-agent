@@ -22,6 +22,7 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
   pending_spec: 'Pending spec',
   bug_scout_finding: 'Bug-scout finding',
   unfinished_work_finding: 'Unfinished work (PM scan)',
+  cleanup_finding: 'Cleanup proposal',
   competitor_watch: 'Competitor to review',
   untriaged_issue: 'Untriaged issue',
 };
@@ -373,6 +374,7 @@ function resolveLabel(p: Proposal): string | null {
       return 'File as scoping issue';
     case 'bug_scout_finding':
     case 'unfinished_work_finding':
+    case 'cleanup_finding':
     case 'untriaged_issue':
       return 'Close issue';
     case 'spec_drift':

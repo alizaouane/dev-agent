@@ -786,3 +786,43 @@ export async function triggerUnfinishedWorkScan(formData: FormData): Promise<voi
 
   revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
 }
+
+/**
+ * Server Action: fire a one-shot "Run cleanup scan" — dispatches the
+ * cleanup-scout workflow on the consumer repo. Mirrors
+ * `triggerUnfinishedWorkScan` exactly; the only difference is the
+ * workflow file name and the kind of issues it produces (`kind:cleanup`
+ * instead of `kind:unfinished-work`).
+ *
+ * Cost ~$0.10–0.30 per scan. Manual trigger only — cleanup is bulk
+ * triage, not a continuous safety net.
+ *
+ * Form fields:
+ *  - `repo` — `owner/name`
+ *
+ * @throws Error on bad input
+ * @throws ForbiddenError if user lacks write perm on the target repo
+ */
+export async function triggerCleanupScan(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const repoFull = (formData.get('repo') as string)?.trim() ?? '';
+  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+  const [owner, repo] = repoFull.split('/');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
+  await octokit.actions.createWorkflowDispatch({
+    owner,
+    repo,
+    workflow_id: 'dev-agent-cleanup-scout.yml',
+    ref: default_branch,
+    inputs: {},
+  });
+
+  void session_username;
+
+  revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
+}

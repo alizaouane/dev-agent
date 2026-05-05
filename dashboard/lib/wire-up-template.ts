@@ -357,6 +357,49 @@ jobs:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 `;
 
+export const TEMPLATE_CLEANUP_SCOUT_WORKFLOW_YML = `name: dev-agent · cleanup-scout
+
+# On-demand cleanup scan — runs an LLM agent against your codebase
+# looking for code that can be deleted with no behavior change: dead
+# exports, skipped tests with stale reasons, deprecated calls, unused
+# module-level state, stale dated TODOs, abandoned files. Findings file
+# as GitHub issues with \`kind:cleanup\` + \`state:proposed\` and surface
+# on /proposals.
+#
+# Cost ~\$0.10-0.30 per scan. Manual trigger only — cleanup is bulk
+# triage, not a continuous safety net. Fire it from the "Run cleanup
+# scan" button on /repos/<this-repo> when you want a deletion-class
+# review of the codebase.
+#
+# SECURITY: no \`run:\` blocks; only typed inputs forward to the
+# reusable workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus_paths:
+        description: Globs to prioritize (e.g. lib/auth/**,app/api/**)
+        required: false
+        type: string
+        default: ''
+      ignore_paths:
+        description: Globs to skip
+        required: false
+        type: string
+        default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
+
+jobs:
+  cleanup-scout:
+    uses: alizaouane/dev-agent/.github/workflows/phase-cleanup-scout.yml@v1
+    with:
+      config_path: .dev-agent.yml
+      focus_paths: \${{ inputs.focus_paths || '' }}
+      ignore_paths: \${{ inputs.ignore_paths || 'node_modules/**,dist/**,build/**,.next/**,coverage/**' }}
+      invocation_mode: live
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+`;
+
 export const TEMPLATE_SESSION_LOG_MD = `# Session Log
 
 (no entries yet — the dev-agent and your dev sessions will append here)
@@ -370,7 +413,8 @@ export const TEMPLATE_SESSION_LOG_MD = `# Session Log
  * the workflow that uses it. `pm.md` ships with placeholder content the
  * user is expected to edit before the PM agent has anything useful to do.
  * The bug-scout workflow ships with a daily cron pre-wired; the
- * unfinished-work-scout ships with workflow_dispatch only (manual trigger).
+ * unfinished-work-scout and cleanup-scout ship with workflow_dispatch
+ * only (manual trigger).
  * `SESSION_LOG.md` ships empty — every dev cycle and every user-approved
  * scope appends here, giving the PM agent durable activity context for
  * grounding (so empty `pm.md` stops mattering).
@@ -382,6 +426,10 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
   {
     path: '.github/workflows/dev-agent-unfinished-work-scout.yml',
     content: TEMPLATE_UNFINISHED_WORK_SCOUT_WORKFLOW_YML,
+  },
+  {
+    path: '.github/workflows/dev-agent-cleanup-scout.yml',
+    content: TEMPLATE_CLEANUP_SCOUT_WORKFLOW_YML,
   },
   { path: '.dev-agent/pm.md', content: TEMPLATE_PM_MD },
   { path: 'SESSION_LOG.md', content: TEMPLATE_SESSION_LOG_MD },

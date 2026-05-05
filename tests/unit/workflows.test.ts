@@ -13,12 +13,16 @@ const PHASE_WORKFLOWS = [
   'phase-rollback.yml',
   'phase-bug-scout.yml',
   'phase-unfinished-work-scout.yml',
+  'phase-cleanup-scout.yml',
 ];
 
-// Workflows that take an `issue_number` input. The two scout workflows
+// Workflows that take an `issue_number` input. The scout workflows
 // don't — they operate on the whole repo, not a specific issue.
 const ISSUE_NUMBER_WORKFLOWS = PHASE_WORKFLOWS.filter(
-  (w) => w !== 'phase-bug-scout.yml' && w !== 'phase-unfinished-work-scout.yml',
+  (w) =>
+    w !== 'phase-bug-scout.yml' &&
+    w !== 'phase-unfinished-work-scout.yml' &&
+    w !== 'phase-cleanup-scout.yml',
 );
 
 const ALL_REUSABLE = [...PHASE_WORKFLOWS, 'orch-sweep.yml'];
