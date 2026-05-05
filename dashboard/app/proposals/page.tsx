@@ -224,11 +224,26 @@ function Section({
 }) {
   if (proposals.length === 0) return null;
   return (
-    <section className="mb-10">
-      <h2 className="mb-1 text-lg font-semibold">
-        {title} ({proposals.length})
-      </h2>
-      <p className="mb-4 text-sm text-muted-foreground">{description}</p>
+    // Native <details> gives per-section collapse with zero JS, zero
+    // hydration cost, and accessible disclosure semantics. Default
+    // `open` so the page reads the same as before on first paint;
+    // user clicks the summary to fold up sections they don't want to
+    // scan right now.
+    <details open className="group mb-10">
+      <summary className="mb-4 flex cursor-pointer list-none items-baseline justify-between gap-3 select-none rounded-md px-2 py-1 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold">
+            {title} ({proposals.length})
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+        </div>
+        <span
+          aria-hidden="true"
+          className="shrink-0 self-center text-muted-foreground transition-transform duration-150 group-open:rotate-90"
+        >
+          ▶
+        </span>
+      </summary>
       <ul className="divide-y divide-border rounded-md border border-border">
         {proposals.map((p) => (
           <li
@@ -321,7 +336,7 @@ function Section({
           </li>
         ))}
       </ul>
-    </section>
+    </details>
   );
 }
 
