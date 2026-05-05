@@ -5,22 +5,20 @@ import { InboxList } from '@/components/inbox-list';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
 import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
 import { ScanWithPmButton } from '@/components/scan-with-pm-button';
+import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
+const CLEANUP_WORKFLOW_PATH = '.github/workflows/dev-agent-cleanup-scout.yml';
 
-async function isUnfinishedWorkScoutInstalled(
+async function isWorkflowInstalled(
   octokit: Awaited<ReturnType<typeof getOctokit>>,
   owner: string,
   repo: string,
   default_branch: string,
+  path: string,
 ): Promise<boolean> {
   try {
-    await octokit.repos.getContent({
-      owner,
-      repo,
-      path: UNFINISHED_WORK_WORKFLOW_PATH,
-      ref: default_branch,
-    });
+    await octokit.repos.getContent({ owner, repo, path, ref: default_branch });
     return true;
   } catch (err) {
     if ((err as { status?: number }).status === 404) return false;
@@ -46,11 +44,13 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
   let scheduleSnapshot: Awaited<ReturnType<typeof readBugScoutSchedule>> | null = null;
   let scheduleError: string | null = null;
   let unfinishedWorkInstalled = false;
+  let cleanupInstalled = false;
   if (repo.wired_up) {
     try {
-      [scheduleSnapshot, unfinishedWorkInstalled] = await Promise.all([
+      [scheduleSnapshot, unfinishedWorkInstalled, cleanupInstalled] = await Promise.all([
         readBugScoutSchedule(octokit, repo.owner, repo.name, repo.default_branch),
-        isUnfinishedWorkScoutInstalled(octokit, repo.owner, repo.name, repo.default_branch),
+        isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, UNFINISHED_WORK_WORKFLOW_PATH),
+        isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, CLEANUP_WORKFLOW_PATH),
       ]);
     } catch (err) {
       scheduleError = err instanceof Error ? err.message : String(err);
@@ -66,6 +66,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           <section className="mb-8 rounded-md border border-border bg-card p-5">
             <h2 className="mb-1 text-base font-semibold">Scan with PM (deep)</h2>
             <ScanWithPmButton repo={name} workflowPresent={unfinishedWorkInstalled} />
+          </section>
+
+          <section className="mb-8 rounded-md border border-border bg-card p-5">
+            <h2 className="mb-1 text-base font-semibold">Cleanup scan</h2>
+            <ScanCleanupButton repo={name} workflowPresent={cleanupInstalled} />
           </section>
 
           <section className="mb-8 rounded-md border border-border bg-card p-5">

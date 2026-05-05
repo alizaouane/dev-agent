@@ -32,7 +32,16 @@ export type ProposalSource =
   /** Competitor declared in pm.md frontmatter — surfaced as a "review them" prompt. */
   | 'competitor_watch'
   /** Issue without any `state:*` label — never entered the pipeline. */
-  | 'untriaged_issue';
+  | 'untriaged_issue'
+  /**
+   * Issue filed by the cleanup-scout LLM — code that can be deleted with
+   * no behavior change (dead exports, stale skipped tests, deprecated
+   * calls, unused module-level state, stale dated TODOs, abandoned
+   * files). Distinct from `bug_scout_finding`: cleanup is mechanical
+   * (deletion-class) where bug-scout's `code_smell` is judgment-heavy
+   * (possibly buggy).
+   */
+  | 'cleanup_finding';
 
 /**
  * Visual grouping for the `/proposals` page. Carry-over (commitments
@@ -54,6 +63,8 @@ export const SOURCE_TO_GROUP: Record<ProposalSource, ProposalGroup> = {
   unfinished_work_finding: 'carry_over',
   competitor_watch: 'new_idea',
   untriaged_issue: 'new_idea',
+  // Cleanup is, by definition, existing code — carry-over.
+  cleanup_finding: 'carry_over',
 };
 
 export type Proposal = {

@@ -1,0 +1,41 @@
+name: dev-agent · cleanup-scout
+
+# On-demand cleanup scan — runs an LLM agent against your codebase
+# looking for code that can be deleted with no behavior change: dead
+# exports, skipped tests with stale reasons, deprecated calls, unused
+# module-level state, stale dated TODOs, abandoned files. Findings file
+# as GitHub issues with `kind:cleanup` + `state:proposed` and surface
+# on /proposals.
+#
+# Cost ~$0.10-0.30 per scan. Manual trigger only — cleanup is bulk
+# triage, not a continuous safety net. Fire it from the "Run cleanup
+# scan" button on /repos/<this-repo> when you want a deletion-class
+# review of the codebase.
+#
+# SECURITY: no `run:` blocks; only typed inputs forward to the
+# reusable workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      focus_paths:
+        description: Globs to prioritize (e.g. lib/auth/**,app/api/**)
+        required: false
+        type: string
+        default: ''
+      ignore_paths:
+        description: Globs to skip
+        required: false
+        type: string
+        default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
+
+jobs:
+  cleanup-scout:
+    uses: alizaouane/dev-agent/.github/workflows/phase-cleanup-scout.yml@v1
+    with:
+      config_path: .dev-agent.yml
+      focus_paths: ${{ inputs.focus_paths || '' }}
+      ignore_paths: ${{ inputs.ignore_paths || 'node_modules/**,dist/**,build/**,.next/**,coverage/**' }}
+      invocation_mode: live
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

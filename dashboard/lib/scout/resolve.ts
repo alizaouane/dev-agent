@@ -21,9 +21,9 @@ import { parseRepoFromProposalId } from './snooze';
  *   - `pending_spec` → file a `state:scoping` user-intent issue
  *     referencing the spec; the user can then take it through the
  *     normal pipeline.
- *   - `bug_scout_finding` / `unfinished_work_finding` / `untriaged_issue`
- *     (all issue-backed) → close the underlying issue with an audit
- *     comment.
+ *   - `bug_scout_finding` / `unfinished_work_finding` / `cleanup_finding`
+ *     / `untriaged_issue` (all issue-backed) → close the underlying
+ *     issue with an audit comment.
  *
  * **Deferred to v2.** Rolled-up `unfinished_plan` (whole-file), `spec_drift`,
  * and `competitor_watch`. The action throws a friendly "use snooze
@@ -81,6 +81,7 @@ export async function resolveProposal(
       return resolvePendingSpec(octokit, owner, repo, ctx);
     case 'bug_scout_finding':
     case 'unfinished_work_finding':
+    case 'cleanup_finding':
     case 'untriaged_issue':
       return resolveIssueBacked(octokit, owner, repo, ctx, source);
     default:

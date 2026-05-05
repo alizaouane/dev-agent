@@ -295,6 +295,19 @@ describe('resolveProposal — issue-backed sources', () => {
     );
   });
 
+  it('closes a cleanup_finding issue', async () => {
+    const issuesUpdate = vi.fn(async (_args: Record<string, unknown>) => ({}));
+    const octokit = mkOctokit({ issuesUpdate });
+    await resolveProposal(octokit, {
+      proposalId: 'cleanup_finding:q/r:9',
+      username: 'alice',
+      meta: {},
+    });
+    expect(issuesUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({ issue_number: 9, state: 'closed' }),
+    );
+  });
+
   it('closes an untriaged_issue', async () => {
     const issuesUpdate = vi.fn(async (_args: Record<string, unknown>) => ({}));
     const octokit = mkOctokit({ issuesUpdate });
