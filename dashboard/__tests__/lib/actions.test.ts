@@ -503,7 +503,11 @@ describe('approveAndStart', () => {
     fd.append('repo', 'q/r');
     fd.append('title', 'Something');
     fd.append('pm_final_message', 'Sure, let me know more about how this fits with...');
-    await expect(approveAndStart(fd)).rejects.toThrow(/Agreed scope.*not converged/);
+    // Errors are returned (not thrown) so production server-action
+    // masking can't hide them — see ApproveAndStartError.
+    const result = await approveAndStart(fd);
+    expect(result).toBeDefined();
+    expect((result as { error: string }).error).toMatch(/Agreed scope.*not converged/);
     // No issue created, no workflow dispatched.
     expect(mockOctokit.issues.create).not.toHaveBeenCalled();
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
@@ -592,7 +596,9 @@ describe('approveAndStart', () => {
       'pm_final_message',
       '## Agreed scope\n\nA real scope block to clear the converged check.',
     );
-    await expect(approveAndStart(fd)).rejects.toThrow(/lacks write/);
+    // Errors return (not throw) — see the no-Agreed-scope test above.
+    const result = await approveAndStart(fd);
+    expect((result as { error: string }).error).toMatch(/lacks write/);
   });
 });
 

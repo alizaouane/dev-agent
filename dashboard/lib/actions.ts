@@ -377,90 +377,165 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
  *  - `pm_final_message` — the PM agent's last message containing the
  *                         "## Agreed scope" block.
  */
-export async function approveAndStart(formData: FormData): Promise<void> {
-  const session_username = await getCurrentUsername();
-  const octokit = await getOctokit();
-  const repoFull = (formData.get('repo') as string).trim();
-  const title = ((formData.get('title') as string) ?? '').trim();
-  const pmFinalMessage = ((formData.get('pm_final_message') as string) ?? '').trim();
+/**
+ * Returned (not thrown) when a step in `approveAndStart` fails. Returning the
+ * error keeps the message visible to the user even in production — Next.js
+ * masks any error thrown out of a server action with the generic "An error
+ * occurred in the Server Components render" string, which strands the user
+ * with no actionable info. `issue_url` is set when the issue was successfully
+ * created before the failure, so the user can resume manually rather than
+ * losing the work.
+ */
+export type ApproveAndStartError = { error: string; issue_url?: string };
 
-  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-  if (!title) throw new Error('title cannot be empty');
-  const scope = extractAgreedScope(pmFinalMessage);
-  if (!scope) {
-    throw new Error(
-      'no "## Agreed scope" section found in the PM\'s final message — the chat has not converged yet',
-    );
-  }
+export async function approveAndStart(
+  formData: FormData,
+): Promise<ApproveAndStartError | void> {
+  let issueNumber: number | null = null;
+  let issueUrl: string | null = null;
+  let repoFullForRedirect: string | null = null;
 
-  const [owner, repo] = repoFull.split('/');
-  await assertWritePermission(octokit, owner, repo, session_username);
-
-  // Resolve the consumer's actual default branch BEFORE creating the
-  // issue — that way if `repos.get` 403s (perms) or the repo is missing,
-  // we fail fast without leaving an orphan issue. The default branch is
-  // staging in the dev-agent two-branch model; hardcoding `'main'` used
-  // to 404 the workflow_dispatch on any consumer that named theirs
-  // differently (which was the production-blocking bug.)
-  const repoData = await octokit.repos.get({ owner, repo });
-  const default_branch = repoData.data.default_branch;
-
-  // Issue body doubles as the spec the implement agent reads. Phase 2a's
-  // "spec_path = placeholder, treat issue body as spec" path handles the
-  // missing docs/specs/<slug>.md case; we lean on that here.
-  const issueBody = [
-    `Approved by @${session_username} via the dashboard PM brainstorm.`,
-    ``,
-    `## Agreed scope`,
-    ``,
-    scope,
-  ].join('\n');
-
-  const issue = await octokit.issues.create({
-    owner,
-    repo,
-    title: title.slice(0, 100),
-    body: issueBody,
-    labels: ['kind:user-intent', 'state:implementing'],
-  });
-
-  // Record the human decision in SESSION_LOG.md BEFORE dispatching the
-  // workflow. If the workflow run later fails, the audit trail still
-  // shows that the user approved scope X for issue #N at this time.
-  // Best-effort — a 403 / rate-limit / network error here shouldn't
-  // block the dispatch (the issue + workflow are the durable state;
-  // the log is the human-readable mirror).
   try {
-    await appendApprovedScopeEntry(octokit, owner, repo, default_branch, {
-      issue: issue.data.number,
-      approver: session_username,
-      title: title.slice(0, 100),
-      scope,
-    });
-  } catch (err) {
-    console.warn(
-      `approveAndStart: SESSION_LOG.md append failed for ${owner}/${repo}#${issue.data.number}:`,
-      err,
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = (formData.get('repo') as string).trim();
+    const title = ((formData.get('title') as string) ?? '').trim();
+    const pmFinalMessage = ((formData.get('pm_final_message') as string) ?? '').trim();
+
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    if (!title) throw new Error('title cannot be empty');
+    const scope = extractAgreedScope(pmFinalMessage);
+    if (!scope) {
+      throw new Error(
+        'no "## Agreed scope" section found in the PM\'s final message — the chat has not converged yet',
+      );
+    }
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    // Resolve the consumer's actual default branch BEFORE creating the
+    // issue — that way if `repos.get` 403s (perms) or the repo is missing,
+    // we fail fast without leaving an orphan issue.
+    const repoData = await wrapStep('looking up repo', () =>
+      octokit.repos.get({ owner, repo }),
     );
+    const default_branch = repoData.data.default_branch;
+
+    const issueBody = [
+      `Approved by @${session_username} via the dashboard PM brainstorm.`,
+      ``,
+      `## Agreed scope`,
+      ``,
+      scope,
+    ].join('\n');
+
+    const issue = await wrapStep('creating issue', () =>
+      octokit.issues.create({
+        owner,
+        repo,
+        title: title.slice(0, 100),
+        body: issueBody,
+        labels: ['kind:user-intent', 'state:implementing'],
+      }),
+    );
+    issueNumber = issue.data.number;
+    issueUrl = issue.data.html_url;
+
+    // Record the human decision in SESSION_LOG.md BEFORE dispatching the
+    // workflow. Best-effort — a 403 / rate-limit / network error here
+    // shouldn't block the dispatch (the issue + workflow are the durable
+    // state; the log is the human-readable mirror).
+    try {
+      await appendApprovedScopeEntry(octokit, owner, repo, default_branch, {
+        issue: issue.data.number,
+        approver: session_username,
+        title: title.slice(0, 100),
+        scope,
+      });
+    } catch (err) {
+      console.warn(
+        `approveAndStart: SESSION_LOG.md append failed for ${owner}/${repo}#${issue.data.number}:`,
+        err,
+      );
+    }
+
+    // Dispatch the consumer's wrapper workflow to start the implement phase.
+    await wrapStep('dispatching implement workflow', () =>
+      octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: 'dev-agent.yml',
+        ref: default_branch,
+        inputs: {
+          phase: 'implement',
+          issue_number: String(issue.data.number),
+          invocation_mode: 'live',
+        },
+      }),
+    );
+
+    repoFullForRedirect = repoFull;
+  } catch (e) {
+    const message = formatApproveError(e, issueUrl);
+    console.error('[approveAndStart] failed', {
+      message,
+      issueNumber,
+      issueUrl,
+      raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
+    });
+    return { error: message, ...(issueUrl ? { issue_url: issueUrl } : {}) };
   }
 
-  // Dispatch the consumer's wrapper workflow to start the implement phase.
-  // The wrapper exposes phase as a `choice` input; we send phase=implement
-  // and the new issue number.
-  await octokit.actions.createWorkflowDispatch({
-    owner,
-    repo,
-    workflow_id: 'dev-agent.yml',
-    ref: default_branch,
-    inputs: {
-      phase: 'implement',
-      issue_number: String(issue.data.number),
-      invocation_mode: 'live',
-    },
-  });
-
+  // Outside the try/catch so `redirect()`'s NEXT_REDIRECT signal
+  // propagates to the framework — wrapping it would swallow the redirect.
   revalidatePath('/');
-  redirect(`/features/${issue.data.number}?repo=${encodeURIComponent(repoFull)}`);
+  redirect(`/features/${issueNumber}?repo=${encodeURIComponent(repoFullForRedirect!)}`);
+}
+
+/**
+ * Wrap a single step so its failure carries the step name and the
+ * upstream API status. Without this, the user just sees Octokit's bare
+ * "HttpError" message and can't tell whether it was the issue create,
+ * the workflow dispatch, or the repo lookup that failed.
+ */
+async function wrapStep<T>(step: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    throw new Error(`${step} failed — ${describeGhError(e)}`);
+  }
+}
+
+function describeGhError(e: unknown): string {
+  if (typeof e === 'object' && e !== null) {
+    const err = e as { status?: number; message?: string };
+    if (typeof err.status === 'number') {
+      const base = `GitHub API ${err.status}`;
+      return err.message ? `${base}: ${err.message}` : base;
+    }
+  }
+  return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Build the user-facing error string. If the workflow dispatch was the
+ * step that failed, append a hint pointing at the most common cause —
+ * a stale OAuth grant lacking the `workflow` scope, fixed by signing
+ * out and signing back in to re-authorize.
+ */
+function formatApproveError(e: unknown, issueUrl: string | null): string {
+  const base = e instanceof Error ? e.message : String(e);
+  const parts = [base];
+  if (issueUrl) {
+    parts.push(`Issue was created: ${issueUrl}`);
+  }
+  if (base.includes('dispatching implement workflow')) {
+    parts.push(
+      'If the GitHub error mentions auth or permissions, try signing out and back in to refresh the OAuth grant (the workflow_dispatch endpoint needs the `workflow` scope).',
+    );
+  }
+  return parts.join(' · ');
 }
 
 /**
