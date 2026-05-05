@@ -165,7 +165,7 @@ describe('enrichProposalsWithFreshness', () => {
 
     it('strips :<line> suffix from Location before checking commits', async () => {
       const filed = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
-      const listCommits = vi.fn(async () => ({
+      const listCommits = vi.fn(async (_args: { path?: string }) => ({
         data: [{ commit: { committer: { date: new Date().toISOString() } } }],
       }));
       const octokit = {
@@ -180,8 +180,7 @@ describe('enrichProposalsWithFreshness', () => {
         repos: { listCommits },
       } as unknown as Octokit;
       await enrichProposalsWithFreshness(octokit, [bugFinding()]);
-      const callArgs = listCommits.mock.calls[0][0] as { path?: string };
-      expect(callArgs.path).toBe('lib/auth.ts');
+      expect(listCommits.mock.calls[0][0]?.path).toBe('lib/auth.ts');
     });
 
     it("does not flag when issue body has no Location: line", async () => {
