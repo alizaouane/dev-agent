@@ -158,6 +158,20 @@ on:
         type: string
         default: live
 
+# Granted at the workflow level so the called reusable workflows can
+# request these permissions for their own jobs. Reusable workflows
+# can never elevate above what the caller grants — a caller with
+# read defaults causes the called job to fail at startup with
+# "but is only allowed contents: read, issues: none, ..." even though
+# the reusable's own permissions block asks for write. The union
+# below covers all 5 phase workflows; only one runs per dispatch
+# (each is gated by an if: condition).
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
 jobs:
   implement:
     if: inputs.phase == 'implement'
