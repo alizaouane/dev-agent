@@ -3,7 +3,7 @@ import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
 import { loadSnoozeMap, partitionBySnooze } from '@/lib/scout/snooze';
-import { snoozeProposal, unsnoozeProposal } from '@/lib/actions';
+import { resolveProposalAction, snoozeProposal, unsnoozeProposal } from '@/lib/actions';
 import {
   categorizeProposals,
   categorizationCacheKey,
@@ -271,6 +271,41 @@ function Section({
                   >
                     Discuss with PM
                   </Link>
+                  {resolveLabel(p) ? (
+                    <form action={resolveProposalAction}>
+                      <input type="hidden" name="proposal_id" value={p.id} />
+                      {/* Source-specific meta — only the relevant fields are
+                          read by the action; the rest are ignored. Sending
+                          all of them keeps the form template small. */}
+                      {p.meta?.plan_file ? (
+                        <input
+                          type="hidden"
+                          name="meta_plan_file"
+                          value={String(p.meta.plan_file)}
+                        />
+                      ) : null}
+                      {p.meta?.line ? (
+                        <input
+                          type="hidden"
+                          name="meta_line"
+                          value={String(p.meta.line)}
+                        />
+                      ) : null}
+                      {p.meta?.spec_path ? (
+                        <input
+                          type="hidden"
+                          name="meta_spec_path"
+                          value={String(p.meta.spec_path)}
+                        />
+                      ) : null}
+                      <button
+                        type="submit"
+                        className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+                      >
+                        {resolveLabel(p)}
+                      </button>
+                    </form>
+                  ) : null}
                   <form action={snoozeProposal}>
                     <input type="hidden" name="proposal_id" value={p.id} />
                     <button
@@ -288,6 +323,45 @@ function Section({
       </ul>
     </section>
   );
+}
+
+/**
+ * Per-source button label for the Resolve action. Returns `null` when
+ * Resolve isn't wired for this source (the row hides the button entirely
+ * — Snooze is still the right move there). Rolled-up plan entries
+ * (`unfinished_plan` without a `#L<n>` suffix) also return null since
+ * we can't safely flip every checkbox in a long file.
+ */
+function resolveLabel(p: Proposal): string | null {
+  switch (p.source) {
+    case 'unfinished_plan':
+      // Rolled-up entry has no per-line anchor — let the user open the
+      // file and check items individually instead of one click flipping
+      // 60 boxes.
+      return p.id.includes('#L') ? 'Mark done' : null;
+    case 'pending_spec':
+      return 'File as scoping issue';
+    case 'bug_scout_finding':
+    case 'unfinished_work_finding':
+    case 'untriaged_issue':
+      return 'Close issue';
+    case 'spec_drift':
+    case 'competitor_watch':
+    case 'stale_blocked_issue':
+      // Deferred to v2 — Snooze covers the immediate "I'm done with this
+      // for now" case; Resolve for these sources needs source-specific
+      // semantics we haven't designed yet.
+      return null;
+    default: {
+      // Exhaustiveness check: TypeScript will narrow `p.source` to
+      // `never` here; if a new source is added without updating this
+      // switch, this branch becomes dead and the switch becomes
+      // exhaustive again.
+      const _exhaustive: never = p.source;
+      void _exhaustive;
+      return null;
+    }
+  }
 }
 
 /**
