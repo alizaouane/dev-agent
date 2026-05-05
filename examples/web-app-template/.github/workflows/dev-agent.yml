@@ -19,7 +19,6 @@ on:
         options:
           - implement
           - staging-deploy
-          - smoke-verify
           - promote-to-prod
           - rollback
       issue_number:
@@ -67,15 +66,12 @@ jobs:
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-  smoke-verify:
-    if: inputs.phase == 'smoke-verify'
-    uses: alizaouane/dev-agent/.github/workflows/phase-smoke-verify.yml@v1
-    with:
-      issue_number: ${{ inputs.issue_number }}
-      config_path: .dev-agent.yml
-      invocation_mode: ${{ inputs.invocation_mode }}
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  # smoke-verify is intentionally omitted: it's invoked internally by
+  # the staging-deploy workflow with captured smoke output, not driven
+  # manually. Including it here would require passing smoke_phase /
+  # smoke_output / smoke_exit_code (no defaults), which fails
+  # workflow validation at startup. Repos that need a manual
+  # smoke-verify dispatch should install a dedicated wrapper.
 
   promote-to-prod:
     if: inputs.phase == 'promote-to-prod'
