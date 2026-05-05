@@ -229,21 +229,35 @@ function Section({
     // `open` so the page reads the same as before on first paint;
     // user clicks the summary to fold up sections they don't want to
     // scan right now.
-    <details open className="group mb-10">
-      <summary className="mb-4 flex cursor-pointer list-none items-baseline justify-between gap-3 select-none rounded-md px-2 py-1 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
-        <div className="min-w-0 flex-1">
-          <h2 className="text-lg font-semibold">
-            {title} ({proposals.length})
-          </h2>
-          <p className="mt-1 text-sm text-muted-foreground">{description}</p>
-        </div>
-        <span
-          aria-hidden="true"
-          className="shrink-0 self-center text-muted-foreground transition-transform duration-150 group-open:rotate-90"
-        >
-          ▶
-        </span>
-      </summary>
+    //
+    // **Accessibility note (PR #69 review):** an <h2> nested inside
+    // <summary> can drop its heading role in some browser/screen-reader
+    // combinations because <summary> exposes itself as a button and
+    // child heading roles are sometimes flattened. To preserve
+    // heading-by-heading navigation (rotor / list-of-headings), we
+    // render a real <h2> OUTSIDE the <details> as a sibling sr-only
+    // element — sighted users see the styled span inside the summary;
+    // AT users navigating by headings still find the section. The
+    // visible label is just a span styled to look like an h2.
+    <section className="mb-10">
+      <h2 className="sr-only">
+        {title} ({proposals.length})
+      </h2>
+      <details open className="group">
+        <summary className="mb-4 flex cursor-pointer list-none items-baseline justify-between gap-3 select-none rounded-md px-2 py-1 hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+          <div className="min-w-0 flex-1">
+            <span className="block text-lg font-semibold">
+              {title} ({proposals.length})
+            </span>
+            <p className="mt-1 text-sm text-muted-foreground">{description}</p>
+          </div>
+          <span
+            aria-hidden="true"
+            className="shrink-0 self-center text-muted-foreground transition-transform duration-150 group-open:rotate-90"
+          >
+            ▶
+          </span>
+        </summary>
       <ul className="divide-y divide-border rounded-md border border-border">
         {proposals.map((p) => (
           <li
@@ -335,8 +349,9 @@ function Section({
             </div>
           </li>
         ))}
-      </ul>
-    </details>
+        </ul>
+      </details>
+    </section>
   );
 }
 
