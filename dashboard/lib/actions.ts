@@ -13,6 +13,7 @@ import {
   snoozeProposalPersistent,
   unsnoozeProposalPersistent,
 } from './scout/snooze';
+import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import {
   SCHEDULE_PRESETS,
@@ -627,6 +628,63 @@ export async function unsnoozeProposal(formData: FormData): Promise<void> {
   await assertWritePermission(octokit, route.owner, route.repo, session_username);
 
   await unsnoozeProposalPersistent(octokit, proposalId);
+  revalidatePath('/proposals');
+}
+
+/**
+ * Server Action: mark a proposal as handled — the user is done with it
+ * and wants it gone forever (not just snoozed).
+ *
+ * Per-source effect:
+ *   - `unfinished_plan` (per-line): flip the underlying file's
+ *     checkbox `[ ]` → `[x]` via Octokit commit.
+ *   - `pending_spec`: file a `kind:user-intent` + `state:scoping`
+ *     issue tracking the spec — the user can then run it through the
+ *     normal pipeline.
+ *   - `bug_scout_finding` / `unfinished_work_finding` /
+ *     `untriaged_issue`: close the underlying issue with an audit
+ *     comment.
+ *
+ * Sources without a Resolve story (rolled-up plans, `spec_drift`,
+ * `competitor_watch`) throw a friendly error directing the user to
+ * Snooze instead.
+ *
+ * Form fields:
+ *  - `proposal_id`            — required
+ *  - `meta_plan_file`         — for unfinished_plan
+ *  - `meta_line`              — for unfinished_plan
+ *  - `meta_spec_path`         — for pending_spec
+ *
+ * Permission: requires write on the routed repo. The action throws
+ * before mutating anything if the user lacks it.
+ */
+export async function resolveProposalAction(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const proposalId = ((formData.get('proposal_id') as string) ?? '').trim();
+  if (!proposalId) throw new Error('proposal_id required');
+
+  const route = parseRepoFromProposalId(proposalId);
+  if (!route) {
+    throw new Error(
+      `cannot resolve: proposal id "${proposalId}" doesn't include owner/repo`,
+    );
+  }
+  await assertWritePermission(octokit, route.owner, route.repo, session_username);
+
+  const lineRaw = (formData.get('meta_line') as string) ?? '';
+  const lineParsed = lineRaw ? parseInt(lineRaw, 10) : NaN;
+
+  await resolveProposal(octokit, {
+    proposalId,
+    username: session_username,
+    meta: {
+      plan_file: ((formData.get('meta_plan_file') as string) ?? '').trim() || undefined,
+      line: Number.isFinite(lineParsed) ? lineParsed : undefined,
+      spec_path: ((formData.get('meta_spec_path') as string) ?? '').trim() || undefined,
+    },
+  });
+
   revalidatePath('/proposals');
 }
 

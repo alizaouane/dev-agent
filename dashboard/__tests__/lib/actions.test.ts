@@ -740,3 +740,62 @@ describe('applyPmMdUpdate', () => {
     warnSpy.mockRestore();
   });
 });
+
+describe('resolveProposalAction', () => {
+  it('rejects when the proposal_id has no owner/repo segment', async () => {
+    const { resolveProposalAction } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('proposal_id', 'no-route-here');
+    await expect(resolveProposalAction(fd)).rejects.toThrow(/doesn't include owner\/repo/);
+  });
+
+  it('refuses without write permission on the routed repo', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { resolveProposalAction } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('proposal_id', 'bug_scout_finding:q/r:42');
+    await expect(resolveProposalAction(fd)).rejects.toThrow(/lacks write/);
+  });
+
+  it('routes bug_scout_finding to the issue-close path', async () => {
+    mockOctokit.issues.createComment.mockResolvedValueOnce({});
+    mockOctokit.issues.update.mockResolvedValueOnce({});
+    const { resolveProposalAction } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('proposal_id', 'bug_scout_finding:q/r:42');
+    await resolveProposalAction(fd);
+    expect(mockOctokit.issues.createComment).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'q', repo: 'r', issue_number: 42 }),
+    );
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ issue_number: 42, state: 'closed' }),
+    );
+  });
+
+  it('forwards meta_plan_file + meta_line for unfinished_plan ids', async () => {
+    const planContent = '# Plan\n\n- [ ] do thing\n';
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        type: 'file',
+        encoding: 'base64',
+        content: Buffer.from(planContent).toString('base64'),
+        sha: 'sha-abc',
+      },
+    });
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({});
+
+    const { resolveProposalAction } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('proposal_id', 'unfinished_plan:q/r:plan#L3');
+    fd.append('meta_plan_file', 'docs/plans/plan.md');
+    fd.append('meta_line', '3');
+    await resolveProposalAction(fd);
+
+    const writeCall = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    const decoded = Buffer.from(writeCall.content, 'base64').toString('utf8');
+    expect(decoded).toContain('- [x] do thing');
+  });
+});
