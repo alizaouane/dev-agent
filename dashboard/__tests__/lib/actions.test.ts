@@ -441,12 +441,15 @@ describe('approveAndStart', () => {
       expect((e as Error).message).toMatch(/__redirect__:\/features\/77/);
     }
 
+    // Open with state:spec-ready (intermediate, accurate). Promotion
+    // to state:implementing only happens AFTER successful dispatch
+    // (separate test below covers the failure case).
     expect(mockOctokit.issues.create).toHaveBeenCalledWith(
       expect.objectContaining({
         owner: 'q',
         repo: 'r',
         title: 'Add refunds',
-        labels: ['kind:user-intent', 'state:implementing'],
+        labels: ['kind:user-intent', 'state:spec-ready'],
       }),
     );
     // Issue body must contain the agreed-scope content so the implement
@@ -469,6 +472,52 @@ describe('approveAndStart', () => {
         },
       }),
     );
+
+    // Label promoted to state:implementing only after dispatch succeeds.
+    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        issue_number: 77,
+        labels: ['kind:user-intent', 'state:implementing'],
+      }),
+    );
+    // Order matters: dispatch must come before the label flip, otherwise
+    // a dispatch failure strands the issue in state:implementing.
+    expect(mockOctokit.actions.createWorkflowDispatch.mock.invocationCallOrder[0]).toBeLessThan(
+      mockOctokit.issues.setLabels.mock.invocationCallOrder[0],
+    );
+  });
+
+  it('does NOT promote to state:implementing if the workflow dispatch fails', async () => {
+    // Regression guard: previously the issue was created with
+    // state:implementing up-front, so a dispatch failure stranded the
+    // issue with a label that mocked the dashboard pipeline view and
+    // tripped orch-sweep's stuck-issue alarm.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 88 } });
+    mockOctokit.actions.createWorkflowDispatch.mockRejectedValueOnce(
+      Object.assign(new Error('Unprocessable Entity'), { status: 422 }),
+    );
+
+    const { approveAndStart } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('title', 'X');
+    fd.append('pm_final_message', '## Agreed scope\n\nbuild it.');
+
+    const result = await approveAndStart(fd);
+    expect(result).toMatchObject({ error: expect.stringContaining('dispatching implement workflow failed') });
+
+    // Issue was created with the safe intermediate label.
+    expect(mockOctokit.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        labels: ['kind:user-intent', 'state:spec-ready'],
+      }),
+    );
+    // Crucially: setLabels(state:implementing) is NOT called, so the
+    // issue stays at state:spec-ready and orch-sweep won't flag it.
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 
   it("dispatches on the repo's actual default branch, not a hardcoded 'main' (regression)", async () => {

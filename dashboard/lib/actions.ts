@@ -430,13 +430,19 @@ export async function approveAndStart(
       scope,
     ].join('\n');
 
+    // Open with state:spec-ready (an intermediate, accurate label) and
+    // promote to state:implementing only after the dispatch confirms a
+    // run is queued. If we set state:implementing up-front and dispatch
+    // then fails, we strand the issue with a label that mocks the
+    // dashboard pipeline view + trips orch-sweep's stuck-issue alarm
+    // (which expressly looks for state:implementing to find hung work).
     const issue = await wrapStep('creating issue', () =>
       octokit.issues.create({
         owner,
         repo,
         title: title.slice(0, 100),
         body: issueBody,
-        labels: ['kind:user-intent', 'state:implementing'],
+        labels: ['kind:user-intent', 'state:spec-ready'],
       }),
     );
     issueNumber = issue.data.number;
@@ -474,6 +480,26 @@ export async function approveAndStart(
         },
       }),
     );
+
+    // Promote to state:implementing now that the run is queued.
+    // Best-effort: at this point the agent is already going and the
+    // dashboard's active-runs panel reflects the live run, so a
+    // label-flip hiccup shouldn't error the whole approve flow — log
+    // and continue (the implement workflow's own label transition at
+    // phase end will reconcile).
+    try {
+      await octokit.issues.setLabels({
+        owner,
+        repo,
+        issue_number: issue.data.number,
+        labels: ['kind:user-intent', 'state:implementing'],
+      });
+    } catch (err) {
+      console.warn(
+        `approveAndStart: state:implementing label flip failed for ${owner}/${repo}#${issue.data.number} (run is already dispatched):`,
+        err,
+      );
+    }
 
     repoFullForRedirect = repoFull;
   } catch (e) {
