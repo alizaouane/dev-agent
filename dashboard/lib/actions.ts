@@ -927,3 +927,164 @@ export async function triggerCleanupScan(formData: FormData): Promise<void> {
 
   revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
 }
+
+/**
+ * Server Action: re-dispatch a phase workflow on an existing issue.
+ * Used by the feature page's "Re-run" button so the operator doesn't
+ * have to drop into `gh workflow run` whenever a phase fails or needs
+ * a retry.
+ *
+ * Returns `{ error }` on failure — same contract as `approveAndStart`,
+ * so production's server-action error masking can't hide useful info.
+ *
+ * Form fields:
+ *  - `repo`            — `owner/name`
+ *  - `issue`           — issue number
+ *  - `phase`           — implement | staging-deploy | promote-to-prod | rollback
+ *  - `invocation_mode` — live | stub (default 'live')
+ */
+export async function redispatchPhase(
+  formData: FormData,
+): Promise<{ error: string } | void> {
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string) ?? '').trim();
+    const issueStr = ((formData.get('issue') as string) ?? '').trim();
+    const phase = ((formData.get('phase') as string) ?? 'implement').trim();
+    const invocation_mode = ((formData.get('invocation_mode') as string) ?? 'live').trim();
+
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    const issue_number = parseInt(issueStr, 10);
+    if (!Number.isFinite(issue_number)) throw new Error('issue must be a number');
+    if (!['implement', 'staging-deploy', 'promote-to-prod', 'rollback'].includes(phase)) {
+      throw new Error(`unknown phase: ${phase}`);
+    }
+    if (!['live', 'stub'].includes(invocation_mode)) {
+      throw new Error(`unknown invocation_mode: ${invocation_mode}`);
+    }
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    const repoData = await octokit.repos.get({ owner, repo });
+    const default_branch = repoData.data.default_branch;
+
+    await octokit.actions.createWorkflowDispatch({
+      owner,
+      repo,
+      workflow_id: 'dev-agent.yml',
+      ref: default_branch,
+      inputs: {
+        phase,
+        issue_number: String(issue_number),
+        invocation_mode,
+      },
+    });
+
+    revalidatePath(`/features/${issue_number}`);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[redispatchPhase] failed', { message, raw: e });
+    return { error: message };
+  }
+}
+
+/**
+ * Server Action: cancel an in-flight workflow run. Used by the
+ * "Cancel" button on the active-runs panel so the operator can stop
+ * a hung or wrong-target run from the dashboard instead of dropping
+ * into `gh run cancel`.
+ *
+ * Form fields:
+ *  - `repo`   — `owner/name`
+ *  - `run_id` — numeric workflow run id
+ */
+export async function cancelRun(
+  formData: FormData,
+): Promise<{ error: string } | void> {
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string) ?? '').trim();
+    const runIdStr = ((formData.get('run_id') as string) ?? '').trim();
+
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    const run_id = parseInt(runIdStr, 10);
+    if (!Number.isFinite(run_id)) throw new Error('run_id must be a number');
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    await octokit.actions.cancelWorkflowRun({ owner, repo, run_id });
+
+    // No issue context here, so we revalidate the home (pipeline view)
+    // and let the caller re-fetch the feature page if it's the source.
+    revalidatePath('/');
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[cancelRun] failed', { message, raw: e });
+    return { error: message };
+  }
+}
+
+/**
+ * Server Action: merge the PR linked to an issue. Used by the feature
+ * page's PR panel so the operator can ship a dev-agent PR without
+ * leaving the dashboard.
+ *
+ * Defensive: requires write permission, refuses if the PR isn't
+ * mergeable (conflicts, failing checks). The caller decides which
+ * `merge_method` (squash by default — matches the engine's release
+ * convention).
+ *
+ * Form fields:
+ *  - `repo`         — `owner/name`
+ *  - `pr_number`    — PR number
+ *  - `merge_method` — squash | merge | rebase (default 'squash')
+ */
+export async function mergeFeaturePR(
+  formData: FormData,
+): Promise<{ error: string } | void> {
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string) ?? '').trim();
+    const prStr = ((formData.get('pr_number') as string) ?? '').trim();
+    const methodRaw = ((formData.get('merge_method') as string) ?? 'squash').trim();
+
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    const pull_number = parseInt(prStr, 10);
+    if (!Number.isFinite(pull_number)) throw new Error('pr_number must be a number');
+    if (!['squash', 'merge', 'rebase'].includes(methodRaw)) {
+      throw new Error(`unknown merge_method: ${methodRaw}`);
+    }
+    const merge_method = methodRaw as 'squash' | 'merge' | 'rebase';
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    await octokit.pulls.merge({ owner, repo, pull_number, merge_method });
+
+    revalidatePath('/');
+  } catch (e) {
+    // Octokit's merge errors carry useful context (mergeable: false,
+    // checks failing, etc.) — surface them verbatim.
+    const message = formatMergeError(e);
+    console.error('[mergeFeaturePR] failed', { message, raw: e });
+    return { error: message };
+  }
+}
+
+function formatMergeError(e: unknown): string {
+  if (typeof e === 'object' && e !== null) {
+    const err = e as { status?: number; message?: string };
+    if (err.status === 405) {
+      return `PR cannot be merged (405): ${err.message ?? 'not mergeable — checks may be failing or the branch is behind'}`;
+    }
+    if (typeof err.status === 'number') {
+      return `GitHub API ${err.status}: ${err.message ?? ''}`;
+    }
+  }
+  return e instanceof Error ? e.message : String(e);
+}
