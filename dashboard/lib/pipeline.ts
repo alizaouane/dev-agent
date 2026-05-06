@@ -49,6 +49,28 @@ const TERMINAL_STATES = new Set<StateLabel>([
   'state:rolled-back',
 ]);
 
+/**
+ * Open-bucket state labels — issues we expect to see on the live
+ * pipeline. Each one is queried independently since GitHub's REST
+ * filter is AND across labels (see `listIssuesByAnyLabel` below).
+ */
+const OPEN_STATE_LABELS: readonly StateLabel[] = [
+  'state:scoping',
+  'state:spec-ready',
+  'state:implementing',
+  'state:pr-review',
+  'state:staging-deployed',
+  'state:ready-to-promote',
+  'state:promoting',
+  'state:blocked',
+];
+
+const CLOSED_STATE_LABELS: readonly StateLabel[] = [
+  'state:done',
+  'state:abandoned',
+  'state:rolled-back',
+];
+
 const NEEDS_ACTION_STATES = new Set<StateLabel>([
   'state:spec-ready',
   'state:pr-review',
@@ -117,26 +139,34 @@ export async function fetchPipeline(
       html_url: string;
       comments: number;
     }>;
+    // GitHub's REST `issues.listForRepo` treats a comma-separated
+    // `labels` filter as AND — the issue must carry every label in the
+    // list. The pipeline wants OR (any one of the state labels), and
+    // since no issue can simultaneously be `state:scoping` AND
+    // `state:implementing` AND `state:done`, the old multi-label query
+    // returned zero issues and the page silently rendered empty. Fix:
+    // one paginated call per state label, then dedupe by issue number.
+    // The per-label calls run in parallel; one bad call doesn't poison
+    // the result set.
     try {
-      issues = await octokit.paginate(octokit.issues.listForRepo, {
-        owner: r.owner,
-        repo: r.name,
-        state: 'open',
-        labels:
-          'state:scoping,state:spec-ready,state:implementing,state:pr-review,state:staging-deployed,state:ready-to-promote,state:promoting,state:blocked',
-        per_page: 100,
-      });
+      issues = await listIssuesByAnyLabel(
+        octokit,
+        r.owner,
+        r.name,
+        'open',
+        OPEN_STATE_LABELS,
+      );
       if (include_terminal) {
-        const closed = await octokit.paginate(octokit.issues.listForRepo, {
-          owner: r.owner,
-          repo: r.name,
-          state: 'closed',
-          labels: 'state:done,state:abandoned,state:rolled-back',
-          per_page: 100,
-        });
-        // Defensive dedupe: a misbehaving server (or a test fixture that
-        // ignores the `state` filter) could return the same issue in both
-        // buckets. Key on issue number — within one repo it's unique.
+        const closed = await listIssuesByAnyLabel(
+          octokit,
+          r.owner,
+          r.name,
+          'closed',
+          CLOSED_STATE_LABELS,
+        );
+        // Defensive dedupe across open/closed buckets: a misbehaving
+        // server (or a test fixture that ignores the `state` filter)
+        // could return the same issue in both. Key on issue number.
         const seen = new Set<number>(issues.map((i) => i.number));
         for (const c of closed) {
           if (!seen.has(c.number)) {
@@ -202,4 +232,61 @@ export async function fetchPipeline(
   }
 
   return all;
+}
+
+/**
+ * OR-filter helper for GitHub's issues.listForRepo. We make one
+ * paginated call per label and merge results, deduping by issue
+ * number. Per-label calls run in parallel; a single failed call
+ * (e.g., a transient 5xx) is logged and treated as empty so the
+ * other label buckets still surface.
+ *
+ * Why this exists: the REST endpoint's `labels=a,b,c` filter is AND,
+ * not OR. Multiple state labels passed as a single comma string
+ * silently returned zero issues — the bug that hid every in-flight
+ * feature from the pipeline view until this fix.
+ */
+type PipelineIssue = {
+  number: number;
+  title: string;
+  labels: Array<string | { name?: string }>;
+  updated_at: string;
+  html_url: string;
+  comments: number;
+};
+
+async function listIssuesByAnyLabel(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  state: 'open' | 'closed',
+  labels: readonly StateLabel[],
+): Promise<PipelineIssue[]> {
+  const buckets = await Promise.all(
+    labels.map(async (label): Promise<PipelineIssue[]> => {
+      try {
+        return (await octokit.paginate(octokit.issues.listForRepo, {
+          owner,
+          repo,
+          state,
+          labels: label,
+          per_page: 100,
+        })) as PipelineIssue[];
+      } catch (err) {
+        console.warn(
+          `listIssuesByAnyLabel: ${owner}/${repo} state=${state} label=${label} failed`,
+          err,
+        );
+        return [];
+      }
+    }),
+  );
+
+  const seen = new Map<number, PipelineIssue>();
+  for (const bucket of buckets) {
+    for (const issue of bucket) {
+      if (!seen.has(issue.number)) seen.set(issue.number, issue);
+    }
+  }
+  return Array.from(seen.values());
 }

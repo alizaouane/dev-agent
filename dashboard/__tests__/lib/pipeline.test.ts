@@ -115,4 +115,182 @@ describe('fetchPipeline', () => {
     const items = await fetchPipeline(octokit, repos, { include_terminal: true });
     expect(items).toHaveLength(1);
   });
+
+  it('queries each open state label individually (REST labels filter is AND, not OR)', async () => {
+    // Regression: passing the 8 state labels as one comma-separated
+    // string used to filter to issues with ALL labels — impossible —
+    // so the live pipeline silently rendered empty. Lock the per-label
+    // invocation pattern in: paginate must be called once per state
+    // label, and each call's `labels` arg must be a single label
+    // (no commas).
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    const octokit = makeOctokit({ 'q/r1': [] });
+    await fetchPipeline(octokit, repos, { include_terminal: false });
+    // 8 open-bucket state labels, no terminals.
+    const paginate = octokit.paginate as unknown as ReturnType<typeof vi.fn>;
+    expect(paginate).toHaveBeenCalledTimes(8);
+    const labelArgs = paginate.mock.calls.map(
+      (c: unknown[]) => (c[1] as { labels: string }).labels,
+    );
+    for (const arg of labelArgs) {
+      expect(arg).not.toContain(',');
+      expect(arg).toMatch(/^state:[a-z-]+$/);
+    }
+    // Set of distinct labels equals the open-state vocabulary.
+    expect(new Set(labelArgs).size).toBe(8);
+  });
+
+  it('returns issues even when each one only matches a single state label (real OR semantics)', async () => {
+    // Tightest regression for the original bug: simulate the real
+    // GitHub API behavior where the `labels` filter is AND. With a
+    // label-aware mock, an issue tagged only `state:implementing`
+    // returns from the `state:implementing` call but NOT from the
+    // `state:scoping` call. Before the fix, the single multi-label
+    // query would have returned [] for each of these issues. After,
+    // the per-label fan-out picks each one up via its own label.
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    const issuesInRepo = [
+      {
+        number: 10,
+        title: 'in scoping',
+        labels: [{ name: 'state:scoping' }],
+        updated_at: new Date().toISOString(),
+        html_url: 'https://gh/q/r1/issues/10',
+        comments: 0,
+      },
+      {
+        number: 11,
+        title: 'building',
+        labels: [{ name: 'state:implementing' }],
+        updated_at: new Date().toISOString(),
+        html_url: 'https://gh/q/r1/issues/11',
+        comments: 0,
+      },
+      {
+        number: 12,
+        title: 'awaiting review',
+        labels: [{ name: 'state:pr-review' }],
+        updated_at: new Date().toISOString(),
+        html_url: 'https://gh/q/r1/issues/12',
+        comments: 0,
+      },
+    ];
+    // Label-aware paginate: only return issues that actually carry
+    // the requested label. This mirrors GitHub's real behavior under
+    // the AND-semantics filter we have to work around.
+    const octokit = {
+      paginate: vi.fn(async (_fn: unknown, opts: { labels?: string }) => {
+        return issuesInRepo.filter((i) =>
+          i.labels.some((l) =>
+            typeof l === 'string' ? l === opts.labels : l.name === opts.labels,
+          ),
+        );
+      }),
+      issues: {
+        listForRepo: vi.fn(),
+        listComments: vi.fn(() => Promise.resolve({ data: [] })),
+      },
+    } as unknown as Octokit;
+
+    const items = await fetchPipeline(octokit, repos, { include_terminal: false });
+    const numbers = items.map((i) => i.issue_number).sort();
+    expect(numbers).toEqual([10, 11, 12]);
+  });
+
+  it('include_terminal: true queries open + closed buckets independently (8 + 3 = 11 calls)', async () => {
+    // Regression lock for the closed/terminal branch: same OR-via-fanout
+    // pattern, separate label set. If the fix only updated the open
+    // path and left the closed path on the multi-label string,
+    // include_terminal=true would silently lose terminal issues.
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    const octokit = makeOctokit({ 'q/r1': [] });
+    await fetchPipeline(octokit, repos, { include_terminal: true });
+    const paginate = octokit.paginate as unknown as ReturnType<typeof vi.fn>;
+    expect(paginate).toHaveBeenCalledTimes(11);
+    const labelArgs = paginate.mock.calls.map(
+      (c: unknown[]) => (c[1] as { labels: string }).labels,
+    );
+    for (const arg of labelArgs) {
+      expect(arg).not.toContain(',');
+      expect(arg).toMatch(/^state:[a-z-]+$/);
+    }
+    // Distinct labels: 8 open + 3 closed = 11 unique state values.
+    expect(new Set(labelArgs).size).toBe(11);
+    // Closed-bucket terminals must be in the queried set.
+    expect(new Set(labelArgs)).toContain('state:done');
+    expect(new Set(labelArgs)).toContain('state:abandoned');
+    expect(new Set(labelArgs)).toContain('state:rolled-back');
+  });
+
+  it('one failed per-label call does not poison the other state buckets', async () => {
+    // Per-label fan-out is robust: a transient 5xx on the
+    // `state:scoping` lookup must not blank out the page — issues in
+    // `state:implementing` still need to show up. Mirrors the
+    // existing one-bad-repo-doesn't-blank-everything contract for
+    // multi-repo loops, but at the per-label level inside a repo.
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    const issue = {
+      number: 50,
+      title: 'shipping',
+      labels: [{ name: 'state:implementing' }],
+      updated_at: new Date().toISOString(),
+      html_url: 'https://gh/q/r1/issues/50',
+      comments: 0,
+    };
+    const octokit = {
+      paginate: vi.fn(async (_fn: unknown, opts: { labels?: string }) => {
+        if (opts.labels === 'state:scoping') {
+          throw Object.assign(new Error('Internal Server Error'), { status: 500 });
+        }
+        return opts.labels === 'state:implementing' ? [issue] : [];
+      }),
+      issues: {
+        listForRepo: vi.fn(),
+        listComments: vi.fn(() => Promise.resolve({ data: [] })),
+      },
+    } as unknown as Octokit;
+    // Silence the warn so the test output stays clean.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const items = await fetchPipeline(octokit, repos, { include_terminal: false });
+    expect(items).toHaveLength(1);
+    expect(items[0].issue_number).toBe(50);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('dedupes when the same issue appears under multiple state-label calls', async () => {
+    // Per-label calls can return overlapping issues if a server
+    // ignores label filters or an issue legitimately carries
+    // multiple labels (rare but possible). The merge must dedupe by
+    // issue number so the pipeline shows each issue once.
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    // The mock returns the full bucket regardless of which label was
+    // queried — so each of the 8 label calls returns the same issue.
+    // Without dedupe, the result would be 8 copies.
+    const octokit = makeOctokit({
+      'q/r1': [
+        {
+          number: 99,
+          title: 'one',
+          labels: [{ name: 'state:implementing' }],
+          updated_at: new Date().toISOString(),
+          html_url: 'https://gh/q/r1/issues/99',
+          comments: 0,
+        },
+      ],
+    });
+    const items = await fetchPipeline(octokit, repos, { include_terminal: false });
+    expect(items).toHaveLength(1);
+    expect(items[0].issue_number).toBe(99);
+  });
 });
