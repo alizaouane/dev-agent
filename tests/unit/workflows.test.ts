@@ -14,6 +14,8 @@ const PHASE_WORKFLOWS = [
   'phase-bug-scout.yml',
   'phase-unfinished-work-scout.yml',
   'phase-cleanup-scout.yml',
+  // Industry-grade verification gates (build steps 6 + 9 + 12 + 13)
+  'phase-acm.yml',
 ];
 
 // Workflows that take an `issue_number` input. The scout workflows

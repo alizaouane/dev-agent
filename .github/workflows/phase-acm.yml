@@ -1,0 +1,246 @@
+name: dev-agent · phase-acm
+
+# Phase: ACM (Acceptance-Criteria Manifest). Pillar 1 of the industry-grade
+# verification architecture. Runs in `state:acm-building`, between
+# `state:spec-ready` and `state:implementing`.
+#
+# Reads the spec, extracts the `## Acceptance criteria` bullets, generates
+# failing test stubs (one per criterion) via a separate test-agent context
+# (Augment's circular-validation fix), SHA-locks the manifest, and either:
+#   - applies `acm-pass` (advances to state:implementing — phase-implement)
+#   - applies `acm-fail` (advances to state:blocked — operator review)
+#
+# v1 ships in stub mode by default. The full live-agent flow lands in
+# step 6b once the test-agent context-isolation surface is wired through
+# claude-code-action.
+#
+# SECURITY: spec content is wrapped in <untrusted_content> tags before
+# reaching any prompt template (see lib/untrusted-content.ts). The phase
+# starts with step-security/harden-runner so unexpected egress is logged.
+# All untrusted GitHub event values flow through env vars — never inlined
+# into run: blocks.
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      config_path:
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number'
+        required: true
+        type: number
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: 'examples/test-repo/.dev-agent.yml'
+      invocation_mode:
+        description: 'live (real test-agent — TODO step 6b) or stub (deterministic, no model)'
+        required: false
+        type: string
+        default: 'stub'
+
+jobs:
+  acm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      issues: write
+      id-token: write
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+
+      - name: Reserve workflow artifacts from git state
+        run: |
+          set -euo pipefail
+          {
+            echo 'issue.json'
+            echo '.dev-agent-engine/'
+            echo '/tmp/acm-extract.json'
+          } >> .git/info/exclude
+
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - run: npm ci
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
+
+      - name: Convert .dev-agent.yml to JSON
+        env:
+          CONFIG_PATH: ${{ inputs.config_path }}
+        run: |
+          set -euo pipefail
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          jq -e . /tmp/config.json > /dev/null
+
+      - name: Read issue + locate spec
+        id: issue
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue view "$ISSUE_NUMBER" --json number,title,body,labels > issue.json
+          SPECS_DIR=$(jq -r '.artifacts.specs_dir // "docs/specs"' /tmp/config.json)
+          BODY=$(jq -r '.body' issue.json)
+          # Same spec-path discovery as phase-implement.yml — first try
+          # SPECS_DIR-prefixed, then any docs/**/*.md. No placeholder fallback
+          # in phase-acm: missing spec is a hard fail.
+          SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "${SPECS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
+          if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
+            SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]+\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
+          fi
+          if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
+            echo "spec_missing=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "spec_missing=false" >> "$GITHUB_OUTPUT"
+          echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Block when spec is missing
+        if: steps.issue.outputs.spec_missing == 'true'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BODY='🤖 Phase: acm
+          Verdict: blocked
+          Reason: missing-spec
+
+          Issue body must reference a spec file under `docs/specs/` (or any `docs/**/*.md` path). Add the spec link and re-run `/approve`.'
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label state:blocked --remove-label state:acm-building || true
+          exit 1
+
+      - name: Extract + lint acceptance criteria
+        id: extract
+        if: steps.issue.outputs.spec_missing != 'true'
+        env:
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+        run: |
+          set -euo pipefail
+          set +e
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/acm-extract.ts > /tmp/acm-extract.json
+          STATUS=$?
+          set -e
+          if [ ! -s /tmp/acm-extract.json ]; then
+            echo "::error::acm-extract produced no output"
+            exit 2
+          fi
+          REASON=$(jq -r '.reason // ""' /tmp/acm-extract.json)
+          OK=$(jq -r '.ok' /tmp/acm-extract.json)
+          echo "ok=$OK" >> "$GITHUB_OUTPUT"
+          echo "reason=$REASON" >> "$GITHUB_OUTPUT"
+          echo "extract_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Block when extraction / lint fails
+        if: steps.extract.outputs.ok == 'false'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          REASON: ${{ steps.extract.outputs.reason }}
+        run: |
+          set -euo pipefail
+          ERR_LIST=$(jq -r '[.lint[] | select(.level == "error") | "  - \(.id): \(.message)"] | join("\n")' /tmp/acm-extract.json)
+          if [ "$REASON" = "missing-section" ]; then
+            BODY=$'🤖 Phase: acm\nVerdict: blocked\nReason: missing-section\n\nThe spec lacks a `## Acceptance criteria` section. Add the section with one criterion per `- [ ]` bullet and re-run `/approve`.'
+          else
+            BODY=$(printf '🤖 Phase: acm\nVerdict: blocked\nReason: lint-errors\n\nAcceptance criteria failed lint:\n%s\n\nFix the criteria (each must be observable, testable, ≥5 words, no vague terms without measurable thresholds) and re-run `/approve`.\n' "$ERR_LIST")
+          fi
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label state:blocked --remove-label state:acm-building || true
+          exit 1
+
+      - name: Live agent (TODO step 6b)
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BODY=$'🤖 Phase: acm\nMode: live\nStatus: not-yet-implemented\n\nLive ACM mode (real test-agent generating failing test stubs from criteria) lands in step 6b of the v1 build sequence. Re-run with `invocation_mode: stub` to advance via deterministic stub-mode while live wiring is in flight.'
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          exit 1
+
+      - name: Stub-mode — generate fake manifest + stub tests
+        id: stub
+        if: inputs.invocation_mode == 'stub' && steps.extract.outputs.ok == 'true'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+        run: |
+          set -euo pipefail
+          mkdir -p .dev-agent tests/acm
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/acm-stub-build.ts \
+            --extract /tmp/acm-extract.json \
+            --issue "$ISSUE_NUMBER" \
+            --spec "$SPEC_PATH" \
+            --manifest .dev-agent/acm-manifest.json \
+            --tests-dir tests/acm
+
+      - name: Commit + push manifest + stub tests
+        if: steps.stub.outcome == 'success'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          git config user.name 'dev-agent[bot]'
+          git config user.email '198982749+dev-agent[bot]@users.noreply.github.com'
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" > /dev/null 2>&1; then
+            git fetch origin "$BRANCH_NAME"
+            git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+          else
+            git checkout -B "$BRANCH_NAME"
+          fi
+          git add .dev-agent/acm-manifest.json tests/acm/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(acm): generate manifest + stub tests for issue #${ISSUE_NUMBER}"
+            git push -u origin "$BRANCH_NAME"
+          fi
+
+      - name: Apply acm-pass transition (stub mode)
+        if: inputs.invocation_mode == 'stub' && steps.extract.outputs.ok == 'true'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          COUNT=$(jq '.criteria | length' /tmp/acm-extract.json)
+          BODY=$(printf '🤖 Phase: acm\nVerdict: pass\nMode: stub\n\nStub manifest written to `.dev-agent/acm-manifest.json` with %s criteria. Stub tests committed under `tests/acm/`. Advancing to `state:implementing`.\n' "$COUNT")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label state:implementing --remove-label state:acm-building || true
