@@ -177,6 +177,19 @@ jobs:
           BODY=$(printf '🤖 Phase: implement\nModel: (none)\nTokens: 0 in / 0 out\nCost: $0\nMode: stub\nStatus: stub-mode (no agent invocation; set invocation_mode=live to ship code)\n')
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
 
+      # claude-code-action expects the Claude Code native binary at
+      # ~/.local/bin/claude — it doesn't install it itself. Without
+      # this step, the action fails with "Claude Code native binary
+      # not found at /home/runner/.local/bin/claude". The official
+      # installer drops the binary at exactly that path and adds it
+      # to PATH for subsequent steps.
+      - name: Install Claude Code CLI
+        if: inputs.invocation_mode == 'live'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Run Claude Code (live agent)
         id: claude
         if: inputs.invocation_mode == 'live'
