@@ -115,4 +115,58 @@ describe('fetchPipeline', () => {
     const items = await fetchPipeline(octokit, repos, { include_terminal: true });
     expect(items).toHaveLength(1);
   });
+
+  it('queries each open state label individually (REST labels filter is AND, not OR)', async () => {
+    // Regression: passing the 8 state labels as one comma-separated
+    // string used to filter to issues with ALL labels — impossible —
+    // so the live pipeline silently rendered empty. Lock the per-label
+    // invocation pattern in: paginate must be called once per state
+    // label, and each call's `labels` arg must be a single label
+    // (no commas).
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    const octokit = makeOctokit({ 'q/r1': [] });
+    await fetchPipeline(octokit, repos, { include_terminal: false });
+    // 8 open-bucket state labels, no terminals.
+    const paginate = octokit.paginate as unknown as ReturnType<typeof vi.fn>;
+    expect(paginate).toHaveBeenCalledTimes(8);
+    const labelArgs = paginate.mock.calls.map(
+      (c: unknown[]) => (c[1] as { labels: string }).labels,
+    );
+    for (const arg of labelArgs) {
+      expect(arg).not.toContain(',');
+      expect(arg).toMatch(/^state:[a-z-]+$/);
+    }
+    // Set of distinct labels equals the open-state vocabulary.
+    expect(new Set(labelArgs).size).toBe(8);
+  });
+
+  it('dedupes when the same issue appears under multiple state-label calls', async () => {
+    // Per-label calls can return overlapping issues if a server
+    // ignores label filters or an issue legitimately carries
+    // multiple labels (rare but possible). The merge must dedupe by
+    // issue number so the pipeline shows each issue once.
+    const repos: RepoInfo[] = [
+      { owner: 'q', name: 'r1', default_branch: 'main', wired_up: true, html_url: 'https://github.com/q/r1', description: null },
+    ];
+    // The mock returns the full bucket regardless of which label was
+    // queried — so each of the 8 label calls returns the same issue.
+    // Without dedupe, the result would be 8 copies.
+    const octokit = makeOctokit({
+      'q/r1': [
+        {
+          number: 99,
+          title: 'one',
+          labels: [{ name: 'state:implementing' }],
+          updated_at: new Date().toISOString(),
+          html_url: 'https://gh/q/r1/issues/99',
+          comments: 0,
+        },
+      ],
+    });
+    const items = await fetchPipeline(octokit, repos, { include_terminal: false });
+    expect(items).toHaveLength(1);
+    expect(items[0].issue_number).toBe(99);
+  });
 });
