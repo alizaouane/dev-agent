@@ -37,7 +37,10 @@ on:
 jobs:
   implement:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # Long ceiling so the implement phase can land large multi-step
+    # specs without GitHub killing the run mid-edit. Originally 30 min,
+    # which truncated runs on real-sized specs.
+    timeout-minutes: 360
     permissions:
       contents: write
       issues: write
@@ -201,7 +204,10 @@ jobs:
           # Guardrails (blocked_paths, max_files_changed) are enforced by
           # the rendered prompt, not by tool denylists — the prompt is the
           # contract.
-          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
+          # max-turns intentionally high — the previous 30-turn cap
+          # forced premature exit on multi-step specs. The workflow
+          # timeout-minutes ceiling is the real backstop.
+          claude_args: '--max-turns 500 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           branch_prefix: 'feat/dev-agent-issue-'
           show_full_output: 'true'
 

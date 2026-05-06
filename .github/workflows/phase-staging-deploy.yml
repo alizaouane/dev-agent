@@ -44,7 +44,8 @@ on:
 jobs:
   staging-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # See phase-implement.yml for rationale on the long ceiling.
+    timeout-minutes: 360
     permissions:
       contents: write
       issues: write
@@ -165,7 +166,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: ${{ steps.build.outputs.prompt_path }}
-          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite WebFetch'
+          claude_args: '--max-turns 500 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite WebFetch'
           show_full_output: 'true'
 
       - name: Parse agent JSON + comment telemetry + flip state
