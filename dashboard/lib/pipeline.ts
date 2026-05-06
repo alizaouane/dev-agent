@@ -17,9 +17,12 @@ export type StateLabel =
   | 'state:proposed'
   | 'state:scoping'
   | 'state:spec-ready'
+  | 'state:acm-building'
   | 'state:implementing'
+  | 'state:swarm-reviewing'
   | 'state:pr-review'
   | 'state:staging-deployed'
+  | 'state:tier2-smoke'
   | 'state:ready-to-promote'
   | 'state:promoting'
   | 'state:done'
@@ -57,9 +60,12 @@ const TERMINAL_STATES = new Set<StateLabel>([
 const OPEN_STATE_LABELS: readonly StateLabel[] = [
   'state:scoping',
   'state:spec-ready',
+  'state:acm-building',
   'state:implementing',
+  'state:swarm-reviewing',
   'state:pr-review',
   'state:staging-deployed',
+  'state:tier2-smoke',
   'state:ready-to-promote',
   'state:promoting',
   'state:blocked',

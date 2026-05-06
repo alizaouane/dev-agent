@@ -45,6 +45,39 @@ export const devAgentConfigSchema = z.object({
   }),
   audit_skills: z.object({
     pre_pr: z.array(z.string()),
+    // Industry-grade verification gates (v1 build sequence). All optional —
+    // existing consumer configs validate without these blocks. Wired to phases
+    // in build steps 6 (ACM), 9 (evidence collector), 12 (swarm), 13 (tier-2).
+    acm: z
+      .object({
+        required: z.boolean(),
+        test_pattern: z.string().min(1),
+        mutation_score_threshold: z.number().int().min(0).max(100),
+        flaky_runs: z.number().int().positive(),
+        max_iterations: z.number().int().positive(),
+      })
+      .optional(),
+    swarm: z
+      .object({
+        reviewers: z.array(z.string()),
+        reviewer_weights: z.record(z.number()).optional(),
+        timeout_minutes: z.number().int().positive(),
+        fail_open: z.boolean(),
+        kill_switch_env: z.string().optional(),
+      })
+      .optional(),
+    evidence_collector: z
+      .object({
+        scanners: z.array(z.string()),
+      })
+      .optional(),
+    tier2_smoke: z
+      .object({
+        enabled: z.boolean(),
+        timeout_minutes: z.number().int().positive(),
+        target_routes: z.array(z.string()).optional(),
+      })
+      .optional(),
   }),
   scaffold_skills: z.object({
     edge_function: z.string().optional(),
@@ -75,7 +108,24 @@ export const devAgentConfigSchema = z.object({
     smoke_verify: phaseCostCapSchema,
     scout_digest: phaseCostCapSchema,
     rollback: phaseCostCapSchema,
+    // Industry-grade verification phases — optional for existing configs.
+    acm: phaseCostCapSchema.optional(),
+    swarm_review: phaseCostCapSchema.optional(),
+    evidence_collector: phaseCostCapSchema.optional(),
+    tier2_smoke: phaseCostCapSchema.optional(),
+    self_review: phaseCostCapSchema.optional(),
+    index_refresh: phaseCostCapSchema.optional(),
+    // Per-repo monthly budget watchdog (Pillar 10). When set, lib/cli/cost-watchdog.ts
+    // opens an alert issue at alert_threshold_pct and hard-stops new phase
+    // invocations at 100% of monthly_budget_usd.
+    monthly_budget_usd: z.number().nonnegative().optional(),
+    alert_threshold_pct: z.number().min(0).max(100).optional(),
   }),
+  // Model IDs are kept loose at the schema layer (any non-empty string) but
+  // the v1 convention is **dated snapshots** (e.g. claude-haiku-4-5-20251022),
+  // never aliases — so eval baselines stay meaningful when Anthropic rotates
+  // pointers underneath an alias. Enforce the convention via the
+  // examples/web-app-template defaults, not the schema.
   models: z.object({
     scout: modelIdSchema,
     triage: modelIdSchema,
@@ -88,6 +138,15 @@ export const devAgentConfigSchema = z.object({
     rollback: modelIdSchema,
     spec_brainstorm: modelIdSchema,
     ambiguous_failure: modelIdSchema,
+    // Industry-grade verification phases — optional for existing configs.
+    acm: modelIdSchema.optional(),
+    acm_test_agent: modelIdSchema.optional(),
+    swarm_review: modelIdSchema.optional(),
+    meta_reviewer: modelIdSchema.optional(),
+    evidence_collector: modelIdSchema.optional(),
+    tier2_smoke: modelIdSchema.optional(),
+    self_review: modelIdSchema.optional(),
+    rerank: modelIdSchema.optional(),
   }),
   scout: z.object({
     enabled: z.boolean(),
@@ -98,6 +157,18 @@ export const devAgentConfigSchema = z.object({
       suppress_after_n_rejects: z.number().int().positive(),
     }),
   }),
+  // Pillar 3 (Codebase Context Engine) — optional. Wired in build step 3.
+  // Drives lib/index/* (tree-sitter chunker + local embedder + sqlite-vec store
+  // + 2-stage retrieve+rerank). Index lives at .dev-agent/index.sqlite, local
+  // to the runner — no third-party LLM provider sees raw code.
+  index: z
+    .object({
+      enabled: z.boolean(),
+      embedding_model: z.string().min(1),
+      refresh_on_push: z.boolean(),
+      rerank_enabled: z.boolean(),
+    })
+    .optional(),
   notifications: z.object({
     push: z
       .object({
