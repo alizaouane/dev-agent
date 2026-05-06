@@ -1,0 +1,201 @@
+import 'server-only';
+
+import type { Octokit } from '@octokit/rest';
+
+/**
+ * The PR linked to a dev-agent feature issue, enriched with
+ * mergeability + check status. Renders on the feature page so the
+ * operator can see what's blocking merge (or merge directly) without
+ * leaving the dashboard.
+ */
+export type FeaturePR = {
+  number: number;
+  title: string;
+  state: 'open' | 'closed' | 'merged';
+  /** Source branch — for dev-agent PRs, always feat/dev-agent-issue-N. */
+  head_ref: string;
+  base_ref: string;
+  html_url: string;
+  /** GitHub's mergeability flag — null while computing, true/false otherwise. */
+  mergeable: boolean | null;
+  /**
+   * Aggregate state of head-ref status checks + check-runs.
+   * Mirrors GitHub's combined-status response: 'success' | 'failure'
+   * | 'pending' | 'neutral' | null (no checks yet).
+   */
+  checks_state: 'success' | 'failure' | 'pending' | 'neutral' | null;
+  /** Per-check breakdown for the panel's expandable detail row. */
+  check_runs: Array<{
+    name: string;
+    conclusion: string | null;
+    status: string;
+    html_url: string | null;
+  }>;
+};
+
+/**
+ * Find the PR linked to `issueNumber` and return enriched detail.
+ *
+ * Detection strategy: dev-agent's implement workflow opens PRs from
+ * `feat/dev-agent-issue-<N>`, so we list PRs by head ref. Falls back
+ * to `null` if no matching PR exists (issue may still be in scoping
+ * / implementing, no PR yet).
+ *
+ * Failure mode: best-effort — any API failure returns null and warns,
+ * matching active-runs / run-failures. The feature page must keep
+ * rendering even if PR lookup is throttled.
+ */
+export async function fetchFeaturePR(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  issueNumber: number,
+): Promise<FeaturePR | null> {
+  let pr;
+  try {
+    // Look for the dev-agent branch first (the high-confidence path).
+    const head = `${owner}:feat/dev-agent-issue-${issueNumber}`;
+    const list = await octokit.pulls.list({
+      owner,
+      repo,
+      state: 'all',
+      head,
+      per_page: 5,
+    });
+    // Take the most recent (closed PRs are still useful for showing
+    // "merged" state on completed features).
+    pr = list.data[0];
+  } catch (err) {
+    console.warn(`fetchFeaturePR: list failed for ${owner}/${repo}#${issueNumber}`, err);
+    return null;
+  }
+  if (!pr) return null;
+
+  // Per-PR detail call to get a definitive `mergeable` flag — the
+  // list endpoint omits it.
+  let detail;
+  try {
+    detail = await octokit.pulls.get({ owner, repo, pull_number: pr.number });
+  } catch (err) {
+    console.warn(`fetchFeaturePR: get(${pr.number}) failed`, err);
+    return null;
+  }
+
+  // Combined status (legacy commit statuses) + check-runs (newer
+  // GitHub Actions checks). For dev-agent PRs the latter is the
+  // relevant signal, but we surface both.
+  const checks = await fetchHeadChecks(octokit, owner, repo, detail.data.head.sha);
+
+  return {
+    number: detail.data.number,
+    title: detail.data.title,
+    state: detail.data.merged
+      ? 'merged'
+      : detail.data.state === 'closed'
+        ? 'closed'
+        : 'open',
+    head_ref: detail.data.head.ref,
+    base_ref: detail.data.base.ref,
+    html_url: detail.data.html_url,
+    mergeable: detail.data.mergeable ?? null,
+    checks_state: checks.state,
+    check_runs: checks.runs,
+  };
+}
+
+async function fetchHeadChecks(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  sha: string,
+): Promise<{
+  state: 'success' | 'failure' | 'pending' | 'neutral' | null;
+  runs: FeaturePR['check_runs'];
+}> {
+  // Two parallel sources, both required for accurate state:
+  //   1. checks.listForRef        — modern GitHub Actions check-runs
+  //   2. repos.getCombinedStatusForRef — legacy commit statuses, still
+  //      used by external CI integrations (Jenkins, CircleCI,
+  //      semaphore, deploy bots) and frequently named in branch
+  //      protection's required-status list. If we ignored these,
+  //      the dashboard would surface "checks pass" + enable the
+  //      merge button on PRs that GitHub will reject for missing/
+  //      failing required statuses.
+  const [checksResult, statusResult] = await Promise.allSettled([
+    octokit.checks.listForRef({ owner, repo, ref: sha, per_page: 30 }),
+    octokit.repos.getCombinedStatusForRef({ owner, repo, ref: sha, per_page: 30 }),
+  ]);
+
+  const runs: FeaturePR['check_runs'] = [];
+
+  if (checksResult.status === 'fulfilled') {
+    for (const c of checksResult.value.data.check_runs) {
+      runs.push({
+        name: c.name,
+        conclusion: c.conclusion ?? null,
+        status: c.status,
+        html_url: c.html_url ?? null,
+      });
+    }
+  } else {
+    console.warn('fetchHeadChecks: checks.listForRef failed', checksResult.reason);
+  }
+
+  if (statusResult.status === 'fulfilled') {
+    for (const s of statusResult.value.data.statuses) {
+      // Legacy commit statuses use {state: 'success' | 'failure' |
+      // 'pending' | 'error'} on a per-context basis. Project them
+      // into the same {status, conclusion} shape as check-runs so
+      // aggregateChecks can treat them uniformly.
+      const { status, conclusion } = projectStatusToCheck(s.state);
+      runs.push({
+        name: s.context,
+        conclusion,
+        status,
+        html_url: s.target_url ?? null,
+      });
+    }
+  } else {
+    console.warn('fetchHeadChecks: getCombinedStatusForRef failed', statusResult.reason);
+  }
+
+  return { state: aggregateChecks(runs), runs };
+}
+
+/**
+ * Translate a legacy commit-status state into the {status, conclusion}
+ * shape that aggregateChecks expects. `error` maps to a failure
+ * conclusion — GitHub treats it as a non-passing terminal state for
+ * required-status purposes.
+ */
+function projectStatusToCheck(
+  state: string,
+): { status: string; conclusion: string | null } {
+  switch (state) {
+    case 'success':
+      return { status: 'completed', conclusion: 'success' };
+    case 'failure':
+      return { status: 'completed', conclusion: 'failure' };
+    case 'error':
+      return { status: 'completed', conclusion: 'failure' };
+    case 'pending':
+      return { status: 'in_progress', conclusion: null };
+    default:
+      return { status: 'completed', conclusion: 'neutral' };
+  }
+}
+
+/**
+ * Aggregate a set of check-runs (including projected commit statuses)
+ * into a single state. Failure dominates, then pending, then success
+ * — mirroring GitHub's own UI logic.
+ */
+function aggregateChecks(
+  runs: FeaturePR['check_runs'],
+): 'success' | 'failure' | 'pending' | 'neutral' | null {
+  if (runs.length === 0) return null;
+  if (runs.some((r) => r.conclusion === 'failure' || r.conclusion === 'timed_out')) return 'failure';
+  if (runs.some((r) => r.status !== 'completed')) return 'pending';
+  if (runs.every((r) => r.conclusion === 'success' || r.conclusion === 'skipped')) return 'success';
+  return 'neutral';
+}

@@ -2,12 +2,17 @@ import { getOctokit } from '@/lib/gh';
 import { FeatureDetail } from '@/components/feature-detail';
 import { FeatureTimeline } from '@/components/feature-timeline';
 import { ActiveRunsPanel } from '@/components/active-runs-panel';
+import { FailedRunsPanel } from '@/components/failed-runs-panel';
+import { FeaturePRPanel } from '@/components/feature-pr-panel';
+import { RedispatchButtons } from '@/components/redispatch-buttons';
 import { parseTelemetry } from '@/lib/telemetry';
 import {
   aggregateTimeline,
   type IssueCommentRow,
 } from '@/lib/feature-timeline';
 import { fetchActiveRunsForIssue } from '@/lib/active-runs';
+import { fetchRecentFailuresForIssue } from '@/lib/run-failures';
+import { fetchFeaturePR } from '@/lib/feature-pr';
 
 // Auth-bearing dynamic page; ISR doesn't apply, but we want a brief
 // server-side cache so a manual refresh during a long agent run
@@ -27,11 +32,20 @@ export default async function FeaturePage(props: {
   const issue_number = parseInt(issue, 10);
   const octokit = await getOctokit();
 
-  const [{ data: issueData }, commentsResp, sessionLog, activeRuns] = await Promise.all([
+  const [
+    { data: issueData },
+    commentsResp,
+    sessionLog,
+    activeRuns,
+    failedRuns,
+    featurePR,
+  ] = await Promise.all([
     octokit.issues.get({ owner, repo: name, issue_number }),
     octokit.issues.listComments({ owner, repo: name, issue_number, per_page: 100 }),
     fetchSessionLog(octokit, owner, name),
     fetchActiveRunsForIssue(octokit, owner, name, issue_number),
+    fetchRecentFailuresForIssue(octokit, owner, name, issue_number),
+    fetchFeaturePR(octokit, owner, name, issue_number),
   ]);
   const stateLabel =
     (issueData.labels.map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean) as string[]).find((l) =>
@@ -54,11 +68,15 @@ export default async function FeaturePage(props: {
     .map((c) => parseTelemetry(c.body ?? ''))
     .filter((t): t is NonNullable<typeof t> => t !== null);
 
-  // Best-effort PR link extraction from comments.
-  const prMatch = commentRows
-    .map((c) => c.body?.match(/PR:\s*#(\d+)/))
-    .find((m) => m);
-  const prUrl = prMatch ? `https://github.com/${owner}/${name}/pull/${prMatch[1]}` : null;
+  // PR URL: prefer the FeaturePRPanel's resolved data (richer); fall
+  // back to the comments-scrape so the existing FeatureDetail "PR"
+  // link still works on issues where pulls.list missed.
+  const prUrl =
+    featurePR?.html_url ??
+    (() => {
+      const m = commentRows.map((c) => c.body?.match(/PR:\s*#(\d+)/)).find((x) => x);
+      return m ? `https://github.com/${owner}/${name}/pull/${m[1]}` : null;
+    })();
 
   const events = aggregateTimeline({
     issue: {
@@ -86,7 +104,14 @@ export default async function FeaturePage(props: {
         telemetry={telemetry}
         prUrl={prUrl}
       />
-      <ActiveRunsPanel runs={activeRuns} />
+      <ActiveRunsPanel runs={activeRuns} repo={`${owner}/${name}`} />
+      <FailedRunsPanel runs={failedRuns} />
+      <FeaturePRPanel pr={featurePR} repo={`${owner}/${name}`} />
+      <RedispatchButtons
+        repo={`${owner}/${name}`}
+        issue={issue_number}
+        hasActiveRun={activeRuns.length > 0}
+      />
       <FeatureTimeline events={events} />
     </div>
   );

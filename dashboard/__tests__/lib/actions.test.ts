@@ -18,6 +18,7 @@ const mockOctokit = {
     createWorkflowDispatch: vi.fn(),
     getRepoPublicKey: vi.fn(),
     createOrUpdateRepoSecret: vi.fn(),
+    cancelWorkflowRun: vi.fn(),
   },
   git: {
     getRef: vi.fn(),
@@ -27,6 +28,7 @@ const mockOctokit = {
   pulls: {
     list: vi.fn(),
     create: vi.fn(),
+    merge: vi.fn(),
   },
 };
 
@@ -893,5 +895,200 @@ describe('resolveProposalAction', () => {
     const writeCall = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
     const decoded = Buffer.from(writeCall.content, 'base64').toString('utf8');
     expect(decoded).toContain('- [x] do thing');
+  });
+});
+
+describe('redispatchPhase', () => {
+  it('dispatches the chosen phase + invocation_mode on the repo default branch', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'staging-deploy');
+    fd.append('invocation_mode', 'stub');
+
+    const result = await redispatchPhase(fd);
+    expect(result).toBeUndefined();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith({
+      owner: 'q',
+      repo: 'r',
+      workflow_id: 'dev-agent.yml',
+      ref: 'develop',
+      inputs: { phase: 'staging-deploy', issue_number: '42', invocation_mode: 'stub' },
+    });
+  });
+
+  it('rejects unknown phase', async () => {
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'eat-cake');
+    fd.append('invocation_mode', 'live');
+    const result = await redispatchPhase(fd);
+    expect((result as { error: string }).error).toMatch(/unknown phase/);
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unknown invocation_mode', async () => {
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'evil');
+    const result = await redispatchPhase(fd);
+    expect((result as { error: string }).error).toMatch(/unknown invocation_mode/);
+  });
+
+  it('returns error (does not throw) when dispatch fails', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockRejectedValueOnce(
+      Object.assign(new Error('Resource not accessible'), { status: 403 }),
+    );
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    const result = await redispatchPhase(fd);
+    expect((result as { error: string }).error).toMatch(/Resource not accessible/);
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    const result = await redispatchPhase(fd);
+    expect((result as { error: string }).error).toMatch(/lacks write/);
+  });
+});
+
+describe('cancelRun', () => {
+  it('cancels a running workflow on the repo', async () => {
+    mockOctokit.actions.cancelWorkflowRun.mockResolvedValueOnce({});
+    const { cancelRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('run_id', '999');
+    const result = await cancelRun(fd);
+    expect(result).toBeUndefined();
+    expect(mockOctokit.actions.cancelWorkflowRun).toHaveBeenCalledWith({
+      owner: 'q',
+      repo: 'r',
+      run_id: 999,
+    });
+  });
+
+  it('rejects bad run_id', async () => {
+    const { cancelRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('run_id', 'not-a-number');
+    const result = await cancelRun(fd);
+    expect((result as { error: string }).error).toMatch(/run_id must be a positive integer/);
+  });
+
+  it('rejects partially-numeric run_id (parseInt would silently coerce)', async () => {
+    // Without strict validation, "12oops" would parseInt to 12 and
+    // we'd cancel the wrong run. The reviewer flagged this as a
+    // wrong-target hazard; lock it down with a regression test.
+    const { cancelRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('run_id', '12oops');
+    const result = await cancelRun(fd);
+    expect((result as { error: string }).error).toMatch(/run_id must be a positive integer/);
+    expect(mockOctokit.actions.cancelWorkflowRun).not.toHaveBeenCalled();
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { cancelRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('run_id', '999');
+    const result = await cancelRun(fd);
+    expect((result as { error: string }).error).toMatch(/lacks write/);
+  });
+});
+
+describe('mergeFeaturePR', () => {
+  it('squashes by default', async () => {
+    mockOctokit.pulls.merge.mockResolvedValueOnce({});
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    const result = await mergeFeaturePR(fd);
+    expect(result).toBeUndefined();
+    expect(mockOctokit.pulls.merge).toHaveBeenCalledWith({
+      owner: 'q',
+      repo: 'r',
+      pull_number: 50,
+      merge_method: 'squash',
+    });
+  });
+
+  it('honors merge_method override', async () => {
+    mockOctokit.pulls.merge.mockResolvedValueOnce({});
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    fd.append('merge_method', 'rebase');
+    await mergeFeaturePR(fd);
+    expect(mockOctokit.pulls.merge.mock.calls[0][0].merge_method).toBe('rebase');
+  });
+
+  it('returns helpful error on 405 not-mergeable', async () => {
+    mockOctokit.pulls.merge.mockRejectedValueOnce(
+      Object.assign(new Error('Pull Request is not mergeable'), { status: 405 }),
+    );
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    const result = await mergeFeaturePR(fd);
+    expect((result as { error: string }).error).toMatch(/PR cannot be merged \(405\)/);
+  });
+
+  it('rejects unknown merge_method', async () => {
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    fd.append('merge_method', 'wat');
+    const result = await mergeFeaturePR(fd);
+    expect((result as { error: string }).error).toMatch(/unknown merge_method/);
+  });
+
+  it('refuses without write permission', async () => {
+    // Same security gate as approveAndStart / cancelRun /
+    // redispatchPhase — the action calls assertWritePermission
+    // before mutating, and a read-only collaborator must be turned
+    // away before pulls.merge fires.
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    const result = await mergeFeaturePR(fd);
+    expect((result as { error: string }).error).toMatch(/lacks write/);
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
   });
 });
