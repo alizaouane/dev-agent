@@ -165,12 +165,19 @@ export function PmChat({
         // success and we don't want the redirected feature page to keep
         // surfacing the same draft on the next /intent visit.
         clearDraft();
-        await approveAndStart(fd);
+        // approveAndStart returns `{ error, issue_url? }` on failure (so
+        // production's server-action error masking can't hide the real
+        // message) and redirects on success (which throws NEXT_REDIRECT).
+        const result = await approveAndStart(fd);
+        if (result && 'error' in result) {
+          // Restore the draft so the user can retry without retyping.
+          saveDraft({ repo, title, input, messages });
+          setApproveErr(result.error);
+        }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         if (msg.includes('NEXT_REDIRECT')) throw e;
-        // approveAndStart threw a real error before redirect; restore
-        // the draft so the user can retry without retyping.
+        // Unexpected throw (framework / runtime). Restore draft + surface.
         saveDraft({ repo, title, input, messages });
         setApproveErr(msg);
       }

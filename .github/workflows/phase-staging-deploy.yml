@@ -44,27 +44,42 @@ on:
 jobs:
   staging-deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # See phase-implement.yml for rationale on the long ceiling.
+    timeout-minutes: 360
     permissions:
       contents: write
       issues: write
       pull-requests: write
       id-token: write
     steps:
+      # Consumer repo at root.
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+
+      # Engine repo with the dev-agent CLIs + prompt templates this
+      # workflow invokes. See phase-implement.yml for rationale.
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
 
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
 
       - run: npm ci
 
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
+
       - name: Convert .dev-agent.yml to JSON for jq
         env:
           CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           set -euo pipefail
-          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
           jq -e . /tmp/config.json > /dev/null
 
       - name: Render system prompt
@@ -91,7 +106,7 @@ jobs:
             echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
             exit 1
           fi
-          npx tsx lib/cli/render-prompt.ts staging-deploy > /tmp/system-prompt.md
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-prompt.ts staging-deploy > /tmp/system-prompt.md
 
       - name: Read issue title
         id: issue
@@ -135,6 +150,15 @@ jobs:
           BODY=$(printf '🤖 Phase: staging-deploy\nModel: (none)\nMode: stub\nStatus: stub-mode (no agent invocation; set invocation_mode=live to run deploy)\n')
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
 
+      # See phase-implement.yml — claude-code-action needs the binary
+      # pre-installed at ~/.local/bin/claude.
+      - name: Install Claude Code CLI
+        if: inputs.invocation_mode == 'live'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Run Claude Code (live agent)
         id: claude
         if: inputs.invocation_mode == 'live'
@@ -142,7 +166,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: ${{ steps.build.outputs.prompt_path }}
-          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite WebFetch'
+          claude_args: '--max-turns 500 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite WebFetch'
           show_full_output: 'true'
 
       - name: Parse agent JSON + comment telemetry + flip state
@@ -197,7 +221,7 @@ jobs:
           TRIGGER: 'PR merged to default branch — staging deploy + smoke verify run.'
         run: |
           set -euo pipefail
-          npx tsx lib/cli/append-session-log.ts
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
           if git diff --quiet -- SESSION_LOG.md; then
             echo "SESSION_LOG.md unchanged — no commit needed."
             exit 0

@@ -125,6 +125,12 @@ hotfix:
 `;
 
 export const TEMPLATE_WORKFLOW_YML = `name: dev-agent
+# run-name embeds the dispatched phase + issue number so the dashboard
+# can match in-flight runs to a specific feature page (it filters
+# workflow_runs by \`#<issue>\` in display_title). Without this, every
+# run shows the workflow's static name "dev-agent" with no per-issue
+# linkability.
+run-name: \${{ inputs.phase }} → issue #\${{ inputs.issue_number }} (\${{ inputs.invocation_mode }})
 
 # Wrapper that delegates to alizaouane/dev-agent's reusable phase
 # workflows. Drop this file into .github/workflows/ in your repo,
@@ -145,7 +151,6 @@ on:
         options:
           - implement
           - staging-deploy
-          - smoke-verify
           - promote-to-prod
           - rollback
       issue_number:
@@ -158,12 +163,29 @@ on:
         type: string
         default: live
 
+# Granted at the workflow level so the called reusable workflows can
+# request these permissions for their own jobs. Reusable workflows
+# can never elevate above what the caller grants — a caller with
+# read defaults causes the called job to fail at startup with
+# "but is only allowed contents: read, issues: none, ..." even though
+# the reusable's own permissions block asks for write. The union
+# below covers all 5 phase workflows; only one runs per dispatch
+# (each is gated by an if: condition).
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
 jobs:
   implement:
     if: inputs.phase == 'implement'
     uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
@@ -173,27 +195,30 @@ jobs:
     if: inputs.phase == 'staging-deploy'
     uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 
-  smoke-verify:
-    if: inputs.phase == 'smoke-verify'
-    uses: alizaouane/dev-agent/.github/workflows/phase-smoke-verify.yml@v1
-    with:
-      issue_number: \${{ inputs.issue_number }}
-      config_path: .dev-agent.yml
-      invocation_mode: \${{ inputs.invocation_mode }}
-    secrets:
-      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+  # smoke-verify is intentionally omitted: it's invoked internally by
+  # the staging-deploy workflow with captured smoke output, not driven
+  # manually. Including it here would require passing smoke_phase /
+  # smoke_output / smoke_exit_code (no defaults), which fails
+  # workflow validation at startup. Repos that need a manual
+  # smoke-verify dispatch should install a dedicated wrapper.
 
   promote-to-prod:
     if: inputs.phase == 'promote-to-prod'
     uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
@@ -203,7 +228,10 @@ jobs:
     if: inputs.phase == 'rollback'
     uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
