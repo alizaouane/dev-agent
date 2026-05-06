@@ -55,8 +55,14 @@ export function RedispatchButtons({ repo, issue, hasActiveRun }: Props) {
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border bg-card p-3 text-sm">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-muted-foreground">Re-dispatch:</span>
+        {/* Real <label htmlFor> association so screen readers
+            announce the select with its purpose. The visual
+            placement is unchanged. */}
+        <label htmlFor="redispatch-phase" className="text-muted-foreground">
+          Re-dispatch:
+        </label>
         <select
+          id="redispatch-phase"
           className="rounded-md border border-input bg-background px-2 py-1 text-xs"
           value={phase}
           onChange={(e) => setPhase(e.target.value as Phase)}

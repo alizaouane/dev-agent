@@ -121,6 +121,55 @@ describe('fetchRecentFailuresForIssue', () => {
     expect(console.warn).toHaveBeenCalled();
   });
 
+  it('enriches cancelled and timed-out runs (not just conclusion=failure)', async () => {
+    // Reviewer-flagged: the candidate filter accepts cancelled +
+    // timed_out runs, but step-level enrichment was only matching
+    // conclusion='failure', leaving those run types with null
+    // failed_step / log_tail in the diagnostics panel.
+    const list = vi.fn().mockResolvedValue({
+      data: {
+        workflow_runs: [
+          mkRun({ id: 11, conclusion: 'cancelled' }),
+          mkRun({ id: 12, conclusion: 'timed_out' }),
+        ],
+      },
+    });
+    const jobs = vi.fn()
+      .mockResolvedValueOnce({
+        data: {
+          jobs: [
+            {
+              id: 1100,
+              conclusion: 'cancelled',
+              steps: [
+                { name: 'Set up job', conclusion: 'success' },
+                { name: 'Run Claude Code', conclusion: 'cancelled' },
+              ],
+            },
+          ],
+        },
+      })
+      .mockResolvedValueOnce({
+        data: {
+          jobs: [
+            {
+              id: 1200,
+              conclusion: 'timed_out',
+              steps: [{ name: 'Run Claude Code', conclusion: 'timed_out' }],
+            },
+          ],
+        },
+      });
+    const log = vi.fn().mockResolvedValue({ data: 'last line' });
+    const result = await fetchRecentFailuresForIssue(
+      makeOctokit({ list, jobs, log }),
+      'o', 'r', 42,
+    );
+    const byId = new Map(result.map((r) => [r.id, r]));
+    expect(byId.get(11)?.failed_step).toBe('Run Claude Code');
+    expect(byId.get(12)?.failed_step).toBe('Run Claude Code');
+  });
+
   it('keeps the run row even when log download fails (logs may have expired)', async () => {
     const list = vi.fn().mockResolvedValue({
       data: { workflow_runs: [mkRun({ id: 9 })] },

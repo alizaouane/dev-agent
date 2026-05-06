@@ -112,29 +112,83 @@ async function fetchHeadChecks(
   state: 'success' | 'failure' | 'pending' | 'neutral' | null;
   runs: FeaturePR['check_runs'];
 }> {
-  try {
-    const resp = await octokit.checks.listForRef({
-      owner,
-      repo,
-      ref: sha,
-      per_page: 30,
-    });
-    const runs = resp.data.check_runs.map((c) => ({
-      name: c.name,
-      conclusion: c.conclusion ?? null,
-      status: c.status,
-      html_url: c.html_url ?? null,
-    }));
-    return { state: aggregateChecks(runs), runs };
-  } catch (err) {
-    console.warn('fetchHeadChecks: failed', err);
-    return { state: null, runs: [] };
+  // Two parallel sources, both required for accurate state:
+  //   1. checks.listForRef        — modern GitHub Actions check-runs
+  //   2. repos.getCombinedStatusForRef — legacy commit statuses, still
+  //      used by external CI integrations (Jenkins, CircleCI,
+  //      semaphore, deploy bots) and frequently named in branch
+  //      protection's required-status list. If we ignored these,
+  //      the dashboard would surface "checks pass" + enable the
+  //      merge button on PRs that GitHub will reject for missing/
+  //      failing required statuses.
+  const [checksResult, statusResult] = await Promise.allSettled([
+    octokit.checks.listForRef({ owner, repo, ref: sha, per_page: 30 }),
+    octokit.repos.getCombinedStatusForRef({ owner, repo, ref: sha, per_page: 30 }),
+  ]);
+
+  const runs: FeaturePR['check_runs'] = [];
+
+  if (checksResult.status === 'fulfilled') {
+    for (const c of checksResult.value.data.check_runs) {
+      runs.push({
+        name: c.name,
+        conclusion: c.conclusion ?? null,
+        status: c.status,
+        html_url: c.html_url ?? null,
+      });
+    }
+  } else {
+    console.warn('fetchHeadChecks: checks.listForRef failed', checksResult.reason);
+  }
+
+  if (statusResult.status === 'fulfilled') {
+    for (const s of statusResult.value.data.statuses) {
+      // Legacy commit statuses use {state: 'success' | 'failure' |
+      // 'pending' | 'error'} on a per-context basis. Project them
+      // into the same {status, conclusion} shape as check-runs so
+      // aggregateChecks can treat them uniformly.
+      const { status, conclusion } = projectStatusToCheck(s.state);
+      runs.push({
+        name: s.context,
+        conclusion,
+        status,
+        html_url: s.target_url ?? null,
+      });
+    }
+  } else {
+    console.warn('fetchHeadChecks: getCombinedStatusForRef failed', statusResult.reason);
+  }
+
+  return { state: aggregateChecks(runs), runs };
+}
+
+/**
+ * Translate a legacy commit-status state into the {status, conclusion}
+ * shape that aggregateChecks expects. `error` maps to a failure
+ * conclusion — GitHub treats it as a non-passing terminal state for
+ * required-status purposes.
+ */
+function projectStatusToCheck(
+  state: string,
+): { status: string; conclusion: string | null } {
+  switch (state) {
+    case 'success':
+      return { status: 'completed', conclusion: 'success' };
+    case 'failure':
+      return { status: 'completed', conclusion: 'failure' };
+    case 'error':
+      return { status: 'completed', conclusion: 'failure' };
+    case 'pending':
+      return { status: 'in_progress', conclusion: null };
+    default:
+      return { status: 'completed', conclusion: 'neutral' };
   }
 }
 
 /**
- * Aggregate a set of check-runs into a single state. Failure dominates,
- * then pending, then success — mirroring GitHub's own UI logic.
+ * Aggregate a set of check-runs (including projected commit statuses)
+ * into a single state. Failure dominates, then pending, then success
+ * — mirroring GitHub's own UI logic.
  */
 function aggregateChecks(
   runs: FeaturePR['check_runs'],

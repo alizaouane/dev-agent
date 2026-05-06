@@ -996,7 +996,20 @@ describe('cancelRun', () => {
     fd.append('repo', 'q/r');
     fd.append('run_id', 'not-a-number');
     const result = await cancelRun(fd);
-    expect((result as { error: string }).error).toMatch(/run_id must be a number/);
+    expect((result as { error: string }).error).toMatch(/run_id must be a positive integer/);
+  });
+
+  it('rejects partially-numeric run_id (parseInt would silently coerce)', async () => {
+    // Without strict validation, "12oops" would parseInt to 12 and
+    // we'd cancel the wrong run. The reviewer flagged this as a
+    // wrong-target hazard; lock it down with a regression test.
+    const { cancelRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('run_id', '12oops');
+    const result = await cancelRun(fd);
+    expect((result as { error: string }).error).toMatch(/run_id must be a positive integer/);
+    expect(mockOctokit.actions.cancelWorkflowRun).not.toHaveBeenCalled();
   });
 
   it('refuses without write permission', async () => {
@@ -1060,5 +1073,22 @@ describe('mergeFeaturePR', () => {
     fd.append('merge_method', 'wat');
     const result = await mergeFeaturePR(fd);
     expect((result as { error: string }).error).toMatch(/unknown merge_method/);
+  });
+
+  it('refuses without write permission', async () => {
+    // Same security gate as approveAndStart / cancelRun /
+    // redispatchPhase — the action calls assertWritePermission
+    // before mutating, and a read-only collaborator must be turned
+    // away before pulls.merge fires.
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    const result = await mergeFeaturePR(fd);
+    expect((result as { error: string }).error).toMatch(/lacks write/);
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
   });
 });

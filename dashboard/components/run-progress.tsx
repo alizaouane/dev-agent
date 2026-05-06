@@ -61,11 +61,21 @@ export function RunProgress({ runId, repo, pollMs = 8000 }: Props) {
         const url = `/api/runs/${runId}/progress?repo=${encodeURIComponent(repo)}`;
         const resp = await fetch(url, { cache: 'no-store' });
         if (!resp.ok) {
-          // 401 / 404 / 5xx — show a quiet error, stop polling on auth
-          // errors but otherwise keep retrying.
           const txt = `HTTP ${resp.status}`;
+          if (resp.status === 401 || resp.status === 404) {
+            // Permanent stop conditions: clear any cached progress
+            // so the operator doesn't keep staring at the last good
+            // checklist (which would otherwise persist because the
+            // render preferred `data` over `error`). Showing the
+            // error string makes the dropped state explicit.
+            if (!cancelled) {
+              setData(null);
+              setError(txt);
+            }
+            return;
+          }
+          // Transient — keep polling; show the error inline.
           if (!cancelled) setError(txt);
-          if (resp.status === 401 || resp.status === 404) return;
         } else {
           const json = (await resp.json()) as ProgressResponse;
           if (!cancelled) {

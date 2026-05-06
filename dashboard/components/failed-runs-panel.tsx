@@ -72,12 +72,14 @@ export function FailedRunsPanel({ runs }: { runs: FailedRun[] }) {
 }
 
 function formatStarted(iso: string): string {
+  // Floor (not round) so labels are monotonic and don't jump
+  // early at bucket boundaries — see ActiveRunsPanel for rationale.
   const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return `${Math.max(0, Math.round(ms / 1000))}s ago`;
-  const min = Math.round(ms / 60_000);
+  if (ms < 60_000) return `${Math.max(0, Math.floor(ms / 1000))}s ago`;
+  const min = Math.floor(ms / 60_000);
   if (min < 60) return `${min}m ago`;
-  const h = Math.round(min / 60);
+  const h = Math.floor(min / 60);
   if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
+  const d = Math.floor(h / 24);
   return `${d}d ago`;
 }

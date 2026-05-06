@@ -106,8 +106,20 @@ export async function fetchRecentFailuresForIssue(
           repo,
           run_id: r.id,
         });
-        const failedJob = jobs.data.jobs.find((j) => j.conclusion === 'failure');
-        const failedStep = failedJob?.steps?.find((s) => s.conclusion === 'failure');
+        // Match the candidate filter above: a run can fail because a
+        // job was cancelled or timed_out, not just `failure`. If we
+        // only enriched conclusion='failure' here, the diagnostics
+        // panel would silently show no step / no log tail for those
+        // run types — exactly the diagnostic surface they need.
+        const failingConclusions = new Set(['failure', 'cancelled', 'timed_out']);
+        const failedJob = jobs.data.jobs.find(
+          (j) => j.conclusion !== null && failingConclusions.has(j.conclusion),
+        );
+        // Same expansion at the step level — a cancelled job has
+        // its terminal step as conclusion='cancelled', not 'failure'.
+        const failedStep = failedJob?.steps?.find(
+          (s) => s.conclusion !== null && failingConclusions.has(s.conclusion ?? ''),
+        );
         if (failedStep) base.failed_step = failedStep.name;
 
         if (failedJob?.id) {

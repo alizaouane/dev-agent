@@ -955,8 +955,7 @@ export async function redispatchPhase(
     const invocation_mode = ((formData.get('invocation_mode') as string) ?? 'live').trim();
 
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    const issue_number = parseInt(issueStr, 10);
-    if (!Number.isFinite(issue_number)) throw new Error('issue must be a number');
+    const issue_number = parseStrictInt(issueStr, 'issue');
     if (!['implement', 'staging-deploy', 'promote-to-prod', 'rollback'].includes(phase)) {
       throw new Error(`unknown phase: ${phase}`);
     }
@@ -1010,8 +1009,7 @@ export async function cancelRun(
     const runIdStr = ((formData.get('run_id') as string) ?? '').trim();
 
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    const run_id = parseInt(runIdStr, 10);
-    if (!Number.isFinite(run_id)) throw new Error('run_id must be a number');
+    const run_id = parseStrictInt(runIdStr, 'run_id');
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
@@ -1054,8 +1052,7 @@ export async function mergeFeaturePR(
     const methodRaw = ((formData.get('merge_method') as string) ?? 'squash').trim();
 
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    const pull_number = parseInt(prStr, 10);
-    if (!Number.isFinite(pull_number)) throw new Error('pr_number must be a number');
+    const pull_number = parseStrictInt(prStr, 'pr_number');
     if (!['squash', 'merge', 'rebase'].includes(methodRaw)) {
       throw new Error(`unknown merge_method: ${methodRaw}`);
     }
@@ -1074,6 +1071,25 @@ export async function mergeFeaturePR(
     console.error('[mergeFeaturePR] failed', { message, raw: e });
     return { error: message };
   }
+}
+
+/**
+ * Strict integer parse for FormData fields that identify GitHub
+ * resources. `parseInt` would happily coerce "12oops" to 12, which
+ * means a malformed form submission could re-dispatch the wrong
+ * issue, cancel the wrong run, or merge the wrong PR. We require
+ * the raw string to be digits-only (with optional whitespace, since
+ * we already trim) before converting.
+ */
+function parseStrictInt(raw: string, fieldName: string): number {
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) {
+    throw new Error(`${fieldName} must be a positive integer`);
+  }
+  return n;
 }
 
 function formatMergeError(e: unknown): string {

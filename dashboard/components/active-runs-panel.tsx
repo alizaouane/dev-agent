@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { CancelRunButton } from '@/components/cancel-run-button';
-import { RunProgress } from '@/components/run-progress';
+import { RunProgressDrawer } from '@/components/run-progress-drawer';
 import type { ActiveRun } from '@/lib/active-runs';
 
 /**
@@ -47,14 +47,7 @@ export function ActiveRunsPanel({ runs, repo }: { runs: ActiveRun[]; repo: strin
               </a>
               <CancelRunButton repo={repo} runId={r.id} />
             </div>
-            <details className="rounded border border-blue-500/30 bg-background/40 px-2 py-1">
-              <summary className="cursor-pointer text-xs text-muted-foreground">
-                Live progress
-              </summary>
-              <div className="mt-2">
-                <RunProgress runId={r.id} repo={repo} />
-              </div>
-            </details>
+            <RunProgressDrawer runId={r.id} repo={repo} />
           </div>
         ))}
       </CardContent>
@@ -63,10 +56,13 @@ export function ActiveRunsPanel({ runs, repo }: { runs: ActiveRun[]; repo: strin
 }
 
 function formatStarted(iso: string): string {
+  // Floor (not round) so labels are monotonic and don't jump
+  // early at bucket boundaries — ~59.6s should still read "59s
+  // ago", not flip to "1m ago" before the actual minute.
   const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60_000) return `${Math.max(0, Math.round(ms / 1000))}s ago`;
-  const min = Math.round(ms / 60_000);
+  if (ms < 60_000) return `${Math.max(0, Math.floor(ms / 1000))}s ago`;
+  const min = Math.floor(ms / 60_000);
   if (min < 60) return `${min}m ago`;
-  const h = Math.round(min / 60);
+  const h = Math.floor(min / 60);
   return `${h}h ago`;
 }
