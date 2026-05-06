@@ -76,6 +76,15 @@ jobs:
       issues: write
       id-token: write
     steps:
+      # Pillar 5 — Harden runner against unexpected egress + sudo. v1 ships
+      # in audit mode (logs without blocking) so we capture which endpoints
+      # this phase actually needs before flipping to block-mode in v1.1.
+      # Audit results surface on the workflow run's Security tab.
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
       - uses: actions/checkout@v4
         with: { fetch-depth: 1 }
 

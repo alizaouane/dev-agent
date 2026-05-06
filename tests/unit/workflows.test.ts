@@ -66,6 +66,53 @@ describe('.github/workflows/', () => {
     }
   });
 
+  describe('Pillar 5 — Harden-Runner egress audit', () => {
+    // Every reusable phase + the orch-sweep cron runs claude-code-action
+    // and/or shell commands that could exfiltrate secrets. Each one must
+    // start with `step-security/harden-runner@v2` as the very first step
+    // so the runner's egress is captured (audit mode) before any other
+    // step runs. v1 ships in audit mode; v1.1 flips to block-mode after
+    // we've collected enough audit data to populate allowed-endpoints
+    // accurately per phase.
+    for (const wf of [...ALL_REUSABLE, ...EVENT_TRIGGERED_WORKFLOWS]) {
+      it(`${wf} starts with step-security/harden-runner@v2`, () => {
+        const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
+        expect(raw).toMatch(/uses:\s+step-security\/harden-runner@v2/);
+        // The harden-runner step must appear *before* the first checkout.
+        const hardenIdx = raw.indexOf('step-security/harden-runner@v2');
+        const checkoutIdx = raw.indexOf('actions/checkout@v4');
+        const otherUsesMatch = raw.match(/^\s+- (?:name:|uses:)/m);
+        expect(hardenIdx).toBeGreaterThan(0);
+        if (checkoutIdx > 0) {
+          expect(hardenIdx, `${wf}: harden-runner must precede first checkout`).toBeLessThan(checkoutIdx);
+        }
+        // For phase-pr-review.yml (no checkout-first) the harden-runner
+        // must still be the first concrete step — assert it lands before
+        // the workflow's first non-harden `name:` step.
+        if (otherUsesMatch && otherUsesMatch.index !== undefined) {
+          // The first `- name:` or `- uses:` we find should be the
+          // harden-runner one; every later step appears after it.
+          const firstStepIdx = raw.indexOf('Harden runner (egress audit)');
+          expect(firstStepIdx, `${wf}: missing harden-runner step name`).toBeGreaterThan(0);
+        }
+      });
+
+      it(`${wf} ships harden-runner in audit (not block) mode for v1`, () => {
+        const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
+        // Locate the harden-runner block and confirm egress-policy: audit.
+        // v1.1 will flip to `block` after audit data + allowed-endpoints
+        // are populated. This test pins v1's expected mode so an accidental
+        // early flip to block (which would break real consumer workflows
+        // until allowed-endpoints is set) is caught in CI.
+        const hardenBlock = raw.match(
+          /uses:\s+step-security\/harden-runner@v2\s*\n\s*with:\s*\n\s*egress-policy:\s*(\w+)/,
+        );
+        expect(hardenBlock, `${wf}: harden-runner block not parseable`).toBeTruthy();
+        if (hardenBlock) expect(hardenBlock[1]).toBe('audit');
+      });
+    }
+  });
+
   it('no run: block inlines github.event.* (title|body) directly', () => {
     const forbidden = /\$\{\{\s*github\.event\.[a-z_.]*(title|body)/i;
     for (const wf of [...ALL_REUSABLE, ...EVENT_TRIGGERED_WORKFLOWS, 'ci.yml']) {

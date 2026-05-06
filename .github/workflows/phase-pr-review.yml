@@ -54,6 +54,13 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
+      # Pillar 5 — Harden runner against unexpected egress + sudo. See
+      # phase-bug-scout.yml for the v1 audit-mode rationale.
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
       - name: Resolve PR head branch
         id: pr
         env:

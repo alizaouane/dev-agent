@@ -47,6 +47,16 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
+      # Pillar 5 — Harden runner against unexpected egress + sudo. v1 ships
+      # in audit mode (logs without blocking). Implement legitimately needs
+      # the broadest egress (npm, GitHub, claude.ai for the Claude Code CLI
+      # installer, api.anthropic.com for model calls) so audit-then-block is
+      # especially important here. v1.1 flips to block-mode after audit data.
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
       # Consumer repo at root — agent edits, type-checks, tests against this.
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
