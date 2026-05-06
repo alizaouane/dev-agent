@@ -14,6 +14,12 @@ export const EXPECTED_SKILLS = [
   'scout',
   'drift-check',
   'notify',
+  // Industry-grade verification skills (build steps 4 + 6 + 12 + 13)
+  'acm',
+  'acm-test-agent',
+  'swarm-review',
+  'self-review',
+  'tier2-smoke',
 ] as const;
 
 export const EXPECTED_PROMPTS = [
@@ -28,6 +34,14 @@ export const EXPECTED_PROMPTS = [
   'bug-scout',
   'unfinished-work-scout',
   'cleanup-scout',
+  // Industry-grade verification prompts (build steps 4 + 6 + 8 + 12 + 13)
+  'acm',
+  'acm-test-agent',
+  'swarm-spec-compliance',
+  'swarm-regression-guard',
+  'swarm-security-scout',
+  'self-review',
+  'tier2-smoke',
 ] as const;
 
 export type ExpectedCommand = (typeof EXPECTED_COMMANDS)[number];
