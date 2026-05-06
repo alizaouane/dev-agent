@@ -51,17 +51,24 @@ describe('examples/web-app-template', () => {
     }
   });
 
-  it('wrapper covers all five live phases', () => {
+  it('wrapper covers the four human-dispatchable phases', () => {
+    // smoke-verify was removed in #72 — it requires upstream inputs
+    // (smoke_phase / smoke_output / smoke_exit_code) that the
+    // wrapper has no way to supply, so including it failed workflow
+    // validation at startup. It still runs internally from
+    // staging-deploy; that's the right place for it.
     const raw = readFileSync(resolve(templateRoot, '.github/workflows/dev-agent.yml'), 'utf8');
     const expected = [
       'phase-implement.yml',
       'phase-staging-deploy.yml',
-      'phase-smoke-verify.yml',
       'phase-promote-to-prod.yml',
       'phase-rollback.yml',
     ];
     for (const phase of expected) {
       expect(raw).toContain(phase);
     }
+    // Guard against re-adding smoke-verify here — see #72 commit
+    // c1e51b7 for the failure mode.
+    expect(raw).not.toContain('phase-smoke-verify.yml');
   });
 });

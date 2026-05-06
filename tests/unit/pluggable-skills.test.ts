@@ -147,7 +147,13 @@ describe('phase-rollback.yml render block reads scaffold_skills from config', ()
   const raw = readFileSync(wfPath, 'utf8');
 
   it('parses .dev-agent.yml to JSON before rendering (matches the staging-deploy pattern)', () => {
-    expect(raw).toMatch(/npx tsx lib\/cli\/config-to-json\.ts/);
+    // Loosened to match either the old in-tree invocation
+    // (`npx tsx lib/cli/config-to-json.ts`) or the cross-repo form
+    // shipped in #72 (`.dev-agent-engine/node_modules/.bin/tsx
+    // .dev-agent-engine/lib/cli/config-to-json.ts`). The script name
+    // is the invariant; the prefix changed when consumers stopped
+    // having engine code in their checkout.
+    expect(raw).toMatch(/lib\/cli\/config-to-json\.ts/);
     expect(raw).toMatch(/jq -e \. \/tmp\/config\.json/);
   });
 
