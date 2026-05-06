@@ -49,6 +49,13 @@ export async function fetchActiveRunsForIssue(
   // time. Pull recent runs (per_page=20 is plenty — anything older than
   // that and a phase is almost certainly hung, not still running) and
   // filter client-side. One round-trip is cheaper than three.
+  //
+  // Failure handling: this panel is best-effort visibility, while its
+  // caller (FeaturePage) awaits us inside Promise.all alongside the
+  // critical issue/comment fetches. A transient 403/5xx/rate-limit on
+  // the Actions API must NOT take down the whole feature page — log
+  // and return empty so the page still renders without the "Running
+  // now" card.
   let resp;
   try {
     resp = await octokit.actions.listWorkflowRuns({
@@ -58,18 +65,23 @@ export async function fetchActiveRunsForIssue(
       per_page: 20,
     });
   } catch (err) {
-    // Workflow file may not exist (repo isn't wired up yet) — that's
-    // not an error from the dashboard's perspective; just no active
-    // runs to surface.
     const status = (err as { status?: number }).status;
-    if (status === 404) return [];
-    throw err;
+    if (status !== 404) {
+      console.warn(
+        `fetchActiveRunsForIssue: ${owner}/${repo}#${issueNumber} — listWorkflowRuns failed (status=${status ?? 'unknown'}); panel will be hidden.`,
+        err,
+      );
+    }
+    return [];
   }
 
-  const issueMarker = `#${issueNumber}`;
+  // Bounded match — the marker must not be followed by another digit,
+  // so issue #12 doesn't match a run named for #123. Pre-built once
+  // per call, applied to each run.
+  const issueMarkerRe = new RegExp(`#${issueNumber}(?!\\d)`);
   return resp.data.workflow_runs
     .filter((r) => r.status === 'queued' || r.status === 'in_progress' || r.status === 'waiting')
-    .filter((r) => (r.display_title ?? '').includes(issueMarker))
+    .filter((r) => issueMarkerRe.test(r.display_title ?? ''))
     .map((r) => ({
       id: r.id,
       phase: parseField(r.display_title ?? '', /^(\S+)\s*→/),
