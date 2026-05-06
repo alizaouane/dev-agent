@@ -43,9 +43,18 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
 
       - name: Run prod promote chain (stub)
         env:
@@ -64,7 +73,7 @@ jobs:
             --arg test "$(jq -r '.commands.test' "$CONFIG_PATH")" \
             --arg sha "$MERGE_SHA" \
             '{deploy_skills:{prod:$skills}, branches:{release_target:$target}, commands:{test:$test}, merge_sha:$sha}')
-          npx tsx lib/cli/render-and-run.ts promote-to-prod > result.json
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-and-run.ts promote-to-prod > result.json
           MODEL=$(jq -r '.model' result.json)
           BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: stub-success (live wiring in 1d)\n' "$MODEL" "$INVOCATION_MODE")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
@@ -79,7 +88,7 @@ jobs:
           NEXT_SESSION_HINT: 'manual smoke on production once the promote PR merges and the deploy completes.'
         run: |
           set -euo pipefail
-          npx tsx lib/cli/append-session-log.ts
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
           if git diff --quiet -- SESSION_LOG.md; then
             echo "SESSION_LOG.md unchanged — no commit needed."
             exit 0

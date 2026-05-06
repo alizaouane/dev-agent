@@ -45,9 +45,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
 
       - name: Identify merge commit
         id: merge
@@ -67,7 +76,7 @@ jobs:
           CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           set -euo pipefail
-          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
           jq -e . /tmp/config.json > /dev/null
 
       - name: Render rollback prompt
@@ -99,7 +108,7 @@ jobs:
             --arg sksmigration "$(jq -r '.scaffold_skills.migration // ""' /tmp/config.json)" \
             --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
             '{issue_number:$issue, merged_pr:$pr, branches:{staging:(if ($staging|length) > 0 then $staging else null end), release_target:$target}, deploy_skills:{staging:$dskstaging, prod:$dskprod}, scaffold_skills:{migration:$sksmigration}, commands:{test:$test}}')
-          npx tsx lib/cli/render-and-run.ts rollback
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-and-run.ts rollback
 
       - name: Append SESSION_LOG.md entry
         if: always() && inputs.invocation_mode == 'live'
@@ -112,7 +121,7 @@ jobs:
           DEFERRED: 'Identify root cause from staging-deploy / smoke logs.'
         run: |
           set -euo pipefail
-          npx tsx lib/cli/append-session-log.ts
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
           if git diff --quiet -- SESSION_LOG.md; then
             echo "SESSION_LOG.md unchanged — no commit needed."
             exit 0
