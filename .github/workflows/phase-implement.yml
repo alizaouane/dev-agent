@@ -51,6 +51,24 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
 
+      # Hide workflow-generated paths from the consumer's git state
+      # BEFORE any subsequent step writes to them. Without this, the
+      # salvage step's `git add -A` would sweep:
+      #   - issue.json (written in-repo by the Read issue step)
+      #   - .dev-agent-engine/ (the next step's nested checkout —
+      #     would land in the salvage commit as a gitlink/submodule
+      #     entry, polluting the consumer's PR)
+      # `.git/info/exclude` is per-clone and equivalent to .gitignore
+      # for tracking purposes; nothing is committed to the consumer's
+      # actual .gitignore.
+      - name: Reserve workflow artifacts from agent git state
+        run: |
+          set -euo pipefail
+          {
+            echo 'issue.json'
+            echo '.dev-agent-engine/'
+          } >> .git/info/exclude
+
       # Engine repo (the dev-agent CLIs + prompt templates this workflow
       # invokes via `.dev-agent-engine/node_modules/.bin/tsx ...`). Pinned
       # to v1 so workflow code and CLI code move together.
@@ -256,14 +274,23 @@ jobs:
 
           git switch "$BRANCH_NAME"
 
-          # Combine staged + unstaged signal — either means the agent
-          # didn't finalize its work.
-          if ! git diff --quiet || ! git diff --cached --quiet; then
+          # `git status --porcelain` covers all three of:
+          #   - staged    (` M` /  `A `)
+          #   - unstaged  (`M ` / ` D`)
+          #   - untracked (`??`)
+          # The previous version used `git diff` checks which silently
+          # missed untracked-only changes — the most common
+          # "agent stopped before commit" case (the agent did
+          # `mkdir foo && write foo/x.ts`, never staged anything,
+          # exited). Workflow artifacts (issue.json, .dev-agent-engine/)
+          # are kept out of this scan via .git/info/exclude registered
+          # earlier in the job.
+          if [ -n "$(git status --porcelain)" ]; then
             git config user.name 'dev-agent[bot]'
             git config user.email 'dev-agent@users.noreply.github.com'
             git add -A
             git commit -m "feat(dev-agent): implement issue #${ISSUE_NUMBER} (workflow-finalized)" \
-              -m "The agent ran to end_turn without committing its changes. The implement workflow's salvage step finalized them so 25+ minutes of agent work isn't lost. Review the diff carefully — the agent's own commit messages would have been more granular."
+              -m "The agent ran to end_turn without committing its changes. The implement workflow's salvage step finalized them so the agent's work isn't lost. Review the diff carefully — the agent's own commit messages would have been more granular."
             echo "Salvage: committed uncommitted agent changes."
           fi
 

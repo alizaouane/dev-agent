@@ -128,12 +128,34 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/inputs\.invocation_mode == 'live' && success\(\)/);
     });
 
-    it('salvage step commits any uncommitted agent changes', () => {
-      // The exact failure case: agent left files dirty on the local
-      // branch. Workflow must detect AND commit them as dev-agent[bot].
-      expect(raw).toMatch(/git diff --quiet \|\| ! git diff --cached --quiet/);
+    it('salvage step detects ALL three change types — staged, unstaged, AND untracked', () => {
+      // Regression: the prior `git diff --quiet || ! git diff --cached --quiet`
+      // missed untracked-only changes — the most common "agent
+      // stopped before commit" pattern (mkdir + write a new file,
+      // never `git add`). `git status --porcelain` covers all three
+      // (staged, unstaged, untracked) in one go, so the salvage
+      // path catches the dominant failure case.
+      expect(raw).toMatch(/git status --porcelain/);
+      // Negative: ensure the old diff-only guard hasn't crept back.
+      expect(raw).not.toMatch(/git diff --quiet \|\| ! git diff --cached --quiet/);
       expect(raw).toMatch(/dev-agent\[bot\]/);
       expect(raw).toMatch(/workflow-finalized/);
+    });
+
+    it('reserves workflow artifacts in .git/info/exclude before any agent activity', () => {
+      // Regression: `git add -A` in the salvage step would sweep
+      // workflow-generated files like issue.json (written by the
+      // Read issue step) and .dev-agent-engine/ (the nested engine
+      // checkout) into the salvage commit, polluting the consumer's
+      // PR with a gitlink/submodule entry and stale issue metadata.
+      // The "Reserve workflow artifacts" step adds these to
+      // .git/info/exclude (per-clone, no consumer .gitignore mod)
+      // so all downstream git operations skip them.
+      expect(raw).toMatch(/Reserve workflow artifacts from agent git state/);
+      expect(raw).toMatch(/\.git\/info\/exclude/);
+      // Both of the known workflow artifacts must be in the exclude list.
+      expect(raw).toMatch(/['"]issue\.json['"]/);
+      expect(raw).toMatch(/['"]\.dev-agent-engine\/['"]/);
     });
 
     it('salvage step pushes the branch and opens a PR if missing', () => {
