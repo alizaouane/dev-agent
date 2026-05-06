@@ -176,7 +176,10 @@ jobs:
     if: inputs.phase == 'implement'
     uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
@@ -186,7 +189,10 @@ jobs:
     if: inputs.phase == 'staging-deploy'
     uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
@@ -203,7 +209,10 @@ jobs:
     if: inputs.phase == 'promote-to-prod'
     uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
@@ -213,7 +222,10 @@ jobs:
     if: inputs.phase == 'rollback'
     uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@v1
     with:
-      issue_number: \${{ inputs.issue_number }}
+      # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
+      # serialized as a string when forwarded to a typed reusable
+      # input, which fails with "Unexpected value '143'" at run start.
+      issue_number: \${{ fromJSON(inputs.issue_number) }}
       config_path: .dev-agent.yml
       invocation_mode: \${{ inputs.invocation_mode }}
     secrets:
