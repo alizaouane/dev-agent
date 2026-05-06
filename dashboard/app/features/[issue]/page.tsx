@@ -1,11 +1,18 @@
 import { getOctokit } from '@/lib/gh';
 import { FeatureDetail } from '@/components/feature-detail';
 import { FeatureTimeline } from '@/components/feature-timeline';
+import { ActiveRunsPanel } from '@/components/active-runs-panel';
 import { parseTelemetry } from '@/lib/telemetry';
 import {
   aggregateTimeline,
   type IssueCommentRow,
 } from '@/lib/feature-timeline';
+import { fetchActiveRunsForIssue } from '@/lib/active-runs';
+
+// Auth-bearing dynamic page; ISR doesn't apply, but we want a brief
+// server-side cache so a manual refresh during a long agent run
+// doesn't hammer GitHub's API. 15s feels live without burning rate.
+export const revalidate = 15;
 
 type SearchParams = Promise<{ repo?: string }>;
 
@@ -20,10 +27,11 @@ export default async function FeaturePage(props: {
   const issue_number = parseInt(issue, 10);
   const octokit = await getOctokit();
 
-  const [{ data: issueData }, commentsResp, sessionLog] = await Promise.all([
+  const [{ data: issueData }, commentsResp, sessionLog, activeRuns] = await Promise.all([
     octokit.issues.get({ owner, repo: name, issue_number }),
     octokit.issues.listComments({ owner, repo: name, issue_number, per_page: 100 }),
     fetchSessionLog(octokit, owner, name),
+    fetchActiveRunsForIssue(octokit, owner, name, issue_number),
   ]);
   const stateLabel =
     (issueData.labels.map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean) as string[]).find((l) =>
@@ -78,6 +86,7 @@ export default async function FeaturePage(props: {
         telemetry={telemetry}
         prUrl={prUrl}
       />
+      <ActiveRunsPanel runs={activeRuns} />
       <FeatureTimeline events={events} />
     </div>
   );

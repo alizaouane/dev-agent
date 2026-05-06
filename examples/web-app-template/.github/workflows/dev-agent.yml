@@ -1,4 +1,10 @@
 name: dev-agent
+# run-name embeds the dispatched phase + issue number so the dashboard
+# can match in-flight runs to a specific feature page (it filters
+# workflow_runs by `#<issue>` in display_title). Without this, every
+# run shows the workflow's static name "dev-agent" with no per-issue
+# linkability.
+run-name: ${{ inputs.phase }} → issue #${{ inputs.issue_number }} (${{ inputs.invocation_mode }})
 
 # Wrapper that delegates to alizaouane/dev-agent's reusable phase
 # workflows. Drop this file into .github/workflows/ in your repo,
