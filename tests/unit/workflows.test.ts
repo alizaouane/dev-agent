@@ -161,6 +161,42 @@ describe('.github/workflows/', () => {
       expect(job?.permissions?.['id-token']).toBe('write');
     });
 
+    it('has a swarm-override sibling job (Pillar 2 escape hatch, step 16)', () => {
+      // The /swarm-override comment handler must:
+      //   - run in a SIBLING job (not the same job as @claude — different
+      //     concerns: agent-driven fix vs human-driven label flip)
+      //   - filter to issue_comment events only (no review-comment / review)
+      //   - require body STARTS WITH /swarm-override (prefix-match, not just
+      //     contains, so a casual mention in a longer comment doesn't trigger)
+      //   - exclude bot actors (claude[bot], dev-agent[bot])
+      const parsedRaw = yaml.load(raw) as { jobs?: Record<string, { if?: string }> };
+      expect(parsedRaw.jobs).toHaveProperty('swarm-override');
+      const jobIf = parsedRaw.jobs!['swarm-override'].if!;
+      expect(jobIf).toMatch(/issue_comment/);
+      expect(jobIf).toMatch(/issue\.pull_request/);
+      expect(jobIf).toMatch(/startsWith.*swarm-override/);
+      expect(jobIf).toMatch(/claude\[bot\]/);
+      expect(jobIf).toMatch(/dev-agent\[bot\]/);
+    });
+
+    it('swarm-override step records actor + reason + timestamp', () => {
+      // The audit comment IS the v1 audit trail — must include who, why,
+      // and when. v1.1 mirrors these into lib/events.ts's JSONL log.
+      expect(raw).toMatch(/swarm-override applied/);
+      expect(raw).toMatch(/Actor.*ACTOR/);
+      expect(raw).toMatch(/Reason.*REASON/);
+      expect(raw).toMatch(/Timestamp/);
+    });
+
+    it('swarm-override is idempotent on label flips', () => {
+      // Flips should use `|| true` so re-applying when a label is already
+      // present (or absent) doesn't error. Otherwise a re-trigger would
+      // 422 and the operator wouldn't know whether the override actually
+      // landed.
+      expect(raw).toMatch(/--remove-label 'swarm-review:fail' \|\| true/);
+      expect(raw).toMatch(/--add-label 'swarm-overridden' \|\| true/);
+    });
+
     it('validates head ref shape with a regex before checkout', () => {
       // The Resolve PR head branch step must whitelist the head ref to a
       // strict feat/dev-agent-issue-<digits> shape; otherwise an attacker
