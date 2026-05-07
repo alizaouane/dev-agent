@@ -206,6 +206,26 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-swarm-review.yml — total-outage guard', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-swarm-review.yml'), 'utf8');
+
+    it('fails the gate when ALL 3 reviewers produced no output', () => {
+      // P1 (PR #77 review): backfilling 3 abstains on a total reviewer
+      // outage would silently turn the outage into a passing gate
+      // (aggregator treats all-abstain as zero fail/concern weight =
+      // swarm-pass). The guard MUST exit 1 + post a comment instead of
+      // synthesizing 3 abstains. Lock the behavior in.
+      expect(raw).toMatch(/PRESENT=0/);
+      expect(raw).toMatch(/all 3 reviewers produced no output/);
+      expect(raw).toMatch(/swarm-review:outage/);
+      // Critically: the exit-1 must be guarded by PRESENT == 0 only.
+      expect(raw).toMatch(/if \[ "\$PRESENT" = "0" \]/);
+      // Partial outage (1 or 2 missing) STILL backfills abstain — the
+      // remaining reviewers' verdicts still count.
+      expect(raw).toMatch(/Partial outage/);
+    });
+  });
+
   describe('phase-implement.yml — agent-no-pr salvage', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 

@@ -263,21 +263,49 @@ jobs:
           claude_args: '--max-turns 30 --model claude-haiku-4-5 --allowedTools Read Glob Grep Write Bash(git diff:*) Bash(rg:*) Bash(grep:*) Bash(jq:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(ast-grep:*)'
           show_full_output: 'false'
 
-      - name: Live mode — backfill missing reviewer outputs
+      - name: Live mode — backfill missing reviewer outputs (with outage guard)
         if: inputs.invocation_mode == 'live'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          # If a reviewer crashed or didn't write its JSON, synthesize an
-          # `abstain` verdict so the aggregator has all 3 inputs. Abstain
-          # has zero weight in the aggregator (lib/swarm-review.ts) — the
-          # other two reviewers still produce a verdict.
+          # Count how many reviewer JSONs the agents actually produced. If
+          # ALL THREE are missing the most likely cause is a runtime outage
+          # (missing ANTHROPIC_API_KEY, claude-code-action transient failure,
+          # network egress blocked) — backfilling 3 abstains would otherwise
+          # turn the outage into a passing gate (aggregator treats all-abstain
+          # as zero-weight = no fail/concern = swarm-pass). Fail-closed instead
+          # so the workflow surfaces the outage as a real failure and the PR
+          # author / operator can investigate.
+          #
+          # Partial outages (1 or 2 reviewers missing) DO get backfilled with
+          # abstain — the remaining reviewer(s) still produce a verdict and
+          # the aggregator's weighted-vote logic handles the missing ones
+          # correctly. This is the documented graceful-degradation path.
+          PRESENT=0
+          for REVIEWER in spec-compliance regression-guard security-scout; do
+            FILE="/tmp/swarm-inputs/${REVIEWER}.json"
+            if [ -s "$FILE" ]; then
+              PRESENT=$((PRESENT + 1))
+            fi
+          done
+          if [ "$PRESENT" = "0" ]; then
+            BODY=$'🤖 Phase: swarm-review\nVerdict: outage\nMode: live\n\nAll three reviewer agents produced no output. Most likely causes:\n- `ANTHROPIC_API_KEY` repo secret missing or invalid\n- claude-code-action transient runtime error (check workflow logs per reviewer step)\n- Egress blocked by Harden-Runner allowlist (check the Security tab on this run)\n\nThis is being treated as a hard fail rather than backfilled-abstain to prevent silent gate bypass. Re-run after fixing the underlying issue.'
+            gh pr comment "$PR_NUMBER" --body "$BODY" || true
+            gh pr edit "$PR_NUMBER" --add-label 'swarm-review:outage' || true
+            echo "::error::all 3 reviewers produced no output — failing the gate (no silent backfill)"
+            exit 1
+          fi
+          # Partial outage: backfill missing reviewers with abstain. Surfaced
+          # as a workflow warning so post-mortems can find the partial failure.
           for REVIEWER in spec-compliance regression-guard security-scout; do
             FILE="/tmp/swarm-inputs/${REVIEWER}.json"
             if [ ! -s "$FILE" ]; then
-              echo "::warning::reviewer $REVIEWER produced no output; backfilling abstain"
+              echo "::warning::reviewer $REVIEWER produced no output; backfilling abstain (partial outage; ${PRESENT} of 3 succeeded)"
               jq -nc \
                 --arg r "$REVIEWER" \
-                '{reviewer: $r, verdict: "abstain", findings: [], summary: "Reviewer produced no output (likely a runtime error). Aggregator treats as abstain (zero weight)."}' \
+                '{reviewer: $r, verdict: "abstain", findings: [], summary: "Reviewer produced no output (likely a runtime error). Aggregator treats as abstain (zero weight). Partial outage; other reviewers produced verdicts."}' \
                 > "$FILE"
             fi
           done

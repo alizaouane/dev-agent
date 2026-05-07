@@ -98,10 +98,35 @@ describe('examples/web-app-template', () => {
   it('verification wrapper triggers on issue_comment + pull_request only', () => {
     // The wrapper must NOT use pull_request_target (fork-PR security
     // footgun) and must scope triggers tightly. Internal-team PRs work
-    // end-to-end; fork PRs intentionally skip via read-only perms.
+    // end-to-end; fork PRs intentionally skip via the same-repo guard
+    // below — not via fragile token-perm fallbacks.
     const raw = readFileSync(resolve(templateRoot, '.github/workflows/dev-agent-verification.yml'), 'utf8');
     expect(raw).toMatch(/issue_comment:/);
     expect(raw).toMatch(/pull_request:/);
     expect(raw).not.toMatch(/pull_request_target:/);
+  });
+
+  it('verification wrapper guards every PR-triggered job to same-repo only', () => {
+    // P2 (PR #77 review): `pull_request` from forks would otherwise enter
+    // evidence/swarm-review jobs and crash on missing secrets / read-only
+    // tokens. The same-repo guard skips fork PRs at the wrapper level so
+    // they cleanly don't run (rather than running and failing loudly).
+    // Lock this in: every job firing on `pull_request` events MUST check
+    // `head.repo.full_name == github.repository`. (The `acm` job is gated
+    // on `issue_comment`, not `pull_request`, so it's exempt.)
+    const raw = readFileSync(resolve(templateRoot, '.github/workflows/dev-agent-verification.yml'), 'utf8');
+    const parsed = yaml.load(raw) as { jobs: Record<string, { if?: string }> };
+    for (const [jobName, job] of Object.entries(parsed.jobs)) {
+      const cond = job.if ?? '';
+      // Only assert the guard for jobs that explicitly fire on
+      // pull_request events — not jobs that merely reference
+      // `issue.pull_request` (which is the null-check distinguishing
+      // an issue comment from a PR comment).
+      if (!cond.includes("event_name == 'pull_request'")) continue;
+      expect(
+        cond,
+        `${jobName}: pull_request-triggered job must include same-repo guard`,
+      ).toMatch(/head\.repo\.full_name == github\.repository/);
+    }
   });
 });

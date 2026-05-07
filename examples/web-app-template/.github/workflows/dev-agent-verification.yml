@@ -15,10 +15,15 @@ run-name: ${{ github.event_name }} → verification
 #   - pull_request opened|synchronize|reopened on a feat/dev-agent-issue-*
 #     branch              →  phase-evidence-collector.yml + phase-swarm-review.yml
 #
-# Forks: `pull_request` events from forks run with read-only perms by
-# default; the swarm-review job will skip cleanly because gh CLI calls
-# (post comment, apply label) require write. Internal-team PRs (same repo)
-# work end-to-end.
+# Forks: PRs from forked repos are excluded by an explicit same-repo guard
+# (`head.repo.full_name == github.repository`) on every job. Without that
+# guard, `pull_request` events from forks would enter the verification jobs
+# but then fail downstream — they run with read-only token contexts and
+# can't access repo secrets like ANTHROPIC_API_KEY, so claude-code-action
+# would crash and the gh-CLI write calls would 403. Skipping the jobs at
+# the wrapper level means fork PRs simply don't get verification (which
+# branch-protection rules can require for merge), rather than failing
+# loudly with a confusing token-permission error.
 #
 # SECURITY: untrusted GitHub event values (issue/PR titles, bodies,
 # comment text) are NEVER interpolated into run: blocks here — this file
@@ -60,11 +65,13 @@ jobs:
 
   # Pillar 2a — EvidenceCollector. Runs deterministic scanners (gitleaks,
   # Semgrep, npm audit) and packages the bundle. Fires on PR open /
-  # synchronize for any branch matching feat/dev-agent-issue-*. Fail-closed
-  # on HIGH-severity findings (PR blocked at this gate).
+  # synchronize for any branch matching feat/dev-agent-issue-* AND
+  # originating from the same repo (not a fork). Fail-closed on
+  # HIGH-severity findings (PR blocked at this gate).
   evidence:
     if: |
       github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
     uses: alizaouane/dev-agent/.github/workflows/phase-evidence-collector.yml@v1
     with:
@@ -80,6 +87,7 @@ jobs:
     needs: evidence
     if: |
       github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
     uses: alizaouane/dev-agent/.github/workflows/phase-swarm-review.yml@v1
     with:
