@@ -17,17 +17,19 @@ const PHASE_WORKFLOWS = [
   // Industry-grade verification gates (build steps 6 + 9 + 12 + 13)
   'phase-acm.yml',
   'phase-evidence-collector.yml',
+  'phase-swarm-review.yml',
 ];
 
 // Workflows that take an `issue_number` input. The scout workflows operate
-// on the whole repo (not an issue); phase-evidence-collector operates on
-// a PR (pr_number, not issue_number).
+// on the whole repo (not an issue); phase-evidence-collector + phase-swarm-review
+// operate on a PR (pr_number, not issue_number).
 const ISSUE_NUMBER_WORKFLOWS = PHASE_WORKFLOWS.filter(
   (w) =>
     w !== 'phase-bug-scout.yml' &&
     w !== 'phase-unfinished-work-scout.yml' &&
     w !== 'phase-cleanup-scout.yml' &&
-    w !== 'phase-evidence-collector.yml',
+    w !== 'phase-evidence-collector.yml' &&
+    w !== 'phase-swarm-review.yml',
 );
 
 const ALL_REUSABLE = [...PHASE_WORKFLOWS, 'orch-sweep.yml'];
