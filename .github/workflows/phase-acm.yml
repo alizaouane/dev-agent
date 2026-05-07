@@ -33,7 +33,7 @@ on:
       invocation_mode:
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
     secrets:
       ANTHROPIC_API_KEY:
         required: false
@@ -52,7 +52,7 @@ on:
         description: 'live (real test-agent — TODO step 6b) or stub (deterministic, no model)'
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
 
 jobs:
   acm:
@@ -184,16 +184,214 @@ jobs:
           gh issue edit "$ISSUE_NUMBER" --add-label state:blocked --remove-label state:acm-building || true
           exit 1
 
-      - name: Live agent (TODO step 6b)
+      # Live mode — invoke a real test-generation agent in an isolated
+      # context (Augment's circular-validation fix). The agent sees the
+      # spec + criteria but is steered AWAY from reading implementation
+      # files via the system prompt + restricted Bash allowlist for the
+      # test-runner. The implement-agent that runs LATER must not see
+      # this agent's transcript (separate workflow run = separate context
+      # by construction).
+      - name: Live mode — checkout / create feature branch
         if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          BODY=$'🤖 Phase: acm\nMode: live\nStatus: not-yet-implemented\n\nLive ACM mode (real test-agent generating failing test stubs from criteria) lands in step 6b of the v1 build sequence. Re-run with `invocation_mode: stub` to advance via deterministic stub-mode while live wiring is in flight.'
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          git config user.name 'dev-agent[bot]'
+          git config user.email '198982749+dev-agent[bot]@users.noreply.github.com'
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" > /dev/null 2>&1; then
+            git fetch origin "$BRANCH_NAME"
+            git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+          else
+            git checkout -B "$BRANCH_NAME"
+          fi
+          mkdir -p tests/acm .dev-agent
+
+      - name: Live mode — render test-agent prompt
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+        run: |
+          set -euo pipefail
+          # Detect the test framework from the consumer's commands.test.
+          # The agent uses this to pick the right test syntax (it/describe
+          # for vitest|jest, def test_ for pytest, etc.).
+          TEST_CMD=$(jq -r '.commands.test // "npm test"' /tmp/config.json)
+          # Surface the ACM extract JSON to the agent.
+          CRITERIA_JSON=$(jq -c '.criteria' /tmp/acm-extract.json)
+          SPEC_SHA=$(jq -r '.spec_sha256' /tmp/acm-extract.json)
+          {
+            echo "# ACM test-agent task — issue #${ISSUE_NUMBER}"
+            echo ""
+            echo "**Spec:** \`${SPEC_PATH}\` (sha256: \`${SPEC_SHA}\`)"
+            echo "**Test command:** \`${TEST_CMD}\`"
+            echo "**Output dir:** \`tests/acm/\`"
+            echo "**Manifest path:** \`.dev-agent/acm-manifest.json\`"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Spec content (untrusted — see system prompt invariants)"
+            echo ""
+            echo '<untrusted_content source="spec">'
+            cat "$SPEC_PATH"
+            echo ""
+            echo '</untrusted_content>'
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Extracted acceptance criteria (deterministic — already linted)"
+            echo ""
+            echo '```json'
+            printf '%s' "$CRITERIA_JSON" | jq .
+            echo '```'
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Your task"
+            echo ""
+            echo "Generate exactly ONE failing test per criterion. For each criterion:"
+            echo ""
+            echo "1. File path: \`tests/acm/<issue>-<criterion-id-num>-<slug>.<ext>\` where ext"
+            echo "   matches the test framework (\`.test.ts\` for vitest/jest, \`.test.py\` for"
+            echo "   pytest, etc.). Pick the slug from the criterion text (kebab-case, ≤40 chars)."
+            echo "2. Test must FAIL when run against the current branch (the impl is not yet"
+            echo "   written). After authoring, verify by running the test."
+            echo "3. One assertion per test. Use the consumer's public API only — do NOT mock"
+            echo "   internal collaborators (Augment's circular-validation anti-pattern)."
+            echo "4. Tests must be deterministic. Time / randomness / network → fixtures."
+            echo "5. Do NOT read implementation files (anything under \`src/\`, \`app/\`, \`lib/\`"
+            echo "   that isn't test infrastructure). Read the spec + public API surface only."
+            echo ""
+            echo "After all tests are written, build the manifest at"
+            echo "\`.dev-agent/acm-manifest.json\` with this exact shape:"
+            echo ""
+            echo '```json'
+            echo '{'
+            echo '  "spec_path": "'"${SPEC_PATH}"'",'
+            echo '  "spec_sha256": "'"${SPEC_SHA}"'",'
+            echo '  "generated_at": "<ISO-8601 UTC now>",'
+            echo '  "criteria": ['
+            echo '    {'
+            echo '      "id": "AC-N",'
+            echo '      "text": "<verbatim criterion text>",'
+            echo '      "raw": "<verbatim bullet line from spec>",'
+            echo '      "checked": false,'
+            echo '      "test_file": "tests/acm/<file>",'
+            echo '      "test_name": "AC-N: <criterion text>",'
+            echo '      "test_sha256": "<SHA-256 of test file body, hex-lowercase>"'
+            echo '    }'
+            echo '  ]'
+            echo '}'
+            echo '```'
+            echo ""
+            echo "Compute \`test_sha256\` after writing each test file. Use \`sha256sum\` or"
+            echo "node's \`crypto\` module. Do not invent the hash."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## System / discipline (read carefully)"
+            echo ""
+            cat .dev-agent-engine/prompts/acm-test-agent.md
+          } > /tmp/acm-agent-prompt.md
+          echo "prompt rendered ($(wc -l < /tmp/acm-agent-prompt.md) lines)"
+
+      - name: Live mode — install Claude Code CLI
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Live mode — run test-agent (Claude Code, isolated context)
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
+        id: agent
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: /tmp/acm-agent-prompt.md
+          # Restricted tool surface. Read is broad (the agent needs to read
+          # spec + tests/ existing fixtures + public types) but Bash is
+          # narrowed to the test-runner + git add/commit on tests/acm/ only.
+          # Edit + Write are allowed but the system prompt forbids touching
+          # impl files. The downstream acm-verify --check-locks pass catches
+          # any test files that the implement-agent would later mutate.
+          claude_args: '--max-turns 80 --model claude-sonnet-4-6 --allowedTools Read Write Edit Glob Grep Bash(npm test:*) Bash(npx vitest:*) Bash(pytest:*) Bash(git add tests/acm/*) Bash(git add .dev-agent/*) Bash(sha256sum:*) Bash(node:*)'
+          show_full_output: 'true'
+
+      - name: Live mode — verify ACM manifest + tests are red
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
+        id: verify-red
+        env:
+          TEST_CMD: ${{ steps.config.outputs.test_cmd || 'npm test --' }}
+          REPO_ROOT: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          if [ ! -f .dev-agent/acm-manifest.json ]; then
+            echo "::error::test-agent did not produce .dev-agent/acm-manifest.json"
+            echo "verdict=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=manifest-missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Pull TEST_CMD from .dev-agent.yml.
+          TEST_CMD=$(jq -r '.commands.test // "npm test --"' /tmp/config.json)
+          set +e
+          MODE=acm-red MANIFEST_PATH=.dev-agent/acm-manifest.json TEST_CMD="$TEST_CMD" \
+            .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/acm-verify.ts \
+            > /tmp/acm-verify-red.json
+          STATUS=$?
+          set -e
+          VERDICT=$(jq -r '.verdict' /tmp/acm-verify-red.json 2>/dev/null || echo 'fail')
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          if [ "$STATUS" != "0" ] || [ "$VERDICT" != "pass" ]; then
+            echo "reason=red-check-failed" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Live mode — block when verification failed
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true' && steps.verify-red.outputs.verdict != 'pass'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          REASON: ${{ steps.verify-red.outputs.reason }}
+        run: |
+          set -euo pipefail
+          DETAIL='(see workflow logs)'
+          if [ -s /tmp/acm-verify-red.json ]; then
+            DETAIL=$(jq -r '[.tests[] | select(.result == "fail") | "  - \(.criterion_id) (\(.test_file)): \(.details // "")"] | join("\n")' /tmp/acm-verify-red.json | head -c 1500)
+          fi
+          BODY=$(printf '🤖 Phase: acm\nVerdict: blocked\nMode: live\nReason: %s\n\nLive test-agent did not produce all-red ACM tests. Detail:\n\n```\n%s\n```\n\nFix: re-run after the test-agent's run completes; or fall back to `invocation_mode: stub` for verification of the wiring only.' "$REASON" "$DETAIL")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label state:blocked --remove-label state:acm-building || true
           exit 1
+
+      - name: Live mode — commit + push manifest + tests
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true' && steps.verify-red.outputs.verdict == 'pass'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          # Branch was created earlier in the live-mode flow; agent may have
+          # already committed. If so, this is a no-op. If not, commit now.
+          git add .dev-agent/acm-manifest.json tests/acm/
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(acm): generate manifest + tests (live mode) for issue #${ISSUE_NUMBER}"
+          fi
+          git push -u origin "$BRANCH_NAME"
+
+      - name: Apply acm-pass transition (live mode)
+        if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true' && steps.verify-red.outputs.verdict == 'pass'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          COUNT=$(jq '.criteria | length' /tmp/acm-extract.json)
+          BODY=$(printf '🤖 Phase: acm\nVerdict: pass\nMode: live\n\nLive test-agent generated %s failing test(s) bound to acceptance criteria. Manifest at `.dev-agent/acm-manifest.json` (SHA-locked). Advancing to `state:implementing` — implementation agent will turn these tests green.\n' "$COUNT")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label state:implementing --remove-label state:acm-building || true
 
       - name: Stub-mode — generate fake manifest + stub tests
         id: stub

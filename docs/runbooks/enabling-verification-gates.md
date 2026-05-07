@@ -1,175 +1,139 @@
-# Enabling the verification gates on a consumer repo
+# Verification gates — universal by default (v1.5+)
 
-The verification architecture (ACM, swarm-review, tier-2 smoke) ships
-disabled by default — new code is in `main` but no consumer runs the
-new gates until you opt that consumer in. This runbook covers the
-opt-in steps.
+From **v1.5** onward the verification architecture (ACM, evidence-collector,
+swarm-review) is **active by default on every connected consumer repo**.
+There's no per-repo opt-in via `.dev-agent.yml` config.
 
-## What's already on every consumer (from the moment `v1` advances)
+Activation is controlled by the presence of one workflow file in each
+consumer's `.github/workflows/` directory:
+**`dev-agent-verification.yml`**.
 
-These changes apply to every consumer pinning `@v1` as soon as the tag
-is moved forward:
+If the file is present, the gates fire. If it's not, they don't.
 
-- **Harden-Runner audit-mode** on every phase workflow — logs egress to
-  the workflow run's Security tab. Doesn't block anything.
-- **ACM pre-flight + post-agent gate** in `phase-implement.yml` — only
-  fires when `.dev-agent/acm-manifest.json` exists on the feature
-  branch. Consumers without ACM config never have the manifest, so
-  the gate stays inactive (`gate_active=false`).
-- **Self-review verification** — handles absent `.dev-agent/self-review.json`
-  silently. The implement-agent's prompt (`prompts/implement.md`) now
-  asks the agent to write the file, but if it doesn't, the workflow
-  exits cleanly without a comment.
-- **Salvage step** — gates PR-open on `ACM_VERDICT == 'fail'`. The
-  verdict defaults to `skipped` when the ACM gate never ran, so the
-  salvage path is unchanged for consumers without ACM.
+## What happens when the gates run
 
-So advancing `v1` is safe for any existing consumer — they keep
-working exactly as before.
+### `/approve` on a `state:spec-ready` issue
 
-## Opting a consumer into the new gates
+The issue author commenting `/approve` triggers
+`dev-agent-verification.yml`'s `acm` job, which calls
+`alizaouane/dev-agent/.github/workflows/phase-acm.yml@v1` in **live
+mode**. The phase:
 
-### 1. Add the verification config to `.dev-agent.yml`
+1. Reads the spec from the issue body's `docs/specs/...md` reference.
+2. Extracts the `## Acceptance criteria` bullets via the deterministic
+   parser in `lib/acm.ts`. Lints them (rejects vague / too-short /
+   non-observable). Lint errors → `state:blocked` + comment.
+3. Invokes a real Claude Sonnet test-agent in an isolated context (the
+   agent sees the spec + criteria but is steered away from
+   implementation files via the system prompt).
+4. The agent writes one failing test per criterion under `tests/acm/`
+   plus a SHA-locked manifest at `.dev-agent/acm-manifest.json`.
+5. `acm-verify --check-red` confirms each test fails on the current
+   branch. Any non-failing test → block the gate.
+6. Commits + pushes the manifest + tests to `feat/dev-agent-issue-N`,
+   advances state to `state:implementing`.
 
-```yaml
-audit_skills:
-  pre_pr: []                # existing — keep your existing entries
-  acm:
-    required: true
-    test_pattern: "tests/acm/**"
-    mutation_score_threshold: 60   # v1.1 once Stryker/mutmut wire in
-    flaky_runs: 5                  # v1.1 once flaky filter wires in
-    max_iterations: 3
-  swarm:
-    reviewers:
-      - spec-compliance
-      - regression-guard
-      - security-scout
-    reviewer_weights:
-      spec-compliance: 1.0
-      regression-guard: 1.0
-      security-scout: 1.5
-    timeout_minutes: 15
-    kill_switch_env: DEV_AGENT_GATE_KILL_SWITCH
-  evidence_collector:
-    scanners:
-      - gitleaks
-      - semgrep
-      - npm-audit
-  tier2_smoke:
-    enabled: true
-    timeout_minutes: 15
+### PR opened / synchronized on a `feat/dev-agent-issue-*` branch
 
-cost_caps:
-  # ... existing caps stay the same; add:
-  acm:               { tokens_in: 30000, tokens_out: 8000, dollars: 0.75 }
-  swarm_review:      { tokens_in: 60000, tokens_out: 9000, dollars: 0.30 }
-  evidence_collector:{ tokens_in: 0,     tokens_out: 0,    dollars: 0    }
-  tier2_smoke:       { tokens_in: 30000, tokens_out: 6000, dollars: 0.40 }
-  self_review:       { tokens_in: 15000, tokens_out: 3000, dollars: 0.10 }
-  index_refresh:     { tokens_in: 0,     tokens_out: 0,    dollars: 0    }
+Triggers two jobs in sequence:
 
-models:
-  # ... existing models stay the same; add (pin to dated snapshots
-  # in production):
-  acm: claude-sonnet-4-6
-  acm_test_agent: claude-sonnet-4-6
-  swarm_review: claude-haiku-4-5
-  meta_reviewer: claude-sonnet-4-6
-  self_review: claude-haiku-4-5
-  tier2_smoke: claude-sonnet-4-6
-```
+1. **`evidence`** — runs gitleaks, Semgrep `p/owasp-top-ten`, `npm
+   audit`. Findings packaged into a `verification-bundle-pr-N`
+   artifact. **Fail-closed on HIGH-severity findings** (the PR is
+   blocked at this gate; the bundle is uploaded so post-mortems work).
+2. **`swarm-review`** — three sequential reviewer agents
+   (spec-compliance, regression-guard, security-scout). Each gets a
+   restricted read-only context, sees the PR diff, emits a structured
+   verdict JSON via the Write tool. Aggregator (`lib/swarm-review.ts`)
+   combines verdicts with weighted voting + evidence-grounding (HIGH
+   findings without a working `proof_command` auto-downgrade to
+   `concern`). Posts one consolidated PR comment + applies one label
+   (`swarm-review:pass | concern | fail`). On `swarm-fail` the
+   workflow exits non-zero — branch protection rules gating on this
+   workflow's status block the merge automatically.
 
-### 2. Add wrapper workflows that call the new phases
+## Migration — existing consumers
 
-Create the four new wrappers in `.github/workflows/`:
+The new code that landed when `v1` advanced is **passive** until the
+verification wrapper file is added. Each existing consumer needs:
 
-```yaml
-# .github/workflows/dev-agent-acm.yml
-name: dev-agent · acm
-on:
-  workflow_dispatch:
-    inputs:
-      issue_number:
-        required: true
-        type: number
-jobs:
-  acm:
-    uses: alizaouane/dev-agent/.github/workflows/phase-acm.yml@v1
-    with:
-      issue_number: ${{ inputs.issue_number }}
-      config_path: .dev-agent.yml
-      invocation_mode: stub      # live mode lands in step 6b
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-```
+1. Copy the wrapper into `.github/workflows/`:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/alizaouane/dev-agent/v1/examples/web-app-template/.github/workflows/dev-agent-verification.yml \
+     -o .github/workflows/dev-agent-verification.yml
+   ```
+2. Verify `ANTHROPIC_API_KEY` is set as a repo secret (most
+   consumers already have it — same secret used by the existing
+   `dev-agent.yml` workflow).
+3. Commit + push.
 
-Similar wrappers for `phase-evidence-collector.yml`, `phase-swarm-review.yml`,
-and `phase-tier2-smoke.yml`. See `examples/web-app-template/.github/workflows/`
-for the existing wrapper shapes — model the new ones the same way.
+That's it. The next `/approve` comment on a `state:spec-ready` issue
+fires ACM. The next PR opened on `feat/dev-agent-issue-*` fires
+evidence-collector + swarm-review.
 
-### 3. State-machine entry rows
+For freshly-connected repos via `/dev-agent-init`, the wrapper lands
+automatically (it's part of `examples/web-app-template/`).
 
-In v1, the state machine still routes `/approve` directly to
-`state:implementing` (so consumers without ACM keep working). To make
-the ACM gate actually fire on this consumer, you have two options:
+## Cost
 
-- **Manual** — when you `/approve` an issue, also run the
-  workflow_dispatch trigger on `dev-agent-acm.yml`. The ACM gate runs,
-  commits the manifest, and advances state. The implement phase then
-  picks up where the manifest left off.
-- **Automatic** — once the live-mode wiring lands (step 6b in the v1.1
-  backlog), the orchestrator's transition table flips
-  `state:spec-ready /approve → state:acm-building` and the workflow
-  fires automatically.
+Per-feature rough cost when all gates run:
 
-Until step 6b, manual dispatch is the only path. This is by design —
-v1 ships the gates in stub mode, which only verifies wiring (real test
-generation requires the live-mode commits).
+- ACM (Sonnet, ~30 turns generating failing tests): $0.50–1.00
+- Evidence-collector (deterministic scanners, no LLM): runtime only
+- Swarm-review (3× Haiku ~30 turns each): $0.30
+- Self-review (1× Haiku, runs inside phase-implement): $0.10
+- Implement (existing — Sonnet): $5–20 depending on spec size
 
-## Kill switch
+Total verification overhead per feature: ~$1.50.
 
-Set the repo secret `DEV_AGENT_GATE_KILL_SWITCH` to disable specific
-gates without removing the config:
+Repo-level monthly budget cap: set `cost_caps.monthly_budget_usd` in
+`.dev-agent.yml` (default $200). The cost-watchdog CLI that enforces
+the cap lands in v1.6 alongside the events.jsonl wiring through every
+phase.
 
-- `acm` — bypass ACM
-- `swarm` — bypass swarm-review
-- `tier2` — bypass tier-2 smoke
-- Comma-combinations: `acm,swarm,tier2`
+## Disabling
 
-Wiring of the env into each phase workflow lands alongside step 12b's
-live-mode flip; v1 stub-mode workflows ignore it because there's
-nothing destructive to bypass yet.
+Two paths to deactivate the gates on a specific consumer:
 
-## Cost ceiling (live mode, v1.1)
+1. **Quickest** — delete `.github/workflows/dev-agent-verification.yml`
+   from the consumer's repo. No other change needed; existing
+   `dev-agent.yml` (implement / staging-deploy / etc.) keeps working.
+2. **Selective** — comment out the `acm:` / `evidence:` / `swarm-review:`
+   jobs in the wrapper to disable individual gates while keeping others
+   active.
 
-Per-feature rough cost when all gates are running in live mode:
+## Forks (limitation)
 
-- ACM (Sonnet, ~30 turns): $0.50–1.00
-- self-review (Haiku, 1 call): $0.10
-- evidence-collector (deterministic): runtime only
-- swarm 3× Haiku in parallel: $0.30
-- meta-reviewer (Sonnet, only on pass+fail mix): $0.05
-- tier-2 (Sonnet, Playwright probe): $0.40
+PR events from forked repos run with read-only permissions to the
+base repo. The swarm-review job will skip cleanly (gh CLI calls fail)
+in that case. Internal-team PRs (same repo) work end-to-end. v1.6 may
+add `pull_request_target` for fork support once the diff-handling
+security review is done.
 
-Total: ~$1.50 per feature.
+## Reverting a misbehaving gate
 
-Repo-level monthly budget: set `cost_caps.monthly_budget_usd` (default
-$200). The cost-watchdog CLI that enforces this lands in v1.1
-alongside the events.jsonl wiring.
+If a gate fails repeatedly on real PRs:
 
-## Reverting
+1. **Disable the gate first** (see "Disabling" above) to unblock the
+   team.
+2. **Open an issue** in this repo (alizaouane/dev-agent) with the
+   workflow run logs.
+3. **Pin the consumer's wrappers back to the prior `@v1`** if the
+   issue is in the engine itself: edit the `uses:` line in
+   `dev-agent-verification.yml` to point at a specific known-good
+   commit SHA instead of `@v1`.
 
-If a gate misbehaves on this consumer:
+## What's deferred to v1.6+
 
-1. **Quickest** — set `DEV_AGENT_GATE_KILL_SWITCH=acm,swarm,tier2` repo
-   secret. Gates skip on next run (once wiring lands per above).
-2. **Cleaner** — remove the `audit_skills.acm/swarm/...` blocks from
-   `.dev-agent.yml`. Gates never fire because the config that activates
-   them is gone.
-3. **Hardest** — pin this consumer's wrapper back to a `@v1`-tagged
-   commit before the verification gates landed. Other consumers stay
-   on the new code.
-
-The v1 design ensures the new gates are entirely additive: removing
-the config is sufficient to deactivate them.
+- **EvidenceBundle in swarm-review** — currently reviewers see the PR
+  diff only. v1.6 adds cross-workflow artifact download so reviewers
+  consume the gitleaks/Semgrep findings as structured input.
+- **Tier-2 Playwright smoke** — Pillar 7 ships in stub mode in v1.5;
+  live Playwright probe is v1.7.
+- **Mutation-kill gate in ACM** — `lib/cli/acm-verify.ts` already
+  has the `CHECK_MUTATION_KILLS` plumbing; Stryker/mutmut wiring is
+  v1.6.
+- **Live eval harness** — `lib/cli/eval-run.ts --mode=live` (real
+  Anthropic calls + 5-axis judge + bootstrap CIs) is v1.7.
+- **Cost watchdog** — needs `lib/events.ts` wired through every
+  phase first; lands in v1.6.
