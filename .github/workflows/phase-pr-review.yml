@@ -96,7 +96,7 @@ jobs:
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           show_full_output: 'true'
 
-  # /swarm-override — Pillar 2 escape hatch (step 16, canary rollout).
+  # /swarm-override — Pillar 2 escape hatch.
   # When a swarm-review verdict is `swarm-fail` and a human reviewer
   # decides to advance the PR anyway (false positive, urgent fix, etc.),
   # they comment `/swarm-override <one-line reason>` on the PR. This

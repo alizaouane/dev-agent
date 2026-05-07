@@ -15,9 +15,11 @@ name: dev-agent · phase-swarm-review
 # security-scout}.md) lands in step 12b once the per-reviewer prompt
 # rendering + verdict capture is wired through claude-code-action.
 #
-# v1 also ships fail_open=true (advisory): the verdict is posted as a
-# PR comment + label, but PRs are NOT blocked from advancing on
-# swarm-fail. The canary rollout (step 16) flips to enforcing.
+# In v1, the swarm verdict surfaces as a PR comment + label. The
+# enforcing-merge-block via the swarm-review:fail label is up to the
+# consumer's branch protection rules — apply them when you're ready.
+# The /swarm-override comment (handled by phase-pr-review.yml's
+# sibling job) is the documented escape hatch.
 #
 # SECURITY: All untrusted GitHub event values flow through env vars —
 # never inlined into run: blocks. Reviewers (when live in 12b) get

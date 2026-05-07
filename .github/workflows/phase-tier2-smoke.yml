@@ -11,9 +11,10 @@ name: dev-agent · phase-tier2-smoke
 # once the Playwright runner harness + spec-selector extraction are
 # wired.
 #
-# v1 also ships fail_open=true (advisory): verdict is posted as an
-# issue comment + label, but state advancement is not blocked. The
-# canary rollout (step 16) flips to enforcing.
+# In v1, stub-mode verdicts post as an issue comment + label. State
+# advancement is gated on the verdict (pass advances; fail labels
+# tier2-failed and pins state). Once live mode wires in (step 13b),
+# the verdict reflects a real Playwright run.
 
 on:
   workflow_call:
@@ -141,7 +142,7 @@ jobs:
         run: |
           set -euo pipefail
           if [ "$STUB_MODE" = "fail" ]; then
-            BODY=$'🤖 Phase: tier2-smoke\nVerdict: fail\nMode: stub\n\nTier-2 smoke detected a UI failure (synthesized for stub-mode wiring verification). State remains `state:tier2-smoke`; advisory in v1 — canary rollout (step 16) will flip to a hard transition.'
+            BODY=$'🤖 Phase: tier2-smoke\nVerdict: fail\nMode: stub\n\nTier-2 smoke detected a UI failure (synthesized for stub-mode wiring verification). State remains `state:tier2-smoke` and is labeled `tier2-failed`. Live mode (step 13b) will run a real Playwright probe.'
             gh issue comment "$ISSUE_NUMBER" --body "$BODY"
             gh issue edit "$ISSUE_NUMBER" --add-label tier2-failed || true
           else
