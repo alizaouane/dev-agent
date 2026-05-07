@@ -275,6 +275,40 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-implement.yml — Self-review (Pillar 6)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('runs the self-review verification step (advisory in v1)', () => {
+      expect(raw).toMatch(/Self-review verification \(advisory\)/);
+      expect(raw).toMatch(/\.dev-agent\/self-review\.json/);
+    });
+
+    it('handles absent + malformed self-review JSON without blocking', () => {
+      // Advisory in v1: missing or invalid JSON must not break the
+      // pipeline — the workflow logs a warning + sets a special verdict
+      // value so downstream steps know there's no summary to use.
+      expect(raw).toMatch(/verdict=absent/);
+      expect(raw).toMatch(/verdict=malformed/);
+    });
+
+    it('uses the self-review summary as PR body when present', () => {
+      // When the agent emitted .dev-agent/self-review-summary.md, the
+      // salvage step should use it as the PR body so reviewers see the
+      // agent's own checklist verdict. Falls back to the generic salvage
+      // notice when absent.
+      expect(raw).toMatch(/SELF_REVIEW_SUMMARY_PATH/);
+      expect(raw).toMatch(/Agent self-review/);
+    });
+
+    it('posts a checklist breakdown comment for any non-pass items', () => {
+      // The comment must enumerate every non-pass item so the operator
+      // can scan the issue without opening the PR. Pass-only runs get
+      // a single-line comment.
+      expect(raw).toMatch(/Non-pass items/);
+      expect(raw).toMatch(/all 10 checklist items passed/);
+    });
+  });
+
   describe('phase-implement.yml — Read issue spec-path detection', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 

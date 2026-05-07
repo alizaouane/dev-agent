@@ -342,6 +342,55 @@ jobs:
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
           echo "exit_status=$STATUS" >> "$GITHUB_OUTPUT"
 
+      # Self-review (Pillar 6, advisory in v1). The implement-agent is
+      # asked (via prompts/implement.md) to write a structured 10-item
+      # checklist verdict to .dev-agent/self-review.json plus a markdown
+      # summary to .dev-agent/self-review-summary.md. This step parses
+      # the JSON, posts the verdict + checklist as an issue comment, and
+      # surfaces structured outputs that the salvage step uses to populate
+      # the PR body. Missing/malformed JSON does NOT block the PR — it
+      # logs a "self-review absent" warning. v1.1 will gate PR-open on the
+      # verdict; for now, the value is in the audit trail + PR body.
+      - name: Self-review verification (advisory)
+        id: self-review
+        if: inputs.invocation_mode == 'live' && always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+            git switch "$BRANCH_NAME" 2>/dev/null || true
+          fi
+          if [ ! -f .dev-agent/self-review.json ]; then
+            echo "verdict=absent" >> "$GITHUB_OUTPUT"
+            echo "summary_path=" >> "$GITHUB_OUTPUT"
+            echo "Self-review JSON absent — agent did not run the self-review step (advisory)."
+            exit 0
+          fi
+          if ! jq -e . .dev-agent/self-review.json > /dev/null 2>&1; then
+            echo "verdict=malformed" >> "$GITHUB_OUTPUT"
+            echo "summary_path=" >> "$GITHUB_OUTPUT"
+            echo "::warning::self-review.json is not valid JSON"
+            exit 0
+          fi
+          VERDICT=$(jq -r '.verdict' .dev-agent/self-review.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          if [ -f .dev-agent/self-review-summary.md ]; then
+            echo "summary_path=.dev-agent/self-review-summary.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "summary_path=" >> "$GITHUB_OUTPUT"
+          fi
+          # Build a checklist breakdown: one bullet per non-pass item.
+          NON_PASS=$(jq -r '[.checklist[] | select(.result != "pass") | "  - **\(.item)** (\(.result)): \(.note)"] | join("\n")' .dev-agent/self-review.json)
+          if [ -n "$NON_PASS" ]; then
+            BODY=$(printf '🤖 Phase: implement\nSelf-review verdict: %s\n\nNon-pass items:\n%s\n' "$VERDICT" "$NON_PASS")
+          else
+            BODY=$(printf '🤖 Phase: implement\nSelf-review verdict: %s — all 10 checklist items passed.\n' "$VERDICT")
+          fi
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+
       - name: ACM gate — comment + label on fail
         if: inputs.invocation_mode == 'live' && steps.acm-gate.outputs.verdict == 'fail'
         env:
@@ -397,6 +446,10 @@ jobs:
           # failed, we still push the branch (work preservation) but skip
           # opening the PR — the operator must revise + re-run instead.
           ACM_VERDICT: ${{ steps.acm-gate.outputs.verdict || 'skipped' }}
+          # Self-review summary (when present) becomes the PR body so
+          # human reviewers see the agent's own checklist verdict before
+          # diving into the diff.
+          SELF_REVIEW_SUMMARY_PATH: ${{ steps.self-review.outputs.summary_path }}
         run: |
           set -euo pipefail
           BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
@@ -451,7 +504,14 @@ jobs:
           # agent-no-pr which is the right signal that this consumer
           # repo needs the "Allow Actions to create PRs" setting on.
           if ! gh pr view "$BRANCH_NAME" >/dev/null 2>&1; then
-            PR_BODY=$(printf 'Closes #%s.\n\nAuto-opened by the dev-agent implement workflow salvage step. Review the diff before merging — the agent did not finalize the PR itself, so commit messages may be coarse.' "$ISSUE_NUMBER")
+            # Use the agent's self-review summary as PR body when present,
+            # falling back to the generic salvage notice. The summary is
+            # the agent's own checklist verdict per Pillar 6.
+            if [ -n "$SELF_REVIEW_SUMMARY_PATH" ] && [ -f "$SELF_REVIEW_SUMMARY_PATH" ]; then
+              PR_BODY=$(printf 'Closes #%s.\n\n## Agent self-review\n\n%s\n' "$ISSUE_NUMBER" "$(cat "$SELF_REVIEW_SUMMARY_PATH")")
+            else
+              PR_BODY=$(printf 'Closes #%s.\n\nAuto-opened by the dev-agent implement workflow salvage step. Review the diff before merging — the agent did not finalize the PR itself, so commit messages may be coarse.' "$ISSUE_NUMBER")
+            fi
             if ! gh pr create --head "$BRANCH_NAME" --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" --body "$PR_BODY" 2>&1; then
               HINT_BODY=$(printf '🛟 Workflow pushed the agent work to `%s` but could not open the PR. Most likely cause: Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests" is disabled on this repo. Enable it and re-trigger, or open a PR from `%s` manually.' "$BRANCH_NAME" "$BRANCH_NAME")
               gh issue comment "$ISSUE_NUMBER" --body "$HINT_BODY"
