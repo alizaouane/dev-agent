@@ -47,6 +47,16 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
+      # Pillar 5 — Harden runner against unexpected egress + sudo. v1 ships
+      # in audit mode (logs without blocking). Implement legitimately needs
+      # the broadest egress (npm, GitHub, claude.ai for the Claude Code CLI
+      # installer, api.anthropic.com for model calls) so audit-then-block is
+      # especially important here. v1.1 flips to block-mode after audit data.
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
       # Consumer repo at root — agent edits, type-checks, tests against this.
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
@@ -68,6 +78,27 @@ jobs:
             echo 'issue.json'
             echo '.dev-agent-engine/'
           } >> .git/info/exclude
+
+      # ACM pre-flight: if phase-acm already ran and pushed the feature
+      # branch (with the manifest + stub tests committed), switch to it so
+      # the agent sees the locked tests as part of its working tree. When
+      # phase-acm is not configured for this consumer, the branch won't
+      # exist yet and claude-code-action creates it fresh — the existing
+      # flow continues unchanged.
+      - name: Prefetch feature branch (for ACM manifest)
+        id: prefetch
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH_NAME"
+            git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+            echo "branch_existed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_existed=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # Engine repo (the dev-agent CLIs + prompt templates this workflow
       # invokes via `.dev-agent-engine/node_modules/.bin/tsx ...`). Pinned
@@ -208,6 +239,29 @@ jobs:
           BODY=$(printf '🤖 Phase: implement\nModel: (none)\nTokens: 0 in / 0 out\nCost: $0\nMode: stub\nStatus: stub-mode (no agent invocation; set invocation_mode=live to ship code)\n')
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
 
+      # ACM pre-flight (Pillar 1). When phase-acm has run for this issue
+      # and pushed `.dev-agent/acm-manifest.json` to the feature branch,
+      # the post-agent ACM gate kicks in and the agent's PR-open path is
+      # gated on `acm-verify --check-green --check-locks --check-spec-hash`.
+      # When phase-acm has NOT run (no manifest on branch — typical for
+      # consumers without the audit_skills.acm config), gate_active=false
+      # and the existing flow runs unchanged.
+      - name: ACM pre-flight (detect manifest)
+        id: acm-preflight
+        if: inputs.invocation_mode == 'live'
+        run: |
+          set -euo pipefail
+          if [ -f .dev-agent/acm-manifest.json ]; then
+            CRITERION_COUNT=$(jq '.criteria | length' .dev-agent/acm-manifest.json)
+            echo "gate_active=true" >> "$GITHUB_OUTPUT"
+            echo "criterion_count=$CRITERION_COUNT" >> "$GITHUB_OUTPUT"
+            echo "ACM gate active — $CRITERION_COUNT criteria locked in manifest."
+          else
+            echo "gate_active=false" >> "$GITHUB_OUTPUT"
+            echo "criterion_count=0" >> "$GITHUB_OUTPUT"
+            echo "ACM gate inactive (no manifest on this branch). Existing flow continues."
+          fi
+
       # claude-code-action expects the Claude Code native binary at
       # ~/.local/bin/claude — it doesn't install it itself. Without
       # this step, the action fails with "Claude Code native binary
@@ -239,6 +293,131 @@ jobs:
           branch_prefix: 'feat/dev-agent-issue-'
           show_full_output: 'true'
 
+      # ACM gate (Pillar 1, post-agent). Runs only when phase-acm has
+      # locked a manifest into the feature branch (gate_active=true).
+      # Switches HEAD to the branch the agent worked on, then runs
+      # acm-verify --check-green --check-locks --check-spec-hash:
+      #   green       every ACM test must PASS (the agent fulfilled
+      #               every criterion the spec promised)
+      #   locks       SHA-256 of every ACM test file must match the
+      #               manifest (anti-cheating: the agent did not
+      #               weaken its own tests)
+      #   spec-hash   SHA-256 of the spec must match the manifest
+      #               (no silent spec edit since phase-acm ran)
+      #
+      # Verdict feeds the salvage step: pass → open PR as before;
+      # fail → push the branch (preserve work) but skip PR open and
+      # label `acm-failed` so the operator can revise + re-run.
+      - name: ACM gate (verify tests green + locks intact + spec stable)
+        id: acm-gate
+        if: inputs.invocation_mode == 'live' && steps.acm-preflight.outputs.gate_active == 'true' && always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          # Switch to whichever branch the agent left the work on.
+          if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+            git switch "$BRANCH_NAME"
+          fi
+          if [ ! -f .dev-agent/acm-manifest.json ]; then
+            # Manifest got removed by the agent — that's a hard fail.
+            echo "verdict=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=manifest-deleted" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TEST_CMD_VAL=$(jq -r '.commands.test // "npm test"' /tmp/config.json)
+          set +e
+          MODE=acm-green \
+          TEST_CMD="$TEST_CMD_VAL" \
+          MANIFEST_PATH=.dev-agent/acm-manifest.json \
+          CHECK_LOCKS=true \
+          CHECK_SPEC_HASH=true \
+          CHECK_MUTATION_KILLS=false \
+            .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/acm-verify.ts > /tmp/acm-gate.json
+          STATUS=$?
+          set -e
+          VERDICT=$(jq -r '.verdict' /tmp/acm-gate.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "exit_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      # Self-review (Pillar 6, advisory in v1). The implement-agent is
+      # asked (via prompts/implement.md) to write a structured 10-item
+      # checklist verdict to .dev-agent/self-review.json plus a markdown
+      # summary to .dev-agent/self-review-summary.md. This step parses
+      # the JSON, posts the verdict + checklist as an issue comment, and
+      # surfaces structured outputs that the salvage step uses to populate
+      # the PR body. Missing/malformed JSON does NOT block the PR — it
+      # logs a "self-review absent" warning. v1.1 will gate PR-open on the
+      # verdict; for now, the value is in the audit trail + PR body.
+      - name: Self-review verification (advisory)
+        id: self-review
+        if: inputs.invocation_mode == 'live' && always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+            git switch "$BRANCH_NAME" 2>/dev/null || true
+          fi
+          if [ ! -f .dev-agent/self-review.json ]; then
+            echo "verdict=absent" >> "$GITHUB_OUTPUT"
+            echo "summary_path=" >> "$GITHUB_OUTPUT"
+            echo "Self-review JSON absent — agent did not run the self-review step (advisory)."
+            exit 0
+          fi
+          if ! jq -e . .dev-agent/self-review.json > /dev/null 2>&1; then
+            echo "verdict=malformed" >> "$GITHUB_OUTPUT"
+            echo "summary_path=" >> "$GITHUB_OUTPUT"
+            echo "::warning::self-review.json is not valid JSON"
+            exit 0
+          fi
+          VERDICT=$(jq -r '.verdict' .dev-agent/self-review.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          if [ -f .dev-agent/self-review-summary.md ]; then
+            echo "summary_path=.dev-agent/self-review-summary.md" >> "$GITHUB_OUTPUT"
+          else
+            echo "summary_path=" >> "$GITHUB_OUTPUT"
+          fi
+          # Build a checklist breakdown: one bullet per non-pass item.
+          NON_PASS=$(jq -r '[.checklist[] | select(.result != "pass") | "  - **\(.item)** (\(.result)): \(.note)"] | join("\n")' .dev-agent/self-review.json)
+          if [ -n "$NON_PASS" ]; then
+            BODY=$(printf '🤖 Phase: implement\nSelf-review verdict: %s\n\nNon-pass items:\n%s\n' "$VERDICT" "$NON_PASS")
+          else
+            BODY=$(printf '🤖 Phase: implement\nSelf-review verdict: %s — all 10 checklist items passed.\n' "$VERDICT")
+          fi
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+
+      - name: ACM gate — comment + label on fail
+        if: inputs.invocation_mode == 'live' && steps.acm-gate.outputs.verdict == 'fail'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Build a structured fail summary from the JSON. The PR is NOT
+          # opened in this case (salvage gates on this verdict), but the
+          # branch IS pushed so the agent's work isn't lost.
+          FAILED_TESTS=$(jq -r '[.tests[] | select(.result == "fail") | "  - \(.criterion_id) (\(.test_file))"] | join("\n")' /tmp/acm-gate.json)
+          LOCK_MISMATCHES=$(jq -r '.locks.mismatched | join("\n  - ")' /tmp/acm-gate.json)
+          SPEC_VERDICT=$(jq -r '.spec_hash.verdict' /tmp/acm-gate.json)
+          SECTIONS=""
+          if [ -n "$FAILED_TESTS" ]; then
+            SECTIONS="${SECTIONS}\n**Failing ACM tests:**\n${FAILED_TESTS}\n"
+          fi
+          if [ -n "$LOCK_MISMATCHES" ] && [ "$LOCK_MISMATCHES" != "" ]; then
+            SECTIONS="${SECTIONS}\n**Test-file SHA mismatches** (anti-cheating lock):\n  - ${LOCK_MISMATCHES}\n"
+          fi
+          if [ "$SPEC_VERDICT" = "fail" ]; then
+            SECTIONS="${SECTIONS}\n**Spec SHA mismatch** — spec was edited since phase-acm ran. Use `/regenerate-acm` to rerun the gate against the current spec.\n"
+          fi
+          BODY=$(printf '🤖 Phase: implement\nGate: ACM\nVerdict: fail\n\nACM verification failed; PR not opened. The feature branch is preserved on `feat/dev-agent-issue-%s` so the work is not lost.%b\nFix the listed items and re-run `/approve` to retry.\n' "$ISSUE_NUMBER" "$SECTIONS")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label acm-failed || true
+
       # Salvage step: handles the most common implement-phase failure
       # mode — the agent does its work, creates the feature branch,
       # edits files, but ends its turn without committing/pushing/PRing.
@@ -263,6 +442,14 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
           GH_TOKEN: ${{ github.token }}
+          # ACM verdict feeds the PR-open gate further down. When the gate
+          # failed, we still push the branch (work preservation) but skip
+          # opening the PR — the operator must revise + re-run instead.
+          ACM_VERDICT: ${{ steps.acm-gate.outputs.verdict || 'skipped' }}
+          # Self-review summary (when present) becomes the PR body so
+          # human reviewers see the agent's own checklist verdict before
+          # diving into the diff.
+          SELF_REVIEW_SUMMARY_PATH: ${{ steps.self-review.outputs.summary_path }}
         run: |
           set -euo pipefail
           BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
@@ -300,13 +487,31 @@ jobs:
             exit 0
           }
 
+          # PR-open gate (Pillar 1). When the ACM gate failed, skip opening
+          # the PR — the operator must address the failing tests / lock
+          # mismatches / spec drift first, then re-run /approve. The
+          # branch is preserved on origin so the work isn't lost; the
+          # ACM-gate step has already labeled the issue `acm-failed` and
+          # commented with the failure breakdown.
+          if [ "$ACM_VERDICT" = "fail" ]; then
+            echo "Salvage: ACM gate failed; branch pushed but PR not opened."
+            exit 0
+          fi
+
           # Open a PR if missing. The follow-up "Comment telemetry +
           # flip state" step relies on a PR existing to declare
           # success; if pr create 403s here, it'll fall through to
           # agent-no-pr which is the right signal that this consumer
           # repo needs the "Allow Actions to create PRs" setting on.
           if ! gh pr view "$BRANCH_NAME" >/dev/null 2>&1; then
-            PR_BODY=$(printf 'Closes #%s.\n\nAuto-opened by the dev-agent implement workflow salvage step. Review the diff before merging — the agent did not finalize the PR itself, so commit messages may be coarse.' "$ISSUE_NUMBER")
+            # Use the agent's self-review summary as PR body when present,
+            # falling back to the generic salvage notice. The summary is
+            # the agent's own checklist verdict per Pillar 6.
+            if [ -n "$SELF_REVIEW_SUMMARY_PATH" ] && [ -f "$SELF_REVIEW_SUMMARY_PATH" ]; then
+              PR_BODY=$(printf 'Closes #%s.\n\n## Agent self-review\n\n%s\n' "$ISSUE_NUMBER" "$(cat "$SELF_REVIEW_SUMMARY_PATH")")
+            else
+              PR_BODY=$(printf 'Closes #%s.\n\nAuto-opened by the dev-agent implement workflow salvage step. Review the diff before merging — the agent did not finalize the PR itself, so commit messages may be coarse.' "$ISSUE_NUMBER")
+            fi
             if ! gh pr create --head "$BRANCH_NAME" --title "feat: implement issue #${ISSUE_NUMBER} — ${ISSUE_TITLE}" --body "$PR_BODY" 2>&1; then
               HINT_BODY=$(printf '🛟 Workflow pushed the agent work to `%s` but could not open the PR. Most likely cause: Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests" is disabled on this repo. Enable it and re-trigger, or open a PR from `%s` manually.' "$BRANCH_NAME" "$BRANCH_NAME")
               gh issue comment "$ISSUE_NUMBER" --body "$HINT_BODY"

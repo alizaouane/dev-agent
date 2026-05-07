@@ -1,0 +1,190 @@
+name: dev-agent · phase-evidence-collector
+
+# Phase: evidence-collector. Pillar 2 (Adversarial Review) foundation.
+# Runs every deterministic scanner once and packages the results into
+# `verification-bundle.tar.gz`. Phase-swarm-review consumes the bundle —
+# the three reviewer LLMs see the SAME frozen evidence (Cognition's
+# anti-multi-agent argument fix: "share full traces, not just messages").
+#
+# v1 scanners (deterministic, fail-closed at workflow level):
+#   - gitleaks         secret scanning on the PR diff
+#   - Semgrep          OWASP Top-10 + JavaScript ruleset (advisory in v1,
+#                      flips to fail-closed in v1.1)
+#   - npm audit        high+ severity dep CVEs (advisory in v1)
+#   - CodeQL           via github/codeql-action — informational
+#                      (the consumer's own CI already runs CodeQL if
+#                      enabled; we just collect its output here)
+#   - AST diff         git diff --stat plus changed-symbol summary
+#                      (computed locally, no external service)
+#
+# Outputs:
+#   - verification-bundle.tar.gz  artifact containing:
+#       - gitleaks.json
+#       - semgrep.json
+#       - npm-audit.json
+#       - ast-diff.txt
+#       - meta.json (PR ref, base SHA, head SHA, scanner versions)
+#
+# v1 ships scanners in advisory mode (workflow does not exit non-zero
+# on findings). v1.1 makes gitleaks + Semgrep high-severity findings
+# fail-closed once we've audited typical false-positive rates on real
+# consumer PRs. All untrusted GitHub event values flow through env vars
+# — never inlined into run: blocks.
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      base_ref:
+        description: 'Base branch ref (default: main)'
+        required: false
+        type: string
+        default: 'main'
+      head_ref:
+        description: 'Head branch ref (the PR branch)'
+        required: true
+        type: string
+    outputs:
+      bundle_artifact:
+        description: 'Name of the uploaded verification-bundle artifact'
+        value: ${{ jobs.collect.outputs.bundle_artifact }}
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'PR number'
+        required: true
+        type: number
+      base_ref:
+        description: 'Base branch ref'
+        required: false
+        type: string
+        default: 'main'
+      head_ref:
+        description: 'Head branch ref'
+        required: true
+        type: string
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+    outputs:
+      bundle_artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - name: Checkout head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Build meta.json
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BASE_REF: ${{ inputs.base_ref }}
+          HEAD_REF: ${{ inputs.head_ref }}
+        run: |
+          set -euo pipefail
+          mkdir -p bundle
+          BASE_SHA=$(git rev-parse "origin/$BASE_REF" 2>/dev/null || echo "")
+          HEAD_SHA=$(git rev-parse HEAD)
+          jq -nc \
+            --arg pr "$PR_NUMBER" \
+            --arg base_ref "$BASE_REF" \
+            --arg base_sha "$BASE_SHA" \
+            --arg head_ref "$HEAD_REF" \
+            --arg head_sha "$HEAD_SHA" \
+            --arg ts "$(date -u -Iseconds)" \
+            '{pr_number: ($pr | tonumber), base_ref: $base_ref, base_sha: $base_sha, head_ref: $head_ref, head_sha: $head_sha, generated_at: $ts}' \
+            > bundle/meta.json
+
+      - name: Scan for secrets (gitleaks)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          # Use the gitleaks binary directly so the bundle has a stable
+          # JSON shape downstream readers expect. Advisory in v1 — findings
+          # are captured for the swarm-security-scout reviewer to surface.
+          GITLEAKS_VER="8.21.2"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VER}/gitleaks_${GITLEAKS_VER}_linux_x64.tar.gz" \
+            | tar xz -C /tmp gitleaks
+          /tmp/gitleaks detect \
+            --source . \
+            --redact \
+            --report-format=json \
+            --report-path=bundle/gitleaks.json \
+            --no-banner \
+            --exit-code=0 \
+            2>/dev/null \
+            || echo '{"findings": [], "note": "gitleaks errored"}' > bundle/gitleaks.json
+
+      - name: Scan with Semgrep (OWASP Top-10 + JavaScript)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python3 -m pip install --quiet --user semgrep || true
+          export PATH="$HOME/.local/bin:$PATH"
+          if command -v semgrep >/dev/null 2>&1; then
+            semgrep --config=p/owasp-top-ten --config=p/javascript --json --quiet . > bundle/semgrep.json 2>/dev/null || \
+              echo '{"results": [], "errors": [{"message": "semgrep run errored"}]}' > bundle/semgrep.json
+          else
+            echo '{"results": [], "note": "semgrep not available"}' > bundle/semgrep.json
+          fi
+
+      - name: npm audit (production deps, high+)
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          if [ -f package.json ]; then
+            npm audit --audit-level=high --omit=dev --json > bundle/npm-audit.json 2>/dev/null || true
+            if [ ! -s bundle/npm-audit.json ]; then
+              echo '{"vulnerabilities": {}, "note": "npm audit returned empty"}' > bundle/npm-audit.json
+            fi
+          else
+            echo '{"vulnerabilities": {}, "note": "no package.json — skipped"}' > bundle/npm-audit.json
+          fi
+
+      - name: Compute AST diff summary
+        env:
+          BASE_REF: ${{ inputs.base_ref }}
+        run: |
+          set -euo pipefail
+          {
+            echo "=== Files changed ==="
+            git diff --name-status "origin/${BASE_REF}...HEAD" || true
+            echo ""
+            echo "=== Stat ==="
+            git diff --stat "origin/${BASE_REF}...HEAD" || true
+            echo ""
+            echo "=== Symbols (first 30 diff lines per file) ==="
+            for f in $(git diff --name-only "origin/${BASE_REF}...HEAD" -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.py' '*.rb' '*.go' 2>/dev/null); do
+              echo "--- $f"
+              git diff "origin/${BASE_REF}...HEAD" -- "$f" 2>/dev/null | head -30 || true
+              echo ""
+            done
+          } > bundle/ast-diff.txt
+
+      - name: Tar bundle
+        run: |
+          set -euo pipefail
+          tar -czf verification-bundle.tar.gz -C bundle .
+          ls -la verification-bundle.tar.gz
+
+      - name: Upload verification bundle
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: verification-bundle-pr-${{ inputs.pr_number }}
+          path: verification-bundle.tar.gz
+          retention-days: 14

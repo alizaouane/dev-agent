@@ -43,6 +43,13 @@ jobs:
       issues: write
       pull-requests: write
     steps:
+      # Pillar 5 — Harden runner against unexpected egress + sudo. See
+      # phase-bug-scout.yml for the v1 audit-mode rationale.
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
       - uses: actions/checkout@v4
         with: { fetch-depth: 0 }
       - name: Checkout dev-agent engine

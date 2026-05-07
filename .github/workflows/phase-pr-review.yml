@@ -54,6 +54,13 @@ jobs:
       pull-requests: write
       id-token: write
     steps:
+      # Pillar 5 — Harden runner against unexpected egress + sudo. See
+      # phase-bug-scout.yml for the v1 audit-mode rationale.
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
       - name: Resolve PR head branch
         id: pr
         env:
@@ -88,3 +95,84 @@ jobs:
           # `agent` mode reads the PR + triggering comment automatically.
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           show_full_output: 'true'
+
+  # /swarm-override — Pillar 2 escape hatch.
+  # When a swarm-review verdict is `swarm-fail` and a human reviewer
+  # decides to advance the PR anyway (false positive, urgent fix, etc.),
+  # they comment `/swarm-override <one-line reason>` on the PR. This
+  # job clears the swarm-review:fail label, applies swarm-overridden +
+  # the original verdict-pass label, and records who/when/why in an
+  # audit comment. The comment IS the audit trail — GitHub's comment
+  # history is the canonical record (events.jsonl mirroring lands in
+  # v1.1 alongside cost-watchdog wiring).
+  #
+  # The action is privileged but advisory: in v1 swarm-review labels
+  # are advisory anyway (PR not blocked). Once step 16 flips swarm-fail
+  # to a hard PR-merge gate, this override becomes the sole path
+  # forward when a reviewer dissents.
+  swarm-override:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/swarm-override') &&
+      github.event.comment.user.login != 'claude[bot]' &&
+      github.event.comment.user.login != 'dev-agent[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - name: Resolve PR head branch + extract reason
+        id: ctx
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          if ! [[ "$HEAD" =~ ^feat/dev-agent-issue-[0-9]+$ ]]; then
+            echo "Not a dev-agent PR; exiting."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Extract everything after the literal `/swarm-override` token
+          # as the operator's free-form reason. Body is in env so no shell
+          # interpolation. We don't enforce min length in v1 (advisory) —
+          # an empty reason is allowed, just less useful in the audit log.
+          REASON=$(printf '%s' "$COMMENT_BODY" | sed -E 's|^/swarm-override[[:space:]]*||' | head -c 500)
+          if [ -z "$REASON" ]; then
+            REASON="(no reason given)"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          # Use a delimiter for multi-line reason in step output.
+          {
+            echo "reason<<EOF_REASON"
+            printf '%s\n' "$REASON"
+            echo "EOF_REASON"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply override + post audit comment
+        if: steps.ctx.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          REASON: ${{ steps.ctx.outputs.reason }}
+        run: |
+          set -euo pipefail
+          # Idempotent label flip: remove fail/concern, add overridden + pass.
+          gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:fail' || true
+          gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:concern' || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden' || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass' || true
+          BODY=$(printf '🛟 swarm-override applied\n\n**Actor:** @%s\n**Reason:** %s\n**Timestamp:** %s\n\nThe swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.\n' "$ACTOR" "$REASON" "$(date -u -Iseconds)")
+          gh pr comment "$PR_NUMBER" --body "$BODY"

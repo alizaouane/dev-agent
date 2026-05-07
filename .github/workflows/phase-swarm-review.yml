@@ -1,0 +1,186 @@
+name: dev-agent · phase-swarm-review
+
+# Phase: swarm-review (Pillar 2). Runs in `state:swarm-reviewing`,
+# between PR-open and `state:pr-review`. Adversarially exercises every
+# PR before a human reviewer is asked to look.
+#
+# Architectural shape (Cognition's anti-multi-agent argument resolved):
+# the three reviewers are read-only specialized inference passes over
+# the SAME frozen evidence bundle. They do not coordinate; they do not
+# write code; they emit structured findings that lib/swarm-review.ts
+# combines deterministically.
+#
+# v1 ships in stub mode by default. Live mode (real claude-code-action
+# invocations using prompts/swarm-{spec-compliance,regression-guard,
+# security-scout}.md) lands in step 12b once the per-reviewer prompt
+# rendering + verdict capture is wired through claude-code-action.
+#
+# In v1, the swarm verdict surfaces as a PR comment + label. The
+# enforcing-merge-block via the swarm-review:fail label is up to the
+# consumer's branch protection rules — apply them when you're ready.
+# The /swarm-override comment (handled by phase-pr-review.yml's
+# sibling job) is the documented escape hatch.
+#
+# SECURITY: All untrusted GitHub event values flow through env vars —
+# never inlined into run: blocks. Reviewers (when live in 12b) get
+# read-only tool allowlists.
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      base_ref:
+        required: false
+        type: string
+        default: 'main'
+      head_ref:
+        required: true
+        type: string
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+      stub_mode:
+        description: 'pass | fail (only used in stub mode)'
+        required: false
+        type: string
+        default: 'pass'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        required: true
+        type: number
+      base_ref:
+        required: false
+        type: string
+        default: 'main'
+      head_ref:
+        required: true
+        type: string
+      invocation_mode:
+        description: 'live (real reviewers — TODO step 12b) or stub'
+        required: false
+        type: string
+        default: 'stub'
+      stub_mode:
+        description: 'pass | fail (only used in stub mode)'
+        required: false
+        type: string
+        default: 'pass'
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.head_ref }}
+          fetch-depth: 0
+
+      - name: Reserve workflow artifacts
+        run: |
+          set -euo pipefail
+          {
+            echo '/tmp/swarm-inputs/'
+            echo '/tmp/swarm-aggregate.json'
+            echo '/tmp/swarm-aggregate.md'
+            echo '.dev-agent-engine/'
+          } >> .git/info/exclude
+
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
+
+      - name: Stub-mode — generate fake reviewer JSONs
+        if: inputs.invocation_mode == 'stub'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          STUB_MODE: ${{ inputs.stub_mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/swarm-inputs
+          .dev-agent-engine/node_modules/.bin/tsx \
+            .dev-agent-engine/lib/cli/swarm-stub.ts \
+            --output-dir /tmp/swarm-inputs \
+            --mode "$STUB_MODE" \
+            --pr-number "$PR_NUMBER"
+
+      - name: Live mode (TODO step 12b)
+        if: inputs.invocation_mode == 'live'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BODY=$'🤖 Phase: swarm-review\nMode: live\nStatus: not-yet-implemented\n\nLive swarm-review mode (real claude-code-action invocations of the three reviewers consuming a frozen evidence bundle) lands in step 12b of the v1 build sequence. Re-run with `invocation_mode: stub` to exercise the wiring.'
+          gh pr comment "$PR_NUMBER" --body "$BODY"
+          exit 1
+
+      - name: Aggregate reviewer verdicts
+        id: aggregate
+        if: inputs.invocation_mode == 'stub'
+        run: |
+          set -euo pipefail
+          set +e
+          .dev-agent-engine/node_modules/.bin/tsx \
+            .dev-agent-engine/lib/cli/swarm-aggregate.ts \
+            --inputs-dir /tmp/swarm-inputs \
+            --output-json /tmp/swarm-aggregate.json \
+            --output-md /tmp/swarm-aggregate.md
+          STATUS=$?
+          set -e
+          VERDICT=$(jq -r '.verdict' /tmp/swarm-aggregate.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "exit_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: Post aggregator comment to PR
+        if: inputs.invocation_mode == 'stub' && steps.aggregate.outcome == 'success'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR_NUMBER" --body-file /tmp/swarm-aggregate.md
+
+      - name: Apply verdict label (advisory in v1)
+        if: inputs.invocation_mode == 'stub' && steps.aggregate.outcome == 'success'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          VERDICT: ${{ steps.aggregate.outputs.verdict }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$VERDICT" in
+            swarm-pass) LABEL="swarm-review:pass" ;;
+            swarm-concern) LABEL="swarm-review:concern" ;;
+            swarm-fail) LABEL="swarm-review:fail" ;;
+            *) LABEL="swarm-review:unknown" ;;
+          esac
+          gh pr edit "$PR_NUMBER" --add-label "$LABEL" || true

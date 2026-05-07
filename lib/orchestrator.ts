@@ -2,9 +2,12 @@ export const STATE_LABELS = [
   'state:proposed',
   'state:scoping',
   'state:spec-ready',
+  'state:acm-building',
   'state:implementing',
+  'state:swarm-reviewing',
   'state:pr-review',
   'state:staging-deployed',
+  'state:tier2-smoke',
   'state:ready-to-promote',
   'state:promoting',
   'state:done',
@@ -31,7 +34,14 @@ export type TransitionTrigger =
   | 'smoke-pass-prod'
   | '/abandon'
   | '/rollback-complete'
-  | 'phase-failure';
+  | 'phase-failure'
+  | 'acm-pass'
+  | 'acm-fail'
+  | 'swarm-pass'
+  | 'swarm-fail'
+  | 'human-override'
+  | 'tier2-pass'
+  | 'tier2-fail';
 
 export type TransitionRow = {
   from: StateLabel;
@@ -49,6 +59,18 @@ export const TRANSITION_TABLE: readonly TransitionRow[] = [
   { from: 'state:staging-deployed',  trigger: 'smoke-pass-staging', to: 'state:ready-to-promote' },
   { from: 'state:ready-to-promote',  trigger: '/approve --promote', to: 'state:promoting',        fires: 'phase-promote-to-prod.yml' },
   { from: 'state:promoting',         trigger: 'smoke-pass-prod',    to: 'state:done' },
+
+  // Industry-grade verification gates — new states are reachable only once
+  // their corresponding workflows ship (steps 6/12/13 of the v1 build sequence).
+  // Until then these rows define the EXIT transitions from each new state, but
+  // no entry transition supersedes the existing pipeline above.
+  { from: 'state:acm-building',      trigger: 'acm-pass',           to: 'state:implementing',     fires: 'phase-implement.yml' },
+  { from: 'state:acm-building',      trigger: 'acm-fail',           to: 'state:blocked' },
+  { from: 'state:swarm-reviewing',   trigger: 'swarm-pass',         to: 'state:pr-review' },
+  { from: 'state:swarm-reviewing',   trigger: 'swarm-fail',         to: 'state:blocked' },
+  { from: 'state:swarm-reviewing',   trigger: 'human-override',     to: 'state:pr-review' },
+  { from: 'state:tier2-smoke',       trigger: 'tier2-pass',         to: 'state:ready-to-promote' },
+  { from: 'state:tier2-smoke',       trigger: 'tier2-fail',         to: 'state:blocked' },
 ] as const;
 
 export type TransitionResult =

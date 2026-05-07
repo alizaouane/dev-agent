@@ -1,0 +1,31 @@
+{
+  "$comment": [
+    "Frozen reliability baselines per reviewer × family × bucket.",
+    "v1 ships with placeholder zeros — the harness's stub mode does NOT",
+    "compute real F1; live-mode wiring (v1.1) populates these values.",
+    "CI gate (per the plan, Pillar 9): F1 drop > 5 points OR per-bucket",
+    "success-rate drop > 10 points → fail. Rebaseline via",
+    "`npm run eval:swarm:rebaseline` with a commit subject prefixed",
+    "BASELINE-CHANGE: explaining the intentional metric change."
+  ],
+  "schema_version": 1,
+  "generated_at": "2026-05-07T00:00:00.000Z",
+  "model_versions": {
+    "swarm_review": "claude-haiku-4-5-PINNED-v1.1",
+    "meta_reviewer": "claude-sonnet-4-6-PINNED-v1.1"
+  },
+  "reviewers": {
+    "spec-compliance": {
+      "overall": { "precision": null, "recall": null, "f1": null },
+      "by_bucket": {}
+    },
+    "regression-guard": {
+      "overall": { "precision": null, "recall": null, "f1": null },
+      "by_bucket": {}
+    },
+    "security-scout": {
+      "overall": { "precision": null, "recall": null, "f1": null },
+      "by_bucket": {}
+    }
+  }
+}

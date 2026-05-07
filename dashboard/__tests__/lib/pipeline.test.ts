@@ -128,18 +128,19 @@ describe('fetchPipeline', () => {
     ];
     const octokit = makeOctokit({ 'q/r1': [] });
     await fetchPipeline(octokit, repos, { include_terminal: false });
-    // 8 open-bucket state labels, no terminals.
+    // 11 open-bucket state labels, no terminals (8 original + 3 industry-grade
+    // verification gates: acm-building, swarm-reviewing, tier2-smoke).
     const paginate = octokit.paginate as unknown as ReturnType<typeof vi.fn>;
-    expect(paginate).toHaveBeenCalledTimes(8);
+    expect(paginate).toHaveBeenCalledTimes(11);
     const labelArgs = paginate.mock.calls.map(
       (c: unknown[]) => (c[1] as { labels: string }).labels,
     );
     for (const arg of labelArgs) {
       expect(arg).not.toContain(',');
-      expect(arg).toMatch(/^state:[a-z-]+$/);
+      expect(arg).toMatch(/^state:[a-z0-9-]+$/);
     }
     // Set of distinct labels equals the open-state vocabulary.
-    expect(new Set(labelArgs).size).toBe(8);
+    expect(new Set(labelArgs).size).toBe(11);
   });
 
   it('returns issues even when each one only matches a single state label (real OR semantics)', async () => {
@@ -201,7 +202,7 @@ describe('fetchPipeline', () => {
     expect(numbers).toEqual([10, 11, 12]);
   });
 
-  it('include_terminal: true queries open + closed buckets independently (8 + 3 = 11 calls)', async () => {
+  it('include_terminal: true queries open + closed buckets independently (11 + 3 = 14 calls)', async () => {
     // Regression lock for the closed/terminal branch: same OR-via-fanout
     // pattern, separate label set. If the fix only updated the open
     // path and left the closed path on the multi-label string,
@@ -212,16 +213,17 @@ describe('fetchPipeline', () => {
     const octokit = makeOctokit({ 'q/r1': [] });
     await fetchPipeline(octokit, repos, { include_terminal: true });
     const paginate = octokit.paginate as unknown as ReturnType<typeof vi.fn>;
-    expect(paginate).toHaveBeenCalledTimes(11);
+    // 11 open + 3 closed (done, abandoned, rolled-back) = 14
+    expect(paginate).toHaveBeenCalledTimes(14);
     const labelArgs = paginate.mock.calls.map(
       (c: unknown[]) => (c[1] as { labels: string }).labels,
     );
     for (const arg of labelArgs) {
       expect(arg).not.toContain(',');
-      expect(arg).toMatch(/^state:[a-z-]+$/);
+      expect(arg).toMatch(/^state:[a-z0-9-]+$/);
     }
-    // Distinct labels: 8 open + 3 closed = 11 unique state values.
-    expect(new Set(labelArgs).size).toBe(11);
+    // Distinct labels: 11 open + 3 closed = 14 unique state values.
+    expect(new Set(labelArgs).size).toBe(14);
     // Closed-bucket terminals must be in the queried set.
     expect(new Set(labelArgs)).toContain('state:done');
     expect(new Set(labelArgs)).toContain('state:abandoned');

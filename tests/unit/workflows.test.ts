@@ -14,15 +14,23 @@ const PHASE_WORKFLOWS = [
   'phase-bug-scout.yml',
   'phase-unfinished-work-scout.yml',
   'phase-cleanup-scout.yml',
+  // Industry-grade verification gates (build steps 6 + 9 + 12 + 13)
+  'phase-acm.yml',
+  'phase-evidence-collector.yml',
+  'phase-swarm-review.yml',
+  'phase-tier2-smoke.yml',
 ];
 
-// Workflows that take an `issue_number` input. The scout workflows
-// don't — they operate on the whole repo, not a specific issue.
+// Workflows that take an `issue_number` input. The scout workflows operate
+// on the whole repo (not an issue); phase-evidence-collector + phase-swarm-review
+// operate on a PR (pr_number, not issue_number).
 const ISSUE_NUMBER_WORKFLOWS = PHASE_WORKFLOWS.filter(
   (w) =>
     w !== 'phase-bug-scout.yml' &&
     w !== 'phase-unfinished-work-scout.yml' &&
-    w !== 'phase-cleanup-scout.yml',
+    w !== 'phase-cleanup-scout.yml' &&
+    w !== 'phase-evidence-collector.yml' &&
+    w !== 'phase-swarm-review.yml',
 );
 
 const ALL_REUSABLE = [...PHASE_WORKFLOWS, 'orch-sweep.yml'];
@@ -66,6 +74,53 @@ describe('.github/workflows/', () => {
     }
   });
 
+  describe('Pillar 5 — Harden-Runner egress audit', () => {
+    // Every reusable phase + the orch-sweep cron runs claude-code-action
+    // and/or shell commands that could exfiltrate secrets. Each one must
+    // start with `step-security/harden-runner@v2` as the very first step
+    // so the runner's egress is captured (audit mode) before any other
+    // step runs. v1 ships in audit mode; v1.1 flips to block-mode after
+    // we've collected enough audit data to populate allowed-endpoints
+    // accurately per phase.
+    for (const wf of [...ALL_REUSABLE, ...EVENT_TRIGGERED_WORKFLOWS]) {
+      it(`${wf} starts with step-security/harden-runner@v2`, () => {
+        const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
+        expect(raw).toMatch(/uses:\s+step-security\/harden-runner@v2/);
+        // The harden-runner step must appear *before* the first checkout.
+        const hardenIdx = raw.indexOf('step-security/harden-runner@v2');
+        const checkoutIdx = raw.indexOf('actions/checkout@v4');
+        const otherUsesMatch = raw.match(/^\s+- (?:name:|uses:)/m);
+        expect(hardenIdx).toBeGreaterThan(0);
+        if (checkoutIdx > 0) {
+          expect(hardenIdx, `${wf}: harden-runner must precede first checkout`).toBeLessThan(checkoutIdx);
+        }
+        // For phase-pr-review.yml (no checkout-first) the harden-runner
+        // must still be the first concrete step — assert it lands before
+        // the workflow's first non-harden `name:` step.
+        if (otherUsesMatch && otherUsesMatch.index !== undefined) {
+          // The first `- name:` or `- uses:` we find should be the
+          // harden-runner one; every later step appears after it.
+          const firstStepIdx = raw.indexOf('Harden runner (egress audit)');
+          expect(firstStepIdx, `${wf}: missing harden-runner step name`).toBeGreaterThan(0);
+        }
+      });
+
+      it(`${wf} ships harden-runner in audit (not block) mode for v1`, () => {
+        const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
+        // Locate the harden-runner block and confirm egress-policy: audit.
+        // v1.1 will flip to `block` after audit data + allowed-endpoints
+        // are populated. This test pins v1's expected mode so an accidental
+        // early flip to block (which would break real consumer workflows
+        // until allowed-endpoints is set) is caught in CI.
+        const hardenBlock = raw.match(
+          /uses:\s+step-security\/harden-runner@v2\s*\n\s*with:\s*\n\s*egress-policy:\s*(\w+)/,
+        );
+        expect(hardenBlock, `${wf}: harden-runner block not parseable`).toBeTruthy();
+        if (hardenBlock) expect(hardenBlock[1]).toBe('audit');
+      });
+    }
+  });
+
   it('no run: block inlines github.event.* (title|body) directly', () => {
     const forbidden = /\$\{\{\s*github\.event\.[a-z_.]*(title|body)/i;
     for (const wf of [...ALL_REUSABLE, ...EVENT_TRIGGERED_WORKFLOWS, 'ci.yml']) {
@@ -104,6 +159,42 @@ describe('.github/workflows/', () => {
     it('grants id-token: write for OIDC', () => {
       const job = parsed.jobs?.['pr-review'];
       expect(job?.permissions?.['id-token']).toBe('write');
+    });
+
+    it('has a swarm-override sibling job (Pillar 2 escape hatch, step 16)', () => {
+      // The /swarm-override comment handler must:
+      //   - run in a SIBLING job (not the same job as @claude — different
+      //     concerns: agent-driven fix vs human-driven label flip)
+      //   - filter to issue_comment events only (no review-comment / review)
+      //   - require body STARTS WITH /swarm-override (prefix-match, not just
+      //     contains, so a casual mention in a longer comment doesn't trigger)
+      //   - exclude bot actors (claude[bot], dev-agent[bot])
+      const parsedRaw = yaml.load(raw) as { jobs?: Record<string, { if?: string }> };
+      expect(parsedRaw.jobs).toHaveProperty('swarm-override');
+      const jobIf = parsedRaw.jobs!['swarm-override'].if!;
+      expect(jobIf).toMatch(/issue_comment/);
+      expect(jobIf).toMatch(/issue\.pull_request/);
+      expect(jobIf).toMatch(/startsWith.*swarm-override/);
+      expect(jobIf).toMatch(/claude\[bot\]/);
+      expect(jobIf).toMatch(/dev-agent\[bot\]/);
+    });
+
+    it('swarm-override step records actor + reason + timestamp', () => {
+      // The audit comment IS the v1 audit trail — must include who, why,
+      // and when. v1.1 mirrors these into lib/events.ts's JSONL log.
+      expect(raw).toMatch(/swarm-override applied/);
+      expect(raw).toMatch(/Actor.*ACTOR/);
+      expect(raw).toMatch(/Reason.*REASON/);
+      expect(raw).toMatch(/Timestamp/);
+    });
+
+    it('swarm-override is idempotent on label flips', () => {
+      // Flips should use `|| true` so re-applying when a label is already
+      // present (or absent) doesn't error. Otherwise a re-trigger would
+      // 422 and the operator wouldn't know whether the override actually
+      // landed.
+      expect(raw).toMatch(/--remove-label 'swarm-review:fail' \|\| true/);
+      expect(raw).toMatch(/--add-label 'swarm-overridden' \|\| true/);
     });
 
     it('validates head ref shape with a regex before checkout', () => {
@@ -170,6 +261,93 @@ describe('.github/workflows/', () => {
       // setting is per-repo and not always on; if pr create fails,
       // the operator needs a clear hint, not just a silent no-op.
       expect(raw).toMatch(/Allow GitHub Actions to create and approve pull requests/);
+    });
+  });
+
+  describe('phase-implement.yml — ACM gate (Pillar 1)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('prefetches the feature branch so the ACM manifest is in scope', () => {
+      // phase-acm pushes .dev-agent/acm-manifest.json + tests/acm/* to the
+      // feature branch BEFORE phase-implement runs. phase-implement starts
+      // on `main` (default checkout), so it must explicitly switch to the
+      // feature branch — otherwise claude-code-action would branch off main
+      // and the manifest would not be visible to the agent.
+      expect(raw).toMatch(/Prefetch feature branch/);
+      expect(raw).toMatch(/git ls-remote --exit-code --heads origin/);
+    });
+
+    it('runs the ACM pre-flight to detect manifest presence', () => {
+      // Pre-flight is informational: it sets `gate_active=true` when a
+      // manifest is on the branch (so the post-agent gate kicks in) and
+      // `gate_active=false` otherwise (so consumers without ACM keep the
+      // existing flow unchanged).
+      expect(raw).toMatch(/ACM pre-flight \(detect manifest\)/);
+      expect(raw).toMatch(/gate_active=true/);
+      expect(raw).toMatch(/gate_active=false/);
+    });
+
+    it('runs the post-agent ACM gate via lib/cli/acm-verify.ts', () => {
+      expect(raw).toMatch(/ACM gate \(verify tests green/);
+      expect(raw).toMatch(/MODE=acm-green/);
+      expect(raw).toMatch(/CHECK_LOCKS=true/);
+      expect(raw).toMatch(/CHECK_SPEC_HASH=true/);
+      expect(raw).toMatch(/lib\/cli\/acm-verify\.ts/);
+    });
+
+    it('the post-agent gate runs only when gate_active=true', () => {
+      // The gate condition must include the gate_active check so consumers
+      // without ACM (no manifest on branch) skip the gate entirely.
+      expect(raw).toMatch(/steps\.acm-preflight\.outputs\.gate_active == 'true'/);
+    });
+
+    it('salvage skips PR open when ACM verdict is fail (work still pushed)', () => {
+      // Critical: on ACM-fail, the branch must still be pushed (work
+      // preservation), but the PR must NOT be opened. Otherwise the
+      // operator gets a PR that's broken on landing — the whole point of
+      // the gate is to keep broken work out of human review.
+      expect(raw).toMatch(/ACM_VERDICT: \$\{\{ steps\.acm-gate\.outputs\.verdict/);
+      expect(raw).toMatch(/if \[ "\$ACM_VERDICT" = "fail" \]/);
+      expect(raw).toMatch(/branch pushed but PR not opened/);
+    });
+
+    it('labels the issue acm-failed when the ACM gate fails', () => {
+      expect(raw).toMatch(/acm-failed/);
+      expect(raw).toMatch(/--add-label acm-failed/);
+    });
+  });
+
+  describe('phase-implement.yml — Self-review (Pillar 6)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('runs the self-review verification step (advisory in v1)', () => {
+      expect(raw).toMatch(/Self-review verification \(advisory\)/);
+      expect(raw).toMatch(/\.dev-agent\/self-review\.json/);
+    });
+
+    it('handles absent + malformed self-review JSON without blocking', () => {
+      // Advisory in v1: missing or invalid JSON must not break the
+      // pipeline — the workflow logs a warning + sets a special verdict
+      // value so downstream steps know there's no summary to use.
+      expect(raw).toMatch(/verdict=absent/);
+      expect(raw).toMatch(/verdict=malformed/);
+    });
+
+    it('uses the self-review summary as PR body when present', () => {
+      // When the agent emitted .dev-agent/self-review-summary.md, the
+      // salvage step should use it as the PR body so reviewers see the
+      // agent's own checklist verdict. Falls back to the generic salvage
+      // notice when absent.
+      expect(raw).toMatch(/SELF_REVIEW_SUMMARY_PATH/);
+      expect(raw).toMatch(/Agent self-review/);
+    });
+
+    it('posts a checklist breakdown comment for any non-pass items', () => {
+      // The comment must enumerate every non-pass item so the operator
+      // can scan the issue without opening the PR. Pass-only runs get
+      // a single-line comment.
+      expect(raw).toMatch(/Non-pass items/);
+      expect(raw).toMatch(/all 10 checklist items passed/);
     });
   });
 

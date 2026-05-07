@@ -45,6 +45,33 @@ Capture each skill's exit code (or terminal status if it was a SKILL.md run).
 
 If `{{audit_skills.pre_pr}}` is empty, this section is a no-op. Do not invent audits.
 
+## Self-review (Pillar 6)
+
+After the audit chain and BEFORE `git push`, run a structured self-review against your own diff. This is cheap insurance against bugs your first pass missed; it costs ~$0.10 and catches obvious-in-hindsight issues before any reviewer sees them.
+
+1. Read every changed file in full via the Read tool. Re-reading the diff alone hides context.
+2. Answer the 10-item checklist defined in `prompts/self-review.md` (read that file for the exact item descriptions). Items: `edge_cases`, `error_handling`, `type_safety`, `secrets`, `injection`, `performance`, `accessibility`, `regression_risk`, `test_adequacy`, `scope_alignment`.
+3. For each item, return `pass` | `concern` | `fail` with a one-sentence note.
+4. If any item is `concern` or `fail`: fix the issue, re-run the ACM tests, re-run self-review. Maximum 3 fix iterations before you must escalate by setting overall verdict `fail` and noting the blocker in `summary`.
+5. Write the structured JSON to `.dev-agent/self-review.json`:
+
+```json
+{
+  "verdict": "pass" | "concern" | "fail",
+  "checklist": [
+    { "item": "edge_cases", "result": "pass" | "concern" | "fail", "note": "<one sentence>" },
+    ... // exactly the 10 items above
+  ],
+  "summary": "<markdown for PR description — readable, 3-10 lines>"
+}
+```
+
+6. Mirror `summary` (markdown) into `.dev-agent/self-review-summary.md` so the workflow can use it verbatim as the PR body.
+
+7. Do NOT modify ACM tests during the fix loop — their hashes are SHA-locked and the implement-phase ACM gate will reject the run with `acm-tests-mutated`. If a checklist failure suggests an ACM test is wrong, escalate (mark `concern` in `test_adequacy`) and let the operator handle it.
+
+The self-review is advisory in v1 — its JSON is read for issue commentary and PR body, but `concern` / `fail` does not block the PR. v1.1 will gate PR-open on the verdict.
+
 ## Required output
 
 Once you finish, emit a single JSON line on stdout:
