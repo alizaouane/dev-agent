@@ -19,3 +19,6 @@ coverage/
 dashboard/.next/
 dashboard/next-env.d.ts
 dashboard/out/
+
+# Eval harness — generated results (corpus + baselines stay tracked)
+tests/evals/results/

@@ -1,0 +1,54 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "tests/evals/cases-schema.json",
+  "title": "EvalCase",
+  "description": "Single eval scenario — one JSONL line per case.",
+  "type": "object",
+  "required": [
+    "id",
+    "reviewer",
+    "family",
+    "bucket_minutes",
+    "inputs",
+    "expected_verdict"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9-]+/[a-z0-9-]+/[0-9]{2,3}$",
+      "description": "Globally unique. Convention: `<reviewer>/<family>/NN`"
+    },
+    "reviewer": {
+      "type": "string",
+      "enum": ["spec-compliance", "regression-guard", "security-scout"]
+    },
+    "family": {
+      "type": "string",
+      "minLength": 3,
+      "description": "Free-form family tag — must match the directory the case lives in."
+    },
+    "bucket_minutes": {
+      "type": "integer",
+      "enum": [5, 30, 120, 360],
+      "description": "Human-minutes-to-fix the underlying issue would take if real."
+    },
+    "inputs": {
+      "type": "object",
+      "description": "Reviewer-prompt variables. Shape depends on the reviewer."
+    },
+    "expected_verdict": {
+      "type": "string",
+      "enum": ["pass", "fail", "concern", "abstain"]
+    },
+    "expected_findings_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Rough finding count; harness allows ±1 slack."
+    },
+    "notes": {
+      "type": "string",
+      "description": "Free-text rationale for human readers."
+    }
+  }
+}
