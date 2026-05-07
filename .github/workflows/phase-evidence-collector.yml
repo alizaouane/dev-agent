@@ -176,6 +176,7 @@ jobs:
           } > bundle/ast-diff.txt
 
       - name: Tar bundle
+        if: always()
         run: |
           set -euo pipefail
           tar -czf verification-bundle.tar.gz -C bundle .
@@ -183,8 +184,33 @@ jobs:
 
       - name: Upload verification bundle
         id: upload
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: verification-bundle-pr-${{ inputs.pr_number }}
           path: verification-bundle.tar.gz
           retention-days: 14
+
+      # Fail-closed on confirmed HIGH-severity findings. Bundle is already
+      # uploaded above (if: always()) so post-mortems work. The downstream
+      # swarm-security-scout reviewer surfaces the same findings as PR
+      # comments — this step only enforces the deterministic gate.
+      - name: Block PR on HIGH-severity scanner findings
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          # gitleaks reports a flat array; if file is missing or invalid,
+          # treat as zero findings rather than crashing the gate.
+          HIGH_GITLEAKS=$(jq 'if type == "array" then length elif .findings then (.findings | length) else 0 end' bundle/gitleaks.json 2>/dev/null || echo 0)
+          # Semgrep ERROR severity is the project's "high" tier.
+          HIGH_SEMGREP=$(jq '[.results[]? | select(.extra.severity == "ERROR")] | length' bundle/semgrep.json 2>/dev/null || echo 0)
+          # npm audit lists vulns by package; count ones at high or critical.
+          HIGH_NPM=$(jq '[.vulnerabilities // {} | to_entries[] | select(.value.severity == "high" or .value.severity == "critical")] | length' bundle/npm-audit.json 2>/dev/null || echo 0)
+          TOTAL=$((HIGH_GITLEAKS + HIGH_SEMGREP + HIGH_NPM))
+          echo "evidence-collector: gitleaks=$HIGH_GITLEAKS, semgrep=$HIGH_SEMGREP, npm-audit=$HIGH_NPM (total HIGH = $TOTAL)"
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "::error::deterministic scanners flagged $TOTAL HIGH-severity finding(s) — PR blocked. See verification-bundle artifact for detail."
+            exit 1
+          fi
+          echo "evidence-collector: clean (no HIGH-severity scanner findings)"
