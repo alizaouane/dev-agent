@@ -222,6 +222,59 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-implement.yml — ACM gate (Pillar 1)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('prefetches the feature branch so the ACM manifest is in scope', () => {
+      // phase-acm pushes .dev-agent/acm-manifest.json + tests/acm/* to the
+      // feature branch BEFORE phase-implement runs. phase-implement starts
+      // on `main` (default checkout), so it must explicitly switch to the
+      // feature branch — otherwise claude-code-action would branch off main
+      // and the manifest would not be visible to the agent.
+      expect(raw).toMatch(/Prefetch feature branch/);
+      expect(raw).toMatch(/git ls-remote --exit-code --heads origin/);
+    });
+
+    it('runs the ACM pre-flight to detect manifest presence', () => {
+      // Pre-flight is informational: it sets `gate_active=true` when a
+      // manifest is on the branch (so the post-agent gate kicks in) and
+      // `gate_active=false` otherwise (so consumers without ACM keep the
+      // existing flow unchanged).
+      expect(raw).toMatch(/ACM pre-flight \(detect manifest\)/);
+      expect(raw).toMatch(/gate_active=true/);
+      expect(raw).toMatch(/gate_active=false/);
+    });
+
+    it('runs the post-agent ACM gate via lib/cli/acm-verify.ts', () => {
+      expect(raw).toMatch(/ACM gate \(verify tests green/);
+      expect(raw).toMatch(/MODE=acm-green/);
+      expect(raw).toMatch(/CHECK_LOCKS=true/);
+      expect(raw).toMatch(/CHECK_SPEC_HASH=true/);
+      expect(raw).toMatch(/lib\/cli\/acm-verify\.ts/);
+    });
+
+    it('the post-agent gate runs only when gate_active=true', () => {
+      // The gate condition must include the gate_active check so consumers
+      // without ACM (no manifest on branch) skip the gate entirely.
+      expect(raw).toMatch(/steps\.acm-preflight\.outputs\.gate_active == 'true'/);
+    });
+
+    it('salvage skips PR open when ACM verdict is fail (work still pushed)', () => {
+      // Critical: on ACM-fail, the branch must still be pushed (work
+      // preservation), but the PR must NOT be opened. Otherwise the
+      // operator gets a PR that's broken on landing — the whole point of
+      // the gate is to keep broken work out of human review.
+      expect(raw).toMatch(/ACM_VERDICT: \$\{\{ steps\.acm-gate\.outputs\.verdict/);
+      expect(raw).toMatch(/if \[ "\$ACM_VERDICT" = "fail" \]/);
+      expect(raw).toMatch(/branch pushed but PR not opened/);
+    });
+
+    it('labels the issue acm-failed when the ACM gate fails', () => {
+      expect(raw).toMatch(/acm-failed/);
+      expect(raw).toMatch(/--add-label acm-failed/);
+    });
+  });
+
   describe('phase-implement.yml — Read issue spec-path detection', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 

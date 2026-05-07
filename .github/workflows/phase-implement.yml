@@ -79,6 +79,27 @@ jobs:
             echo '.dev-agent-engine/'
           } >> .git/info/exclude
 
+      # ACM pre-flight: if phase-acm already ran and pushed the feature
+      # branch (with the manifest + stub tests committed), switch to it so
+      # the agent sees the locked tests as part of its working tree. When
+      # phase-acm is not configured for this consumer, the branch won't
+      # exist yet and claude-code-action creates it fresh — the existing
+      # flow continues unchanged.
+      - name: Prefetch feature branch (for ACM manifest)
+        id: prefetch
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if git ls-remote --exit-code --heads origin "$BRANCH_NAME" >/dev/null 2>&1; then
+            git fetch origin "$BRANCH_NAME"
+            git checkout -B "$BRANCH_NAME" "origin/$BRANCH_NAME"
+            echo "branch_existed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "branch_existed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Engine repo (the dev-agent CLIs + prompt templates this workflow
       # invokes via `.dev-agent-engine/node_modules/.bin/tsx ...`). Pinned
       # to v1 so workflow code and CLI code move together.
@@ -218,6 +239,29 @@ jobs:
           BODY=$(printf '🤖 Phase: implement\nModel: (none)\nTokens: 0 in / 0 out\nCost: $0\nMode: stub\nStatus: stub-mode (no agent invocation; set invocation_mode=live to ship code)\n')
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
 
+      # ACM pre-flight (Pillar 1). When phase-acm has run for this issue
+      # and pushed `.dev-agent/acm-manifest.json` to the feature branch,
+      # the post-agent ACM gate kicks in and the agent's PR-open path is
+      # gated on `acm-verify --check-green --check-locks --check-spec-hash`.
+      # When phase-acm has NOT run (no manifest on branch — typical for
+      # consumers without the audit_skills.acm config), gate_active=false
+      # and the existing flow runs unchanged.
+      - name: ACM pre-flight (detect manifest)
+        id: acm-preflight
+        if: inputs.invocation_mode == 'live'
+        run: |
+          set -euo pipefail
+          if [ -f .dev-agent/acm-manifest.json ]; then
+            CRITERION_COUNT=$(jq '.criteria | length' .dev-agent/acm-manifest.json)
+            echo "gate_active=true" >> "$GITHUB_OUTPUT"
+            echo "criterion_count=$CRITERION_COUNT" >> "$GITHUB_OUTPUT"
+            echo "ACM gate active — $CRITERION_COUNT criteria locked in manifest."
+          else
+            echo "gate_active=false" >> "$GITHUB_OUTPUT"
+            echo "criterion_count=0" >> "$GITHUB_OUTPUT"
+            echo "ACM gate inactive (no manifest on this branch). Existing flow continues."
+          fi
+
       # claude-code-action expects the Claude Code native binary at
       # ~/.local/bin/claude — it doesn't install it itself. Without
       # this step, the action fails with "Claude Code native binary
@@ -249,6 +293,82 @@ jobs:
           branch_prefix: 'feat/dev-agent-issue-'
           show_full_output: 'true'
 
+      # ACM gate (Pillar 1, post-agent). Runs only when phase-acm has
+      # locked a manifest into the feature branch (gate_active=true).
+      # Switches HEAD to the branch the agent worked on, then runs
+      # acm-verify --check-green --check-locks --check-spec-hash:
+      #   green       every ACM test must PASS (the agent fulfilled
+      #               every criterion the spec promised)
+      #   locks       SHA-256 of every ACM test file must match the
+      #               manifest (anti-cheating: the agent did not
+      #               weaken its own tests)
+      #   spec-hash   SHA-256 of the spec must match the manifest
+      #               (no silent spec edit since phase-acm ran)
+      #
+      # Verdict feeds the salvage step: pass → open PR as before;
+      # fail → push the branch (preserve work) but skip PR open and
+      # label `acm-failed` so the operator can revise + re-run.
+      - name: ACM gate (verify tests green + locks intact + spec stable)
+        id: acm-gate
+        if: inputs.invocation_mode == 'live' && steps.acm-preflight.outputs.gate_active == 'true' && always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          # Switch to whichever branch the agent left the work on.
+          if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+            git switch "$BRANCH_NAME"
+          fi
+          if [ ! -f .dev-agent/acm-manifest.json ]; then
+            # Manifest got removed by the agent — that's a hard fail.
+            echo "verdict=fail" >> "$GITHUB_OUTPUT"
+            echo "reason=manifest-deleted" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          TEST_CMD_VAL=$(jq -r '.commands.test // "npm test"' /tmp/config.json)
+          set +e
+          MODE=acm-green \
+          TEST_CMD="$TEST_CMD_VAL" \
+          MANIFEST_PATH=.dev-agent/acm-manifest.json \
+          CHECK_LOCKS=true \
+          CHECK_SPEC_HASH=true \
+          CHECK_MUTATION_KILLS=false \
+            .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/acm-verify.ts > /tmp/acm-gate.json
+          STATUS=$?
+          set -e
+          VERDICT=$(jq -r '.verdict' /tmp/acm-gate.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "exit_status=$STATUS" >> "$GITHUB_OUTPUT"
+
+      - name: ACM gate — comment + label on fail
+        if: inputs.invocation_mode == 'live' && steps.acm-gate.outputs.verdict == 'fail'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # Build a structured fail summary from the JSON. The PR is NOT
+          # opened in this case (salvage gates on this verdict), but the
+          # branch IS pushed so the agent's work isn't lost.
+          FAILED_TESTS=$(jq -r '[.tests[] | select(.result == "fail") | "  - \(.criterion_id) (\(.test_file))"] | join("\n")' /tmp/acm-gate.json)
+          LOCK_MISMATCHES=$(jq -r '.locks.mismatched | join("\n  - ")' /tmp/acm-gate.json)
+          SPEC_VERDICT=$(jq -r '.spec_hash.verdict' /tmp/acm-gate.json)
+          SECTIONS=""
+          if [ -n "$FAILED_TESTS" ]; then
+            SECTIONS="${SECTIONS}\n**Failing ACM tests:**\n${FAILED_TESTS}\n"
+          fi
+          if [ -n "$LOCK_MISMATCHES" ] && [ "$LOCK_MISMATCHES" != "" ]; then
+            SECTIONS="${SECTIONS}\n**Test-file SHA mismatches** (anti-cheating lock):\n  - ${LOCK_MISMATCHES}\n"
+          fi
+          if [ "$SPEC_VERDICT" = "fail" ]; then
+            SECTIONS="${SECTIONS}\n**Spec SHA mismatch** — spec was edited since phase-acm ran. Use `/regenerate-acm` to rerun the gate against the current spec.\n"
+          fi
+          BODY=$(printf '🤖 Phase: implement\nGate: ACM\nVerdict: fail\n\nACM verification failed; PR not opened. The feature branch is preserved on `feat/dev-agent-issue-%s` so the work is not lost.%b\nFix the listed items and re-run `/approve` to retry.\n' "$ISSUE_NUMBER" "$SECTIONS")
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          gh issue edit "$ISSUE_NUMBER" --add-label acm-failed || true
+
       # Salvage step: handles the most common implement-phase failure
       # mode — the agent does its work, creates the feature branch,
       # edits files, but ends its turn without committing/pushing/PRing.
@@ -273,6 +393,10 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
           GH_TOKEN: ${{ github.token }}
+          # ACM verdict feeds the PR-open gate further down. When the gate
+          # failed, we still push the branch (work preservation) but skip
+          # opening the PR — the operator must revise + re-run instead.
+          ACM_VERDICT: ${{ steps.acm-gate.outputs.verdict || 'skipped' }}
         run: |
           set -euo pipefail
           BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
@@ -309,6 +433,17 @@ jobs:
             echo "::warning::push to origin/${BRANCH_NAME} failed; the next telemetry step will report agent-no-pr."
             exit 0
           }
+
+          # PR-open gate (Pillar 1). When the ACM gate failed, skip opening
+          # the PR — the operator must address the failing tests / lock
+          # mismatches / spec drift first, then re-run /approve. The
+          # branch is preserved on origin so the work isn't lost; the
+          # ACM-gate step has already labeled the issue `acm-failed` and
+          # commented with the failure breakdown.
+          if [ "$ACM_VERDICT" = "fail" ]; then
+            echo "Salvage: ACM gate failed; branch pushed but PR not opened."
+            exit 0
+          fi
 
           # Open a PR if missing. The follow-up "Comment telemetry +
           # flip state" step relies on a PR existing to declare
