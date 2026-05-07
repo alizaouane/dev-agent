@@ -1,0 +1,151 @@
+name: dev-agent · phase-tier2-smoke
+
+# Phase: tier2-smoke (Pillar 7). Runs in `state:tier2-smoke`, between
+# `state:staging-deployed` and `state:ready-to-promote`. Catches
+# Potemkin interfaces — UIs that render but don't wire onClick / network
+# calls — that the existing stdout-reading smoke-verify cannot.
+#
+# v1 ships in stub mode by default. Live mode (real Playwright probe
+# authored from the spec's UI selectors, running under a sub-agent with
+# its own clean context — Replit Agent 3 pattern) lands in step 13b
+# once the Playwright runner harness + spec-selector extraction are
+# wired.
+#
+# v1 also ships fail_open=true (advisory): verdict is posted as an
+# issue comment + label, but state advancement is not blocked. The
+# canary rollout (step 16) flips to enforcing.
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      pr_number:
+        required: false
+        type: number
+      staging_url:
+        required: true
+        type: string
+      spec_path:
+        required: true
+        type: string
+      invocation_mode:
+        required: false
+        type: string
+        default: 'stub'
+      stub_mode:
+        description: 'pass | fail (only used in stub mode)'
+        required: false
+        type: string
+        default: 'pass'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: false
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        required: true
+        type: number
+      pr_number:
+        required: false
+        type: number
+      staging_url:
+        required: true
+        type: string
+      spec_path:
+        required: true
+        type: string
+      invocation_mode:
+        description: 'live (real Playwright probe — TODO step 13b) or stub'
+        required: false
+        type: string
+        default: 'stub'
+      stub_mode:
+        description: 'pass | fail (only used in stub mode)'
+        required: false
+        type: string
+        default: 'pass'
+
+jobs:
+  tier2-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 1 }
+
+      - name: Stub-mode — synthesize verification bundle
+        if: inputs.invocation_mode == 'stub'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          STAGING_URL: ${{ inputs.staging_url }}
+          SPEC_PATH: ${{ inputs.spec_path }}
+          STUB_MODE: ${{ inputs.stub_mode }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tier2-bundle
+          if [ "$STUB_MODE" = "fail" ]; then
+            VERDICT="fail"
+            DETAIL="Stub-mode fail — synthesized to exercise the failure path. A canonical Potemkin pattern: button rendered, onClick not wired."
+          else
+            VERDICT="pass"
+            DETAIL="Stub-mode pass — synthesized clean output. Live mode will run a real Playwright probe authored from the spec's UI selectors against the staging URL."
+          fi
+          jq -nc \
+            --arg verdict "$VERDICT" \
+            --arg detail "$DETAIL" \
+            --arg url "$STAGING_URL" \
+            --arg spec "$SPEC_PATH" \
+            --arg ts "$(date -u -Iseconds)" \
+            '{verdict: $verdict, detail: $detail, staging_url: $url, spec_path: $spec, generated_at: $ts, mode: "stub", results: []}' \
+            > /tmp/tier2-bundle/verdict.json
+          tar -czf verification-bundle-tier2.tar.gz -C /tmp/tier2-bundle .
+
+      - name: Upload tier2 verification bundle
+        if: inputs.invocation_mode == 'stub'
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier2-smoke-bundle-${{ inputs.issue_number }}
+          path: verification-bundle-tier2.tar.gz
+          retention-days: 14
+
+      - name: Live mode (TODO step 13b)
+        if: inputs.invocation_mode == 'live'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BODY=$'🤖 Phase: tier2-smoke\nMode: live\nStatus: not-yet-implemented\n\nLive tier2-smoke mode (real Playwright probe authored from the spec UI selectors, running in a sub-agent with its own clean context) lands in step 13b of the v1 build sequence. Re-run with `invocation_mode: stub` to exercise the wiring.'
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          exit 1
+
+      - name: Post verdict + apply state transition (advisory in v1)
+        if: inputs.invocation_mode == 'stub'
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          STUB_MODE: ${{ inputs.stub_mode }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if [ "$STUB_MODE" = "fail" ]; then
+            BODY=$'🤖 Phase: tier2-smoke\nVerdict: fail\nMode: stub\n\nTier-2 smoke detected a UI failure (synthesized for stub-mode wiring verification). State remains `state:tier2-smoke`; advisory in v1 — canary rollout (step 16) will flip to a hard transition.'
+            gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+            gh issue edit "$ISSUE_NUMBER" --add-label tier2-failed || true
+          else
+            BODY=$'🤖 Phase: tier2-smoke\nVerdict: pass\nMode: stub\n\nUI assertions all green (synthesized). Advancing to `state:ready-to-promote`.'
+            gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+            gh issue edit "$ISSUE_NUMBER" --remove-label state:tier2-smoke --add-label state:ready-to-promote || true
+          fi

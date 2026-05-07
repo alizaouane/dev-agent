@@ -18,6 +18,7 @@ const PHASE_WORKFLOWS = [
   'phase-acm.yml',
   'phase-evidence-collector.yml',
   'phase-swarm-review.yml',
+  'phase-tier2-smoke.yml',
 ];
 
 // Workflows that take an `issue_number` input. The scout workflows operate
