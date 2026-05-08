@@ -8,12 +8,14 @@
  *   evidence-summarize.ts --bundle-dir /tmp/evidence-bundle --output /tmp/evidence-summary.json
  *
  * Exit codes:
- *   0  — summary written
- *   1  — argument error
- *   2  — bundle directory does not exist (writes an "absent" stub summary
- *        and exits 0 — phase-swarm-review treats absent evidence as a
- *        warning, not a hard failure, since the gate still functions on
- *        the PR diff alone)
+ *   0  — summary written. Includes the soft-fail paths: missing bundle
+ *        dir AND empty/unpopulated bundle dir both write an "absent"
+ *        stub summary (the CLI never hard-fails on bundle issues since
+ *        the gate still functions on the PR diff alone — phase-swarm-
+ *        review treats absent evidence as a workflow warning, not a
+ *        gate failure).
+ *   1  — argument error (missing --bundle-dir / --output flags).
+ *   2  — unexpected runtime error (exception during summarize / file I/O).
  */
 
 import * as fs from 'node:fs';
