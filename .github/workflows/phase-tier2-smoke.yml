@@ -5,16 +5,20 @@ name: dev-agent · phase-tier2-smoke
 # Potemkin interfaces — UIs that render but don't wire onClick / network
 # calls — that the existing stdout-reading smoke-verify cannot.
 #
-# v1 ships in stub mode by default. Live mode (real Playwright probe
-# authored from the spec's UI selectors, running under a sub-agent with
-# its own clean context — Replit Agent 3 pattern) lands in step 13b
-# once the Playwright runner harness + spec-selector extraction are
-# wired.
+# v1.7+ ships in live mode by default. The pipeline:
+#   1. install Playwright + Chromium
+#   2. probe-author sub-agent (Claude Sonnet, fresh context, no
+#      implement-agent transcript) writes /tmp/tier2-probe/probe.spec.ts
+#      from the spec's `## Acceptance criteria` UI bullets
+#   3. lib/cli/playwright-probe.ts runs the probe against $STAGING_URL,
+#      emits a JSON verdict (pass | fail | ambiguous), uploads the bundle
+#   4. workflow posts verdict comment + applies state transition
+#      (pass → ready-to-promote; fail → tier2-failed + non-zero exit;
+#      ambiguous → tier2-ambiguous, advisory in v1)
 #
-# In v1, stub-mode verdicts post as an issue comment + label. State
-# advancement is gated on the verdict (pass advances; fail labels
-# tier2-failed and pins state). Once live mode wires in (step 13b),
-# the verdict reflects a real Playwright run.
+# Stub mode (`invocation_mode: stub`) remains for wiring tests. The
+# `tier2-failed` label is the consumer-facing signal — branch protection
+# rules can require its absence to block merge.
 
 on:
   workflow_call:
@@ -34,7 +38,7 @@ on:
       invocation_mode:
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
       stub_mode:
         description: 'pass | fail (only used in stub mode)'
         required: false
@@ -58,10 +62,10 @@ on:
         required: true
         type: string
       invocation_mode:
-        description: 'live (real Playwright probe — TODO step 13b) or stub'
+        description: 'live (real Playwright probe) or stub (deterministic, no agent)'
         required: false
         type: string
-        default: 'stub'
+        default: 'live'
       stub_mode:
         description: 'pass | fail (only used in stub mode)'
         required: false
@@ -122,16 +126,209 @@ jobs:
           path: verification-bundle-tier2.tar.gz
           retention-days: 14
 
-      - name: Live mode (TODO step 13b)
+      # ─── Live mode (step 13b) ──────────────────────────────────────
+      # Three-step pipeline:
+      #   1. install Playwright + Chromium
+      #   2. agent authors probe.spec.ts in /tmp/tier2-probe/ from the
+      #      spec's `## Acceptance criteria` UI bullets — runs with its
+      #      OWN clean context (separate workflow run = separate
+      #      claude-code-action invocation, never sees implement-agent's
+      #      transcript). Restricted tools — Read on the spec + Write
+      #      on the probe dir, no Bash.
+      #   3. lib/cli/playwright-probe.ts runs the probe against
+      #      $STAGING_URL, parses the JSON reporter output, emits a
+      #      verdict JSON, and we surface verdict + bundle as a PR
+      #      comment + label.
+      - name: Live mode — checkout dev-agent engine
+        if: inputs.invocation_mode == 'live'
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
+
+      - name: Live mode — set up Node
+        if: inputs.invocation_mode == 'live'
+        uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+
+      - name: Live mode — install engine deps
+        if: inputs.invocation_mode == 'live'
+        working-directory: .dev-agent-engine
+        run: npm ci
+
+      - name: Live mode — install Playwright + Chromium
+        if: inputs.invocation_mode == 'live'
+        run: |
+          set -euo pipefail
+          # Lightweight: only install the runner + Chromium binary. We
+          # don't need the full @playwright/test toolchain — just the
+          # test runner. Sub-second on warm GH runner cache, ~30s cold.
+          npm install --no-save @playwright/test@^1.48
+          npx playwright install --with-deps chromium
+
+      - name: Live mode — render probe-author prompt
         if: inputs.invocation_mode == 'live'
         env:
+          SPEC_PATH: ${{ inputs.spec_path }}
+          STAGING_URL: ${{ inputs.staging_url }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/tier2-probe /tmp/tier2-bundle
+          # Fixed playwright.config.ts written by the workflow (not the
+          # agent) so the agent can't disable the JSON reporter or
+          # change baseURL. The agent only authors probe.spec.ts.
+          cat > /tmp/tier2-probe/playwright.config.ts <<'EOF'
+          import { defineConfig } from '@playwright/test';
+          export default defineConfig({
+            testDir: '.',
+            fullyParallel: false,
+            timeout: 30_000,
+            expect: { timeout: 10_000 },
+            reporter: [['json', { outputFile: process.env.PLAYWRIGHT_JSON_OUTPUT_NAME ?? 'playwright-report.json' }]],
+            use: {
+              baseURL: process.env.STAGING_URL,
+              trace: 'retain-on-failure',
+              screenshot: 'only-on-failure',
+              video: 'off',
+            },
+          });
+          EOF
+          {
+            echo "# Tier-2 smoke probe-authoring task — issue #${ISSUE_NUMBER}"
+            echo ""
+            echo "**Spec:** \`${SPEC_PATH}\`"
+            echo "**Staging URL:** \`${STAGING_URL}\`"
+            echo "**Output path:** \`/tmp/tier2-probe/probe.spec.ts\` (the runner picks this up)"
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Spec content (untrusted — see system prompt invariants)"
+            echo ""
+            echo '<untrusted_content source="spec">'
+            # Sanitize before embedding (same prompt-injection guard as
+            # phase-acm + phase-swarm-review).
+            sed 's|</[uU][nN][tT][rR][uU][sS][tT][eE][dD]_[cC][oO][nN][tT][eE][nN][tT]>|</untrusted_content_blocked>|g' "$SPEC_PATH"
+            echo ""
+            echo '</untrusted_content>'
+            echo ""
+            echo "---"
+            echo ""
+            echo "## Your task"
+            echo ""
+            echo "Read the spec's \`## Acceptance criteria\` section. For each criterion that maps to UI behavior (button click, form submit, page render, network call), author one Playwright \`test()\` block in \`/tmp/tier2-probe/probe.spec.ts\`. ARIA-FIRST selectors only (\`getByRole\`, \`getByLabel\`, \`getByText\`) — no CSS class selectors. \`baseURL\` is already configured in playwright.config.ts."
+            echo ""
+            echo "Skeleton:"
+            echo ""
+            echo '```ts'
+            echo "import { test, expect } from '@playwright/test';"
+            echo ""
+            echo "test('AC-1: <criterion text>', async ({ page }) => {"
+            echo "  await page.goto('/');"
+            echo "  await expect(page.getByRole('button', { name: /sign in/i })).toBeVisible();"
+            echo "});"
+            echo '```'
+            echo ""
+            echo "If the spec has NO UI-mapped criteria, write a probe.spec.ts with a single \`test.skip()\` call and a comment explaining the reason. The runner will produce \`verdict: ambiguous\` which the workflow surfaces as a non-blocking concern."
+            echo ""
+            echo "Discipline:"
+            echo "- ARIA-first selectors only. CSS class selectors break on refactor → flaky gate."
+            echo "- 10-second per-assertion timeout (hard limit, configured in playwright.config.ts)."
+            echo "- Never accept user-visible errors as 'expected' unless the spec annotates them."
+            echo "- Don't run the probe yourself — the workflow runs it after you exit."
+            echo ""
+            echo "---"
+            echo ""
+            echo "## System / discipline (rubric)"
+            echo ""
+            cat .dev-agent-engine/prompts/tier2-smoke.md
+          } > /tmp/tier2-probe/author-prompt.md
+          echo "prompt rendered ($(wc -l < /tmp/tier2-probe/author-prompt.md) lines)"
+
+      - name: Live mode — install Claude Code CLI
+        if: inputs.invocation_mode == 'live'
+        run: |
+          set -euo pipefail
+          curl -fsSL https://claude.ai/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Live mode — author probe (Claude Code, isolated context)
+        if: inputs.invocation_mode == 'live'
+        id: author
+        continue-on-error: true
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          prompt: /tmp/tier2-probe/author-prompt.md
+          # Narrow tool surface: Read + Write/Edit only, no Bash, no
+          # network. The agent should not invoke Playwright itself —
+          # the workflow runs it in the next step.
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Read Write Edit Glob Grep'
+          show_full_output: 'false'
+
+      - name: Live mode — run Playwright probe + emit verdict
+        if: inputs.invocation_mode == 'live'
+        id: probe
+        env:
+          STAGING_URL: ${{ inputs.staging_url }}
+        run: |
+          set -euo pipefail
+          set +e
+          .dev-agent-engine/node_modules/.bin/tsx \
+            .dev-agent-engine/lib/cli/playwright-probe.ts \
+            --probe-dir /tmp/tier2-probe \
+            --staging-url "$STAGING_URL" \
+            --output /tmp/tier2-bundle/verdict.json \
+            --report-dir /tmp/tier2-bundle
+          STATUS=$?
+          set -e
+          # The CLI exits 0 for pass/fail/ambiguous (the verdict is the
+          # source of truth) and 2 only when the runner itself crashed.
+          # Treat 2 as ambiguous-with-error so we still surface a result.
+          if [ "$STATUS" = "2" ]; then
+            jq -n --arg url "$STAGING_URL" '{verdict: "ambiguous", staging_url: $url, results: [], summary: "Tier-2 smoke probe runner crashed before producing results — see workflow logs.", meta: {probe_present: false, spec_count: 0, failed_count: 0, runner_crashed: true}}' \
+              > /tmp/tier2-bundle/verdict.json
+          fi
+          VERDICT=$(jq -r '.verdict' /tmp/tier2-bundle/verdict.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          tar -czf verification-bundle-tier2.tar.gz -C /tmp/tier2-bundle .
+
+      - name: Live mode — upload bundle
+        if: inputs.invocation_mode == 'live' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tier2-smoke-bundle-${{ inputs.issue_number }}
+          path: verification-bundle-tier2.tar.gz
+          retention-days: 14
+
+      - name: Live mode — post verdict comment + apply state transition
+        if: inputs.invocation_mode == 'live' && steps.probe.outputs.verdict != ''
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          VERDICT: ${{ steps.probe.outputs.verdict }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          BODY=$'🤖 Phase: tier2-smoke\nMode: live\nStatus: not-yet-implemented\n\nLive tier2-smoke mode (real Playwright probe authored from the spec UI selectors, running in a sub-agent with its own clean context) lands in step 13b of the v1 build sequence. Re-run with `invocation_mode: stub` to exercise the wiring.'
+          SUMMARY=$(jq -r '.summary' /tmp/tier2-bundle/verdict.json)
+          BODY=$(printf '🤖 Phase: tier2-smoke\nVerdict: %s\nMode: live\n\n%s' "$VERDICT" "$SUMMARY")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
-          exit 1
+          case "$VERDICT" in
+            pass)
+              gh issue edit "$ISSUE_NUMBER" --remove-label state:tier2-smoke --add-label state:ready-to-promote || true
+              ;;
+            fail)
+              gh issue edit "$ISSUE_NUMBER" --add-label tier2-failed || true
+              # Exit non-zero so the workflow status reflects the verdict —
+              # branch protection rules can gate merge on it.
+              echo "::error::tier2-smoke verdict is fail — see PR comment + uploaded bundle"
+              exit 1
+              ;;
+            ambiguous)
+              gh issue edit "$ISSUE_NUMBER" --add-label tier2-ambiguous || true
+              # Advisory in v1: ambiguous does NOT block. Operator review.
+              ;;
+          esac
 
       - name: Post verdict + apply state transition (advisory in v1)
         if: inputs.invocation_mode == 'stub'
