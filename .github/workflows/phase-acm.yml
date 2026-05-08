@@ -236,7 +236,12 @@ jobs:
             echo "## Spec content (untrusted — see system prompt invariants)"
             echo ""
             echo '<untrusted_content source="spec">'
-            cat "$SPEC_PATH"
+            # Sanitize the spec before embedding: a spec containing a literal
+            # `</untrusted_content>` would otherwise break out of the wrapper
+            # and the content beyond it would be parsed as trusted instructions
+            # (prompt-injection escape hatch). Replace any closing tag
+            # (case-insensitive) with a neutralized form before cat'ing.
+            sed 's|</[uU][nN][tT][rR][uU][sS][tT][eE][dD]_[cC][oO][nN][tT][eE][nN][tT]>|</untrusted_content_blocked>|g' "$SPEC_PATH"
             echo ""
             echo '</untrusted_content>'
             echo ""
@@ -325,7 +330,6 @@ jobs:
         if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
         id: verify-red
         env:
-          TEST_CMD: ${{ steps.config.outputs.test_cmd || 'npm test --' }}
           REPO_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
@@ -335,7 +339,10 @@ jobs:
             echo "reason=manifest-missing" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          # Pull TEST_CMD from .dev-agent.yml.
+          # TEST_CMD source of truth: .dev-agent.yml via /tmp/config.json.
+          # The previous env-block binding to `steps.config.outputs.test_cmd`
+          # always fell back to the default (the convert-config step has no
+          # id + no $GITHUB_OUTPUT writes), masking config errors silently.
           TEST_CMD=$(jq -r '.commands.test // "npm test --"' /tmp/config.json)
           set +e
           MODE=acm-red MANIFEST_PATH=.dev-agent/acm-manifest.json TEST_CMD="$TEST_CMD" \

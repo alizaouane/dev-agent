@@ -226,6 +226,110 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-swarm-review.yml — tag-safe untrusted_content wrapper', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-swarm-review.yml'), 'utf8');
+
+    it('sanitizes any literal </untrusted_content> in the PR diff before embedding', () => {
+      // CodeRabbit Major (PR #77): a PR adding a literal `</untrusted_content>`
+      // (e.g. as a test fixture, a doc snippet, or a deliberate injection
+      // attempt) would otherwise close the wrapper early and let downstream
+      // bytes be parsed as trusted instructions. The reviewer rendering must
+      // pipe the diff through a sed substitution that neutralizes any
+      // closing tag (case-insensitive) before the cat.
+      expect(raw).toMatch(
+        /sed 's\|<\/\[uU\]\[nN\]\[tT\]\[rR\]\[uU\]\[sS\]\[tT\]\[eE\]\[dD\]_\[cC\]\[oO\]\[nN\]\[tT\]\[eE\]\[nN\]\[tT\]>\|<\/untrusted_content_blocked>\|g' \/tmp\/pr-diff\.txt/,
+      );
+      // Negative: the unsanitized cat must NOT come back as a regression.
+      expect(raw).not.toMatch(/^\s+cat \/tmp\/pr-diff\.txt$/m);
+    });
+
+    it('caps the diff with UTF-8-safe truncation (no half-cleaved codepoints)', () => {
+      // CodeRabbit nitpick (PR #77): a raw byte cut at 200000 can split a
+      // UTF-8 multi-byte sequence and produce malformed bytes at the cap.
+      // The fix uses a slightly-smaller raw cut piped through `iconv -c`
+      // which drops invalid sequences. Lock the iconv stage in so a future
+      // refactor can't silently regress to raw `head -c`.
+      expect(raw).toMatch(/head -c 199990 \/tmp\/pr-diff\.txt \| iconv -c -f utf-8 -t utf-8/);
+      expect(raw).not.toMatch(/head -c 200000 \/tmp\/pr-diff\.txt > \/tmp\/pr-diff-capped\.txt/);
+    });
+  });
+
+  describe('phase-swarm-review.yml — aggregator-crash fallback', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-swarm-review.yml'), 'utf8');
+
+    it('posts a fallback comment + label when the aggregator step fails', () => {
+      // CodeRabbit nitpick (PR #77): if `swarm-aggregate.ts` crashes or
+      // never writes /tmp/swarm-aggregate.json, both the comment + label
+      // steps skip on `outcome != 'success'`. Without a fallback the PR
+      // author sees a red workflow with no signal on the PR itself. Lock
+      // in: a "Post crash comment when aggregator failed" step gated on
+      // `aggregate.outcome == 'failure'` that applies `swarm-review:error`.
+      expect(raw).toMatch(/Post crash comment when aggregator failed/);
+      expect(raw).toMatch(/swarm-review:error/);
+    });
+
+    it("if-clause starts with always() so the step actually runs after a failure", () => {
+      // codex P2 (PR #78 review): GitHub Actions implicitly prepends
+      // `success()` to every `if:` expression that does not already
+      // contain a status-check function. A bare
+      //   if: steps.aggregate.outcome == 'failure'
+      // therefore evaluates as
+      //   success() && steps.aggregate.outcome == 'failure'
+      // which is always false when the aggregator step has actually
+      // failed — the step skips in the exact scenario it's meant to
+      // cover. The fix is to start the if-clause with `always() &&`
+      // (or `failure() &&`); lock that in as a regression guard.
+      expect(raw).toMatch(/if: always\(\) && steps\.aggregate\.outcome == 'failure'/);
+      // Negative: the bare form must NOT come back.
+      expect(raw).not.toMatch(/if: steps\.aggregate\.outcome == 'failure'\s*$/m);
+    });
+
+    it('reflects the actual invocation_mode in the fallback message (no hardcoded "live")', () => {
+      // CodeRabbit minor (PR #78 review): the fallback message used to
+      // hardcode `Mode: live` even though the step can fire in stub
+      // runs too (it's gated only on aggregator failure, not on mode).
+      // Read the value from inputs.invocation_mode via env so the
+      // diagnostic is honest about which mode crashed.
+      expect(raw).toMatch(/INVOCATION_MODE: \$\{\{ inputs\.invocation_mode \}\}/);
+      // The body must use printf with %s + the env var (not a literal).
+      expect(raw).toMatch(/printf '🤖 Phase: swarm-review.*Mode: %s.*' "\$INVOCATION_MODE"/s);
+      // Negative: the hardcoded "Mode: live" line must not return.
+      expect(raw).not.toMatch(/Verdict: error\\nMode: live\\n/);
+    });
+  });
+
+  describe('phase-acm.yml — Critical + Major fixes from PR #77 review', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-acm.yml'), 'utf8');
+
+    it('does not bind TEST_CMD via a non-existent steps.config output', () => {
+      // CodeRabbit Critical (PR #77): the verify-red step had
+      //   env.TEST_CMD: ${{ steps.config.outputs.test_cmd || 'npm test --' }}
+      // but the convert-config step has no `id:` and writes nothing to
+      // $GITHUB_OUTPUT, so this binding silently always fell back to
+      // 'npm test --', masking config errors. The shell still pulls
+      // TEST_CMD via jq inside the script — that single read is the
+      // source of truth.
+      // Match the YAML-expression form specifically (not the brief
+      // explanatory comment that documents *why* the binding was removed).
+      expect(raw).not.toMatch(/\$\{\{\s*steps\.config\.outputs\.test_cmd/);
+      // The single jq read in the verify-red step must remain.
+      expect(raw).toMatch(/TEST_CMD=\$\(jq -r '\.commands\.test \/\/ "npm test --"' \/tmp\/config\.json\)/);
+    });
+
+    it('sanitizes any literal </untrusted_content> in the spec before embedding', () => {
+      // CodeRabbit Major (PR #77): same prompt-injection escape as the
+      // swarm-review wrapper — a spec containing a literal
+      // `</untrusted_content>` would close the wrapper early and let the
+      // remaining content be parsed as trusted instructions. The render
+      // step must sanitize via sed before cat'ing the spec.
+      expect(raw).toMatch(
+        /sed 's\|<\/\[uU\]\[nN\]\[tT\]\[rR\]\[uU\]\[sS\]\[tT\]\[eE\]\[dD\]_\[cC\]\[oO\]\[nN\]\[tT\]\[eE\]\[nN\]\[tT\]>\|<\/untrusted_content_blocked>\|g' "\$SPEC_PATH"/,
+      );
+      // Negative: the unsanitized cat of the spec must not return.
+      expect(raw).not.toMatch(/^\s+cat "\$SPEC_PATH"$/m);
+    });
+  });
+
   describe('phase-implement.yml — agent-no-pr salvage', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 
