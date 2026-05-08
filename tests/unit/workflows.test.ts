@@ -559,6 +559,78 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-implement.yml — Risk-annotation audit (Pillar 5 advisory)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('runs lib/cli/risk-audit.ts after the agent step', () => {
+      // The agent emits .dev-agent/bash-log.jsonl per the implement.md
+      // contract; the audit step parses it and emits a structured report.
+      // Both --log and --output flags must be present (refactor guard).
+      expect(raw).toMatch(/Risk-annotation audit \(advisory\)/);
+      expect(raw).toMatch(/lib\/cli\/risk-audit\.ts/);
+      expect(raw).toMatch(/--log \.dev-agent\/bash-log\.jsonl/);
+      expect(raw).toMatch(/--output \/tmp\/risk-audit\/report/);
+    });
+
+    it('always-runs the audit (covers post-failure salvage scenarios)', () => {
+      // The audit must run even when an earlier step failed — that's
+      // when the risk signal is most valuable. Lock the if-clause shape.
+      expect(raw).toMatch(/id: risk-audit\s+if: inputs\.invocation_mode == 'live' && always\(\)/);
+    });
+
+    it('applies a risk-audit:<verdict> label regardless of value', () => {
+      // The label taxonomy is the same as other audit gates — operators
+      // filter by `risk-audit:mismatches` to find runs needing review.
+      // The three valid verdicts come from lib/cli/risk-audit.ts.
+      expect(raw).toMatch(/risk-audit:\$VERDICT/);
+    });
+
+    it('removes stale risk-audit:* labels before applying the new verdict (codex P2)', () => {
+      // codex P2 #2 (PR #80 review): re-runs via /approve must not
+      // accumulate contradictory labels (e.g. both risk-audit:clean AND
+      // risk-audit:mismatches on the same issue). Lock in the cleanup
+      // loop that iterates the three known verdict values + skips the
+      // current one + removes the rest.
+      expect(raw).toMatch(/for STALE in absent clean mismatches; do/);
+      expect(raw).toMatch(/if \[ "\$STALE" != "\$VERDICT" \]; then/);
+      expect(raw).toMatch(/--remove-label "risk-audit:\$STALE"/);
+      // The remove loop must appear BEFORE the final --add-label call,
+      // not after — otherwise we'd add then immediately remove our own
+      // label.
+      const auditStart = raw.indexOf('Risk-annotation audit (advisory)');
+      const auditEnd = raw.indexOf('- name:', auditStart + 1);
+      const auditBody = raw.slice(auditStart, auditEnd);
+      const removeLoopIdx = auditBody.indexOf('for STALE in absent clean mismatches');
+      const addLabelIdx = auditBody.indexOf('--add-label "risk-audit:$VERDICT"');
+      expect(removeLoopIdx).toBeGreaterThan(0);
+      expect(addLabelIdx).toBeGreaterThan(0);
+      expect(
+        removeLoopIdx,
+        'stale-label cleanup loop must run BEFORE the --add-label of the new verdict (codex P2)',
+      ).toBeLessThan(addLabelIdx);
+    });
+
+    it('comments on the issue ONLY when there are mismatches or HIGH-risk calls', () => {
+      // Clean runs with zero HIGH-risk calls should be silent — the label
+      // is enough signal. Otherwise every PR would get a noisy "0 / 0 / 0"
+      // comment that nobody reads.
+      expect(raw).toMatch(/if \[ "\$VERDICT" = "mismatches" \] \|\| \[ "\$HIGH_RISK" -gt 0 \]/);
+      expect(raw).toMatch(/--body-file \/tmp\/risk-audit\/report\.md/);
+    });
+
+    it('audit step does NOT block the PR (advisory in v1)', () => {
+      // The step body must NOT exit 1 on mismatches — those would block
+      // PR open and we explicitly want this to be advisory in v1. Lock the
+      // absence of any `exit 1` between the audit step's run: line and
+      // the next step's `- name:`.
+      const lines = raw.split('\n');
+      const auditStart = lines.findIndex((l) => l.includes('Risk-annotation audit (advisory)'));
+      const nextStepIdx = lines.findIndex((l, i) => i > auditStart && /^\s+- name:/.test(l));
+      const auditBody = lines.slice(auditStart, nextStepIdx).join('\n');
+      expect(auditBody).not.toMatch(/exit 1/);
+    });
+  });
+
   describe('phase-implement.yml — Read issue spec-path detection', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 
