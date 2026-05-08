@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport, type UIMessage } from 'ai';
+import { DefaultChatTransport, safeValidateUIMessages, type UIMessage } from 'ai';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -15,7 +15,12 @@ import {
 } from '@/components/ui/select';
 import type { RepoInfo } from '@/lib/repos';
 import { applyPmMdUpdate, approveAndStart } from '@/lib/actions';
-import { clearDraft, loadDraft, saveDraft } from '@/lib/pm-chat-draft';
+import {
+  clearDraft,
+  loadDraft,
+  saveDraft,
+  type PersistedDraft,
+} from '@/lib/pm-chat-draft';
 import { extractPmMdUpdate } from '@/lib/pm-md-update';
 
 /**
@@ -66,31 +71,12 @@ export function PmChat({
   // second pass replaces server defaults with persisted values without
   // a hydration mismatch.
   const [hydratedFromDraft, setHydratedFromDraft] = useState(false);
-  const [persistedMessages, setPersistedMessages] = useState<UIMessage[] | undefined>(undefined);
-
-  useEffect(() => {
-    // Only hydrate when there are no URL-provided overrides; if the user
-    // arrived via /proposals?prefill=..., they want a fresh chat seeded
-    // with that pitch, not whatever stale draft they left behind.
-    if (initialInput || initialRepo) {
-      setHydratedFromDraft(true);
-      return;
-    }
-    const draft = loadDraft();
-    if (draft) {
-      if (draft.repo && repos.some((r) => `${r.owner}/${r.name}` === draft.repo)) {
-        setRepo(draft.repo);
-      }
-      setTitle(draft.title);
-      setInput(draft.input);
-      if (draft.messages.length > 0) {
-        setPersistedMessages(draft.messages);
-      }
-    }
-    setHydratedFromDraft(true);
-    // Intentional: only run once on mount.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  // A draft found in localStorage at mount is held here until the user
+  // explicitly Resumes or Discards it via the banner. We do NOT silently
+  // apply it to form state — that's the bug a user reported, where a
+  // stale `repo` from a previous brainstorm got carried into a new
+  // launch and the implementation landed on the wrong repository.
+  const [pendingDraft, setPendingDraft] = useState<PersistedDraft | null>(null);
 
   const transport = new DefaultChatTransport({
     api: '/api/pm-chat',
@@ -101,25 +87,55 @@ export function PmChat({
 
   const { messages, sendMessage, status, error, setMessages } = useChat({
     transport,
-    messages: persistedMessages,
   });
 
-  // After the post-mount hydration runs, push the persisted messages
-  // into the AI SDK's chat instance. The `messages` option in useChat
-  // is only honored on first render of the underlying Chat — for
-  // changes after that, we use setMessages explicitly.
   useEffect(() => {
-    if (hydratedFromDraft && persistedMessages && messages.length === 0) {
-      setMessages(persistedMessages);
+    // Only check for a draft when there are no URL-provided overrides;
+    // if the user arrived via /proposals?prefill=..., they want a fresh
+    // chat seeded with that pitch, not whatever stale draft they left
+    // behind.
+    if (initialInput || initialRepo) {
+      setHydratedFromDraft(true);
+      return;
     }
+    const draft = loadDraft();
+    // Only surface drafts that actually have something worth resuming —
+    // an accidentally-saved empty entry shouldn't pop a banner.
+    if (
+      draft &&
+      (draft.title.length > 0 || draft.input.length > 0 || draft.messages.length > 0)
+    ) {
+      setPendingDraft(draft);
+    }
+    setHydratedFromDraft(true);
+    // Intentional: only run once on mount.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydratedFromDraft, persistedMessages]);
+  }, []);
+
+  // Implicit discard: if the user starts working on the form while the
+  // banner is still up (typing a feature description, sending a
+  // message, naming a feature), treat that as "I've moved on" and
+  // dismiss the banner. saveDraft below then takes over and persists
+  // the new work — without this, a user who refreshes mid-typing would
+  // lose what they just wrote (PR #83 review caught this regression).
+  useEffect(() => {
+    if (!pendingDraft) return;
+    if (input.length > 0 || title.length > 0 || messages.length > 0) {
+      setPendingDraft(null);
+    }
+  }, [pendingDraft, input, title, messages]);
 
   // Save draft whenever any meaningful field changes, but not before
   // hydration completes (would otherwise overwrite the just-loaded
-  // draft with the empty defaults).
+  // draft with the empty defaults). While a banner is up
+  // (`pendingDraft` set with the form still untouched), keep
+  // localStorage frozen so we don't clobber the entry the user is
+  // being asked about. The implicit-discard effect above hides the
+  // banner the moment the user actually starts working, so this gate
+  // never strands new content.
   useEffect(() => {
     if (!hydratedFromDraft) return;
+    if (pendingDraft) return;
     if (messages.length === 0 && !input && !title && repo === defaultRepo) {
       // Nothing worth persisting; clear any existing draft to avoid
       // surfacing it on the next visit.
@@ -127,7 +143,47 @@ export function PmChat({
       return;
     }
     saveDraft({ repo, title, input, messages });
-  }, [hydratedFromDraft, messages, repo, title, input, defaultRepo]);
+  }, [hydratedFromDraft, pendingDraft, messages, repo, title, input, defaultRepo]);
+
+  async function resumePendingDraft() {
+    if (!pendingDraft) return;
+    if (
+      pendingDraft.repo &&
+      repos.some((r) => `${r.owner}/${r.name}` === pendingDraft.repo)
+    ) {
+      setRepo(pendingDraft.repo);
+    }
+    setTitle(pendingDraft.title);
+    setInput(pendingDraft.input);
+    if (pendingDraft.messages.length > 0) {
+      // Messages persisted via localStorage can outlive an `ai` SDK
+      // upgrade and may include tool-call parts (`tool-*`) whose shape
+      // depends on the SDK version that wrote them. Run them through
+      // safeValidateUIMessages before pushing into useChat so a
+      // malformed entry (corrupted JSON, schema-incompatible after an
+      // upgrade, user-tampered) can't crash the chat renderer.
+      const validated = await safeValidateUIMessages({
+        messages: pendingDraft.messages,
+      });
+      if (validated.success) {
+        setMessages(validated.data);
+      } else {
+        console.warn(
+          '[PmChat] resumePendingDraft: stored messages failed validation; starting fresh',
+          validated.error,
+        );
+        // Drop the corrupted entry so it doesn't keep popping the
+        // banner on every visit.
+        clearDraft();
+      }
+    }
+    setPendingDraft(null);
+  }
+
+  function discardPendingDraft() {
+    clearDraft();
+    setPendingDraft(null);
+  }
 
   const isStreaming = status === 'streaming' || status === 'submitted';
   const lastAssistantMessage = [...messages].reverse().find((m) => m.role === 'assistant');
@@ -234,6 +290,43 @@ export function PmChat({
 
   return (
     <div className="flex max-w-3xl flex-col gap-4">
+      {pendingDraft ? (
+        <div
+          role="region"
+          aria-label="Previous draft"
+          className="rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3"
+        >
+          <p className="text-sm">
+            <span className="font-medium">Previous draft found</span>
+            {pendingDraft.repo ? (
+              <>
+                {' '}for <code className="font-mono">{pendingDraft.repo}</code>
+              </>
+            ) : null}
+            {pendingDraft.title ? (
+              <> — &ldquo;{pendingDraft.title}&rdquo;</>
+            ) : null}
+            {pendingDraft.messages.length > 0 ? (
+              <span className="text-muted-foreground">
+                {' '}({pendingDraft.messages.length} message
+                {pendingDraft.messages.length === 1 ? '' : 's'})
+              </span>
+            ) : null}
+          </p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Resume picks up where you left off. Discard starts fresh on the repo selected below.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" variant="default" onClick={resumePendingDraft}>
+              Resume
+            </Button>
+            <Button size="sm" variant="ghost" onClick={discardPendingDraft}>
+              Discard
+            </Button>
+          </div>
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-2">
         <Label htmlFor="repo">Repo</Label>
         <Select name="repo" value={repo} onValueChange={setRepo}>
@@ -325,7 +418,14 @@ export function PmChat({
             : 'rounded-md border border-dashed border-border p-4 opacity-60'
         }
       >
-        <h3 className="mb-2 font-medium">Approve and start implementation</h3>
+        <h3 className="mb-2 font-medium">
+          Approve and start implementation
+          {repo ? (
+            <>
+              {' '}on <code className="font-mono">{repo}</code>
+            </>
+          ) : null}
+        </h3>
         <p className="mb-3 text-sm text-muted-foreground">
           {hasAgreedScope
             ? 'PM has written an "Agreed scope" — give the feature a short title and start the implementation.'
@@ -344,7 +444,7 @@ export function PmChat({
           />
           <div className="flex justify-end">
             <Button onClick={onApprove} disabled={!hasAgreedScope || approving} variant="default">
-              {approving ? 'Starting…' : 'Approve and start'}
+              {approving ? 'Starting…' : repo ? `Start on ${repo}` : 'Approve and start'}
             </Button>
           </div>
           {approveErr ? (
