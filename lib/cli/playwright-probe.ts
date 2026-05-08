@@ -68,7 +68,18 @@ export interface ProbeVerdict {
   staging_url: string;
   results: Array<{
     title: string;
-    status: 'pass' | 'fail';
+    /**
+     * Per-spec status:
+     *   - 'pass' — Playwright reported `passed`
+     *   - 'fail' — Playwright reported `failed`, `timedOut`, or `interrupted`
+     *   - 'skip' — Playwright reported `skipped` (e.g. agent's `test.skip()`
+     *     for non-UI criteria, the documented ambiguous path)
+     *
+     * The aggregate `verdict` field is derived from the counts: any 'fail'
+     * → fail; otherwise all-skip → ambiguous; otherwise pass (incl. mixed
+     * pass+skip).
+     */
+    status: 'pass' | 'fail' | 'skip';
     error_excerpt: string | null;
     attachments: string[];
   }>;
@@ -77,6 +88,7 @@ export interface ProbeVerdict {
     probe_present: boolean;
     spec_count: number;
     failed_count: number;
+    skipped_count: number;
     generated_at: string;
   };
 }
@@ -119,6 +131,7 @@ function writeAmbiguousVerdict(args: Args, reason: string): ProbeVerdict {
       probe_present: false,
       spec_count: 0,
       failed_count: 0,
+      skipped_count: 0,
       generated_at: new Date().toISOString(),
     },
   };
@@ -165,7 +178,24 @@ function buildVerdict(args: Args, reportPath: string): ProbeVerdict {
   }
   const results = specs.map((spec) => {
     const last = spec.results[spec.results.length - 1];
-    const status: 'pass' | 'fail' = last?.status === 'passed' ? 'pass' : 'fail';
+    // codex P1 (PR #81 review): map every Playwright status explicitly.
+    // The previous binary `passed → pass, anything else → fail` collapsed
+    // `skipped` into fail, which broke the documented ambiguous path
+    // ("if the spec has no UI-mapped criteria, write probe.spec.ts with a
+    // single test.skip() call ..."). Treat skipped as its own status.
+    let status: 'pass' | 'fail' | 'skip';
+    switch (last?.status) {
+      case 'passed':
+        status = 'pass';
+        break;
+      case 'skipped':
+        status = 'skip';
+        break;
+      default:
+        // 'failed', 'timedOut', 'interrupted', or missing → fail.
+        status = 'fail';
+        break;
+    }
     const errMsg = last?.errors?.[0]?.message ?? null;
     return {
       title: spec.title,
@@ -176,11 +206,27 @@ function buildVerdict(args: Args, reportPath: string): ProbeVerdict {
     };
   });
   const failed = results.filter((r) => r.status === 'fail');
-  const verdict: 'pass' | 'fail' = failed.length === 0 ? 'pass' : 'fail';
-  const summary =
-    verdict === 'pass'
-      ? `Tier-2 smoke pass: all ${results.length} probe assertion(s) green against \`${args.stagingUrl}\`.`
-      : `Tier-2 smoke FAIL: ${failed.length} of ${results.length} probe assertion(s) failed against \`${args.stagingUrl}\`. See workflow logs + uploaded bundle for screenshots and error excerpts.`;
+  const skipped = results.filter((r) => r.status === 'skip');
+  const passed = results.filter((r) => r.status === 'pass');
+  // Verdict order matters:
+  //   1. any failure → fail (skipped/passed alongside don't soften it)
+  //   2. all skipped (no pass, no fail) → ambiguous (non-UI spec path)
+  //   3. otherwise → pass (incl. mixed pass+skip — the skips are advisory)
+  let verdict: 'pass' | 'fail' | 'ambiguous';
+  let summary: string;
+  if (failed.length > 0) {
+    verdict = 'fail';
+    summary = `Tier-2 smoke FAIL: ${failed.length} of ${results.length} probe assertion(s) failed against \`${args.stagingUrl}\`. See workflow logs + uploaded bundle for screenshots and error excerpts.`;
+  } else if (passed.length === 0 && skipped.length === results.length) {
+    verdict = 'ambiguous';
+    summary = `Tier-2 smoke ambiguous: all ${results.length} probe spec(s) were skipped (test.skip()). The sub-agent could not author a probe with concrete UI assertions on this spec — likely a non-UI spec. Operator review recommended; v1 does NOT block the PR on ambiguous.`;
+  } else {
+    verdict = 'pass';
+    summary =
+      skipped.length > 0
+        ? `Tier-2 smoke pass: ${passed.length} probe assertion(s) green against \`${args.stagingUrl}\` (${skipped.length} skipped — advisory, not failures).`
+        : `Tier-2 smoke pass: all ${results.length} probe assertion(s) green against \`${args.stagingUrl}\`.`;
+  }
   return {
     verdict,
     staging_url: args.stagingUrl,
@@ -190,6 +236,7 @@ function buildVerdict(args: Args, reportPath: string): ProbeVerdict {
       probe_present: true,
       spec_count: results.length,
       failed_count: failed.length,
+      skipped_count: skipped.length,
       generated_at: new Date().toISOString(),
     },
   };

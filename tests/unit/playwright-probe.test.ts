@@ -225,5 +225,123 @@ describe('lib/cli/playwright-probe', () => {
       const v = buildVerdict(baseArgs, reportPath);
       expect(v.results[0].error_excerpt?.length).toBeLessThanOrEqual(600);
     });
+
+    describe('codex P1 — skipped specs are advisory, not failures', () => {
+      it('returns ambiguous when ALL specs are skipped (test.skip() — non-UI spec path)', () => {
+        // The exact case codex flagged: the documented "no UI selectors"
+        // path tells the agent to write `probe.spec.ts` with a single
+        // `test.skip()` call. Playwright reports that as
+        // status=skipped, which the previous code mapped to fail —
+        // exiting non-zero and blocking promotion for non-UI specs that
+        // were supposed to be advisory-only. Lock in the ambiguous verdict.
+        writeFileSync(
+          reportPath,
+          JSON.stringify({
+            suites: [
+              {
+                specs: [
+                  { title: 'no-ui-selectors', tests: [{ results: [{ status: 'skipped' }] }] },
+                ],
+              },
+            ],
+          }),
+          'utf8',
+        );
+        const v = buildVerdict(baseArgs, reportPath);
+        expect(v.verdict).toBe('ambiguous');
+        expect(v.results).toHaveLength(1);
+        expect(v.results[0].status).toBe('skip');
+        expect(v.meta.skipped_count).toBe(1);
+        expect(v.meta.failed_count).toBe(0);
+        expect(v.summary).toMatch(/all 1 probe spec\(s\) were skipped/);
+      });
+
+      it('returns pass for a mix of pass + skip (skips are advisory, not failures)', () => {
+        // Partial coverage: agent skipped some criteria as non-UI but
+        // wrote real assertions for the rest. As long as no failures,
+        // verdict stays pass. Skipped count surfaces in meta + summary
+        // so operators see the partial coverage.
+        writeFileSync(
+          reportPath,
+          JSON.stringify({
+            suites: [
+              {
+                specs: [
+                  { title: 'login-button', tests: [{ results: [{ status: 'passed' }] }] },
+                  { title: 'no-ui-criterion', tests: [{ results: [{ status: 'skipped' }] }] },
+                  { title: 'profile-loads', tests: [{ results: [{ status: 'passed' }] }] },
+                ],
+              },
+            ],
+          }),
+          'utf8',
+        );
+        const v = buildVerdict(baseArgs, reportPath);
+        expect(v.verdict).toBe('pass');
+        expect(v.meta.skipped_count).toBe(1);
+        expect(v.meta.failed_count).toBe(0);
+        expect(v.summary).toMatch(/2 probe assertion\(s\) green/);
+        expect(v.summary).toMatch(/1 skipped — advisory/);
+      });
+
+      it('still returns fail when any spec failed, even if others were skipped', () => {
+        // Mixed fail + skip → fail (a real failure isn't softened by
+        // adjacent skips; the gate must catch it). Lock in.
+        writeFileSync(
+          reportPath,
+          JSON.stringify({
+            suites: [
+              {
+                specs: [
+                  { title: 'login-button', tests: [{ results: [{ status: 'failed', errors: [{ message: 'broken' }] }] }] },
+                  { title: 'no-ui-criterion', tests: [{ results: [{ status: 'skipped' }] }] },
+                ],
+              },
+            ],
+          }),
+          'utf8',
+        );
+        const v = buildVerdict(baseArgs, reportPath);
+        expect(v.verdict).toBe('fail');
+        expect(v.meta.failed_count).toBe(1);
+        expect(v.meta.skipped_count).toBe(1);
+      });
+
+      it("treats Playwright's 'timedOut' and 'interrupted' as failures (not skips)", () => {
+        // Playwright's full status set: passed | failed | timedOut |
+        // skipped | interrupted. The fix maps timedOut + interrupted
+        // explicitly to fail (was previously caught by the catch-all
+        // "anything not passed" branch — same outcome, but lock the
+        // explicit handling so a future refactor can't accidentally
+        // bucket them with skipped).
+        writeFileSync(
+          reportPath,
+          JSON.stringify({
+            suites: [
+              {
+                specs: [
+                  { title: 'slow-test', tests: [{ results: [{ status: 'timedOut', errors: [{ message: 'over budget' }] }] }] },
+                  { title: 'cancelled-test', tests: [{ results: [{ status: 'interrupted' }] }] },
+                ],
+              },
+            ],
+          }),
+          'utf8',
+        );
+        const v = buildVerdict(baseArgs, reportPath);
+        expect(v.verdict).toBe('fail');
+        expect(v.results.every((r) => r.status === 'fail')).toBe(true);
+        expect(v.meta.failed_count).toBe(2);
+        expect(v.meta.skipped_count).toBe(0);
+      });
+
+      it('writeAmbiguousVerdict includes skipped_count in meta for shape stability', () => {
+        // Reviewer / workflow code reads meta.skipped_count
+        // unconditionally; a missing field would crash the workflow's
+        // jq extraction. Defensive shape lock.
+        const v = writeAmbiguousVerdict(baseArgs, 'no probe');
+        expect(v.meta).toHaveProperty('skipped_count', 0);
+      });
+    });
   });
 });

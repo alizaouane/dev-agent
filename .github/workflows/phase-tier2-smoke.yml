@@ -287,11 +287,28 @@ jobs:
           # source of truth) and 2 only when the runner itself crashed.
           # Treat 2 as ambiguous-with-error so we still surface a result.
           if [ "$STATUS" = "2" ]; then
-            jq -n --arg url "$STAGING_URL" '{verdict: "ambiguous", staging_url: $url, results: [], summary: "Tier-2 smoke probe runner crashed before producing results — see workflow logs.", meta: {probe_present: false, spec_count: 0, failed_count: 0, runner_crashed: true}}' \
+            jq -n --arg url "$STAGING_URL" '{verdict: "ambiguous", staging_url: $url, results: [], summary: "Tier-2 smoke probe runner crashed before producing results — see workflow logs.", meta: {probe_present: false, spec_count: 0, failed_count: 0, skipped_count: 0, runner_crashed: true}}' \
               > /tmp/tier2-bundle/verdict.json
           fi
           VERDICT=$(jq -r '.verdict' /tmp/tier2-bundle/verdict.json)
           echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          # codex P2 (PR #81 review): pull Playwright's test-results dir
+          # into the bundle BEFORE archiving. Playwright writes screenshots
+          # + traces (on retain-on-failure) to <testDir>/test-results, which
+          # is /tmp/tier2-probe/test-results given the playwright.config.ts
+          # we wrote earlier. Without this copy, failing runs lose the
+          # screenshot/trace evidence the workflow summary promises.
+          if [ -d /tmp/tier2-probe/test-results ]; then
+            mkdir -p /tmp/tier2-bundle/test-results
+            cp -R /tmp/tier2-probe/test-results/. /tmp/tier2-bundle/test-results/ 2>/dev/null || true
+            echo "copied Playwright test-results into bundle:"
+            ls -la /tmp/tier2-bundle/test-results/ 2>/dev/null || true
+          fi
+          # Also include the agent-authored probe.spec.ts so post-mortems
+          # can see what assertions were generated from the spec.
+          if [ -f /tmp/tier2-probe/probe.spec.ts ]; then
+            cp /tmp/tier2-probe/probe.spec.ts /tmp/tier2-bundle/probe.spec.ts 2>/dev/null || true
+          fi
           tar -czf verification-bundle-tier2.tar.gz -C /tmp/tier2-bundle .
 
       - name: Live mode — upload bundle

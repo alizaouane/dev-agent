@@ -700,6 +700,32 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/name: tier2-smoke-bundle-\$\{\{ inputs\.issue_number \}\}/);
     });
 
+    it('copies Playwright test-results into the bundle BEFORE archiving (codex P2)', () => {
+      // codex P2 (PR #81 review): Playwright writes screenshots + traces
+      // to <testDir>/test-results (= /tmp/tier2-probe/test-results given
+      // the fixed playwright.config.ts). The previous tar only included
+      // /tmp/tier2-bundle, so failing runs lost the screenshot/trace
+      // evidence the workflow summary promises. Lock the copy step in,
+      // and verify it appears BEFORE the tar so the artifacts actually
+      // make it into the archive.
+      expect(raw).toMatch(/cp -R \/tmp\/tier2-probe\/test-results\/\. \/tmp\/tier2-bundle\/test-results\//);
+      // The probe.spec.ts itself is also copied so post-mortems can see
+      // what assertions the agent generated from the spec.
+      expect(raw).toMatch(/cp \/tmp\/tier2-probe\/probe\.spec\.ts \/tmp\/tier2-bundle\/probe\.spec\.ts/);
+      // Ordering: cp must precede tar within the same step.
+      const stepStart = raw.indexOf('Live mode — run Playwright probe + emit verdict');
+      const stepEnd = raw.indexOf('- name:', stepStart + 1);
+      const stepBody = raw.slice(stepStart, stepEnd === -1 ? undefined : stepEnd);
+      const cpIdx = stepBody.indexOf('cp -R /tmp/tier2-probe/test-results');
+      const tarIdx = stepBody.indexOf('tar -czf verification-bundle-tier2');
+      expect(cpIdx).toBeGreaterThan(0);
+      expect(tarIdx).toBeGreaterThan(0);
+      expect(
+        cpIdx,
+        'test-results copy must precede tar (codex P2)',
+      ).toBeLessThan(tarIdx);
+    });
+
     it('exits non-zero on verdict=fail (so branch protection can gate merge)', () => {
       // The state-transition step must `exit 1` when verdict is fail,
       // so the workflow status reflects the verdict — branch
