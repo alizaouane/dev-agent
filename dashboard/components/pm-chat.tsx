@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useTransition } from 'react';
 import { useChat } from '@ai-sdk/react';
-import { DefaultChatTransport, type UIMessage } from 'ai';
+import { DefaultChatTransport, safeValidateUIMessages, type UIMessage } from 'ai';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -145,7 +145,7 @@ export function PmChat({
     saveDraft({ repo, title, input, messages });
   }, [hydratedFromDraft, pendingDraft, messages, repo, title, input, defaultRepo]);
 
-  function resumePendingDraft() {
+  async function resumePendingDraft() {
     if (!pendingDraft) return;
     if (
       pendingDraft.repo &&
@@ -156,7 +156,26 @@ export function PmChat({
     setTitle(pendingDraft.title);
     setInput(pendingDraft.input);
     if (pendingDraft.messages.length > 0) {
-      setMessages(pendingDraft.messages);
+      // Messages persisted via localStorage can outlive an `ai` SDK
+      // upgrade and may include tool-call parts (`tool-*`) whose shape
+      // depends on the SDK version that wrote them. Run them through
+      // safeValidateUIMessages before pushing into useChat so a
+      // malformed entry (corrupted JSON, schema-incompatible after an
+      // upgrade, user-tampered) can't crash the chat renderer.
+      const validated = await safeValidateUIMessages({
+        messages: pendingDraft.messages,
+      });
+      if (validated.success) {
+        setMessages(validated.data);
+      } else {
+        console.warn(
+          '[PmChat] resumePendingDraft: stored messages failed validation; starting fresh',
+          validated.error,
+        );
+        // Drop the corrupted entry so it doesn't keep popping the
+        // banner on every visit.
+        clearDraft();
+      }
     }
     setPendingDraft(null);
   }

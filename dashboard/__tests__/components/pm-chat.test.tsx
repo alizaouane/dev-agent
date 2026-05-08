@@ -129,15 +129,51 @@ describe('<PmChat> — stale-draft handling', () => {
 
     await user.click(await screen.findByRole('button', { name: /^resume$/i }));
 
+    // resumePendingDraft awaits safeValidateUIMessages, so wait for the
+    // post-validation state updates to settle before asserting.
+    await waitFor(() => {
+      expect(screen.getByText(/old PM reply about whatsapp/)).toBeInTheDocument();
+    });
     // Banner gone.
     expect(
       screen.queryByRole('region', { name: /previous draft/i }),
     ).not.toBeInTheDocument();
-    // Messages from the draft now visible in the chat panel.
-    expect(screen.getByText(/old PM reply about whatsapp/)).toBeInTheDocument();
     expect(screen.getByText(/old user pitch/)).toBeInTheDocument();
     // Title input populated.
     expect(screen.getByLabelText(/feature title/i)).toHaveValue('Stale feature title');
+  });
+
+  it('Resume on a draft with corrupt messages clears the draft and dismisses the banner without crashing', async () => {
+    // Persisted UIMessages can outlive an `ai` SDK upgrade — a part shape
+    // that was valid at write-time may fail validation at read-time.
+    // safeValidateUIMessages catches this; the component should drop the
+    // bad entry rather than push invalid state into useChat.
+    window.localStorage.setItem(
+      DRAFT_STORAGE_KEY,
+      JSON.stringify({
+        repo: 'q/whatsapp-console',
+        title: 'Stale feature title',
+        input: '',
+        // Missing required fields → safeValidateUIMessages returns
+        // { success: false }.
+        messages: [{ id: 'm1', role: 'user' /* no parts */ }],
+      }),
+    );
+    const user = userEvent.setup();
+
+    render(<PmChat repos={repos} />);
+
+    await user.click(await screen.findByRole('button', { name: /^resume$/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('region', { name: /previous draft/i }),
+      ).not.toBeInTheDocument();
+    });
+    // Corrupt entry was wiped — won't keep popping the banner.
+    expect(window.localStorage.getItem(DRAFT_STORAGE_KEY)).toBeNull();
+    // No messages were pushed into the chat.
+    expect(screen.getByText(/Pitch an idea below/i)).toBeInTheDocument();
   });
 
   it('skips draft detection when initialInput or initialRepo is provided (proposals prefill flow)', async () => {
@@ -145,7 +181,10 @@ describe('<PmChat> — stale-draft handling', () => {
 
     render(<PmChat repos={repos} initialInput="seeded from a proposal" />);
 
-    // No banner — `?prefill=` overrides reach the user as a fresh chat.
+    // Wait for the mount effect to run (sets hydratedFromDraft) before
+    // asserting the banner's absence — otherwise the assertion could
+    // pass for the wrong reason (effect hadn't fired yet).
+    await screen.findByText(/Pitch an idea below/i);
     expect(
       screen.queryByRole('region', { name: /previous draft/i }),
     ).not.toBeInTheDocument();
