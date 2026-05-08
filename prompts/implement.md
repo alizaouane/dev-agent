@@ -45,6 +45,29 @@ Capture each skill's exit code (or terminal status if it was a SKILL.md run).
 
 If `{{audit_skills.pre_pr}}` is empty, this section is a no-op. Do not invent audits.
 
+## Bash risk annotations (Pillar 5 — advisory in v1)
+
+Before running ANY Bash command (whether via the `Bash` tool, a workflow `run:` substep that you invoke, or any equivalent), append one JSON line to `.dev-agent/bash-log.jsonl` with this exact shape:
+
+```json
+{ "cmd": "<verbatim command line>", "risk": "low" | "medium" | "high" | "unknown", "justification": "<5+ chars explaining why this risk level>" }
+```
+
+Risk levels:
+
+- `low` — read-only, scoped to the repo working tree, no network, no privilege change. Examples: `ls`, `cat`, `git status`, `npm test`.
+- `medium` — touches shared state or external systems but reversibly. Examples: `git push <feature-branch>`, `gh pr comment`, `npm install <single-pkg>`.
+- `high` — destructive, exfiltrating, or privilege-escalating. Examples: `rm -rf`, `curl … | sh`, `chmod 777`, `sudo`, `git push --force`, `git reset --hard`.
+
+Discipline:
+
+- One line per command. The post-run `lib/cli/risk-audit.ts` step parses the file with one annotation per line; multi-line records break the parser.
+- The `justification` must be ≥ 5 chars (validation rule). Single-word stubs like `"list"` are rejected.
+- A deterministic classifier audits your self-rating (see `lib/risk-annotation.ts` § `classifyRisk`). If you rate `rm -rf` or `curl … | sh` as `low`, the audit will surface the mismatch as an issue comment + `risk-audit:mismatch` label. Be honest — over-flagging is fine, under-flagging is what we're guarding against.
+- If you can't classify (rare — `unknown` is for genuinely novel patterns, not laziness), write `unknown` with a justification explaining what the command does and why classification was unclear.
+- The annotation file is advisory in v1: a missing or incomplete log does NOT block the PR. The audit emits a soft warning. v1.1 will fail-closed on missing logs once the prompt has stabilized in production.
+- Don't write annotations for commands the workflow runs around your invocation (e.g. `npm ci`, the staging-deploy step). Only annotate Bash calls you initiate.
+
 ## Self-review (Pillar 6)
 
 After the audit chain and BEFORE `git push`, run a structured self-review against your own diff. This is cheap insurance against bugs your first pass missed; it costs ~$0.10 and catches obvious-in-hindsight issues before any reviewer sees them.

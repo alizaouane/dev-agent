@@ -391,6 +391,44 @@ jobs:
           fi
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
 
+      # Risk-annotation audit (Pillar 5, advisory in v1). Reads the
+      # agent's `.dev-agent/bash-log.jsonl` (one annotated Bash call per
+      # line) and runs each entry through lib/risk-annotation.ts's
+      # deterministic classifier. Advisory: a missing log or any number
+      # of mismatches does NOT block the PR. v1.1 will fail-closed on
+      # mismatches once typical FP rates have been audited on real PRs.
+      - name: Risk-annotation audit (advisory)
+        id: risk-audit
+        if: inputs.invocation_mode == 'live' && always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+            git switch "$BRANCH_NAME" 2>/dev/null || true
+          fi
+          mkdir -p /tmp/risk-audit
+          .dev-agent-engine/node_modules/.bin/tsx \
+            .dev-agent-engine/lib/cli/risk-audit.ts \
+            --log .dev-agent/bash-log.jsonl \
+            --output /tmp/risk-audit/report
+          VERDICT=$(jq -r '.verdict' /tmp/risk-audit/report.json)
+          MISMATCHES=$(jq -r '.mismatch_count' /tmp/risk-audit/report.json)
+          HIGH_RISK=$(jq -r '.high_risk_count' /tmp/risk-audit/report.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "mismatch_count=$MISMATCHES" >> "$GITHUB_OUTPUT"
+          echo "high_risk_count=$HIGH_RISK" >> "$GITHUB_OUTPUT"
+          # Label taxonomy: risk-audit:absent | risk-audit:clean | risk-audit:mismatches.
+          gh issue edit "$ISSUE_NUMBER" --add-label "risk-audit:$VERDICT" || true
+          # Comment ONLY when there's something to surface (mismatches OR
+          # classifier-HIGH calls). Clean-with-zero-HIGH runs are silent —
+          # the label is enough.
+          if [ "$VERDICT" = "mismatches" ] || [ "$HIGH_RISK" -gt 0 ]; then
+            gh issue comment "$ISSUE_NUMBER" --body-file /tmp/risk-audit/report.md || true
+          fi
+
       - name: ACM gate — comment + label on fail
         if: inputs.invocation_mode == 'live' && steps.acm-gate.outputs.verdict == 'fail'
         env:
