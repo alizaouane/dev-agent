@@ -631,6 +631,131 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-tier2-smoke.yml — live mode (step 13b, Pillar 7)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-tier2-smoke.yml'), 'utf8');
+
+    it('defaults invocation_mode to live (v1.7+)', () => {
+      // The header comment promises v1.7+ ships live by default. Keep
+      // workflow_call + workflow_dispatch defaults aligned with that
+      // promise so the auto-dispatch wrapper inherits the right mode.
+      const calls = raw.match(/default: 'live'/g) ?? [];
+      expect(calls.length).toBeGreaterThanOrEqual(2);
+      // Negative: ensure the previous default ('stub') hasn't crept back
+      // for invocation_mode (the stub_mode input still defaults to 'pass'
+      // which is unrelated and should NOT match below).
+      expect(raw).not.toMatch(/invocation_mode:\s*\n\s*required: false\s*\n\s*type: string\s*\n\s*default: 'stub'/);
+    });
+
+    it('removes the previous "TODO step 13b" placeholder', () => {
+      // Regression guard: the old workflow had a single step named
+      // "Live mode (TODO step 13b)" that just posted a not-yet-
+      // implemented comment + exit 1. Lock in that the placeholder
+      // is gone and replaced with the real pipeline (presence of the
+      // playwright-probe CLI invocation is the canonical signal).
+      expect(raw).not.toMatch(/Live mode \(TODO step 13b\)/);
+      expect(raw).not.toMatch(/Status: not-yet-implemented/);
+    });
+
+    it('installs Playwright + Chromium in live mode', () => {
+      expect(raw).toMatch(/Live mode — install Playwright \+ Chromium/);
+      expect(raw).toMatch(/npm install --no-save @playwright\/test/);
+      expect(raw).toMatch(/npx playwright install --with-deps chromium/);
+    });
+
+    it('writes a fixed playwright.config.ts (agent cannot tamper with it)', () => {
+      // Security: if the agent could write the config it could disable
+      // the JSON reporter or change baseURL to bypass the gate. The
+      // workflow writes a known-good config; the agent only writes
+      // probe.spec.ts. Lock in the heredoc.
+      expect(raw).toMatch(/cat > \/tmp\/tier2-probe\/playwright\.config\.ts <<'EOF'/);
+      expect(raw).toMatch(/baseURL: process\.env\.STAGING_URL/);
+      expect(raw).toMatch(/reporter: \[\['json'/);
+    });
+
+    it('the probe-author sub-agent runs with restricted tools (no Bash)', () => {
+      // Pillar 7 invariant: probe-author works in clean context with
+      // no implementation transcript and no Bash. Read + Write/Edit
+      // are sufficient; Bash would let the agent invoke Playwright
+      // itself (which would skip the workflow's deterministic runner).
+      expect(raw).toMatch(/Live mode — author probe \(Claude Code, isolated context\)/);
+      const args = raw.match(/claude_args:\s*'--max-turns 30 --model claude-sonnet-4-6 --allowedTools Read Write Edit Glob Grep'/);
+      expect(args, 'tier2 probe-author claude_args missing or has Bash').toBeTruthy();
+    });
+
+    it('runs lib/cli/playwright-probe.ts with all four required flags', () => {
+      // Lock the CLI contract: refactor that drops --probe-dir or
+      // --staging-url silently breaks the gate (the verdict CLI will
+      // exit with arg-error 1 → workflow ::error::).
+      expect(raw).toMatch(/lib\/cli\/playwright-probe\.ts/);
+      expect(raw).toMatch(/--probe-dir \/tmp\/tier2-probe/);
+      expect(raw).toMatch(/--staging-url "\$STAGING_URL"/);
+      expect(raw).toMatch(/--output \/tmp\/tier2-bundle\/verdict\.json/);
+      expect(raw).toMatch(/--report-dir \/tmp\/tier2-bundle/);
+    });
+
+    it('uploads the bundle even when the probe step fails (always())', () => {
+      // The bundle is the post-mortem source of truth — must upload
+      // on every live-mode run, including failures.
+      expect(raw).toMatch(/Live mode — upload bundle\s+if: inputs\.invocation_mode == 'live' && always\(\)/);
+      expect(raw).toMatch(/name: tier2-smoke-bundle-\$\{\{ inputs\.issue_number \}\}/);
+    });
+
+    it('copies Playwright test-results into the bundle BEFORE archiving (codex P2)', () => {
+      // codex P2 (PR #81 review): Playwright writes screenshots + traces
+      // to <testDir>/test-results (= /tmp/tier2-probe/test-results given
+      // the fixed playwright.config.ts). The previous tar only included
+      // /tmp/tier2-bundle, so failing runs lost the screenshot/trace
+      // evidence the workflow summary promises. Lock the copy step in,
+      // and verify it appears BEFORE the tar so the artifacts actually
+      // make it into the archive.
+      expect(raw).toMatch(/cp -R \/tmp\/tier2-probe\/test-results\/\. \/tmp\/tier2-bundle\/test-results\//);
+      // The probe.spec.ts itself is also copied so post-mortems can see
+      // what assertions the agent generated from the spec.
+      expect(raw).toMatch(/cp \/tmp\/tier2-probe\/probe\.spec\.ts \/tmp\/tier2-bundle\/probe\.spec\.ts/);
+      // Ordering: cp must precede tar within the same step.
+      const stepStart = raw.indexOf('Live mode — run Playwright probe + emit verdict');
+      const stepEnd = raw.indexOf('- name:', stepStart + 1);
+      const stepBody = raw.slice(stepStart, stepEnd === -1 ? undefined : stepEnd);
+      const cpIdx = stepBody.indexOf('cp -R /tmp/tier2-probe/test-results');
+      const tarIdx = stepBody.indexOf('tar -czf verification-bundle-tier2');
+      expect(cpIdx).toBeGreaterThan(0);
+      expect(tarIdx).toBeGreaterThan(0);
+      expect(
+        cpIdx,
+        'test-results copy must precede tar (codex P2)',
+      ).toBeLessThan(tarIdx);
+    });
+
+    it('exits non-zero on verdict=fail (so branch protection can gate merge)', () => {
+      // The state-transition step must `exit 1` when verdict is fail,
+      // so the workflow status reflects the verdict — branch
+      // protection rules can require this check to pass before merge.
+      expect(raw).toMatch(/case "\$VERDICT" in/);
+      expect(raw).toMatch(/fail\)\s+gh issue edit "\$ISSUE_NUMBER" --add-label tier2-failed \|\| true/);
+      // The exit 1 must live inside the fail) arm.
+      const failArm = raw.split(/fail\)/)[1]?.split(/;;/)[0] ?? '';
+      expect(failArm).toMatch(/exit 1/);
+    });
+
+    it('verdict=ambiguous applies the tier2-ambiguous label without blocking', () => {
+      // The non-UI spec path: agent writes a test.skip() probe → CLI
+      // returns ambiguous → workflow labels but does NOT exit 1.
+      // Lock the absence of exit 1 in the ambiguous arm.
+      const ambiguousArm = raw.split(/ambiguous\)/)[1]?.split(/;;/)[0] ?? '';
+      expect(ambiguousArm).toMatch(/tier2-ambiguous/);
+      expect(ambiguousArm).not.toMatch(/exit 1/);
+    });
+
+    it('sanitizes the spec via sed before embedding in the author prompt', () => {
+      // Same prompt-injection guard as phase-acm + phase-swarm-review:
+      // a spec containing literal `</untrusted_content>` would break
+      // the wrapper. The sed substitution must run on $SPEC_PATH.
+      expect(raw).toMatch(
+        /sed 's\|<\/\[uU\]\[nN\]\[tT\]\[rR\]\[uU\]\[sS\]\[tT\]\[eE\]\[dD\]_\[cC\]\[oO\]\[nN\]\[tT\]\[eE\]\[nN\]\[tT\]>\|<\/untrusted_content_blocked>\|g' "\$SPEC_PATH"/,
+      );
+    });
+  });
+
   describe('phase-implement.yml — Read issue spec-path detection', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 
