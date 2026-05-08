@@ -298,6 +298,90 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-swarm-review.yml — v1.6 EvidenceBundle integration (Pillar 2)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-swarm-review.yml'), 'utf8');
+
+    it('downloads the verification-bundle artifact from evidence-collector', () => {
+      // The cross-workflow handoff: phase-evidence-collector uploads
+      // `verification-bundle-pr-<N>` in v1.5; phase-swarm-review must
+      // download the same name to consume the deterministic-scanner output.
+      // continue-on-error so a missing artifact doesn't crash the gate
+      // (evidence-summarize.ts emits an absent-summary stub in that case).
+      expect(raw).toMatch(/Live mode — download evidence-collector bundle/);
+      expect(raw).toMatch(/uses: actions\/download-artifact@v4/);
+      expect(raw).toMatch(/name: verification-bundle-pr-\$\{\{ inputs\.pr_number \}\}/);
+      expect(raw).toMatch(/continue-on-error: true/);
+    });
+
+    it('extracts + summarizes the bundle via lib/cli/evidence-summarize.ts', () => {
+      // The summary CLI normalizes scanner output into the shape the reviewer
+      // prompts depend on. Lock the path + flags so a refactor can't silently
+      // break the pipeline (reviewer prompts have hard-coded field names).
+      expect(raw).toMatch(/lib\/cli\/evidence-summarize\.ts/);
+      expect(raw).toMatch(/--bundle-dir \/tmp\/evidence-bundle/);
+      expect(raw).toMatch(/--output \/tmp\/evidence-summary\.json/);
+    });
+
+    it('preserves the missing-bundle signal — only mkdirs the bundle dir on successful download', () => {
+      // codex P2 (PR #79 review): an unconditional `mkdir -p
+      // /tmp/evidence-bundle` followed by the summarizer makes a failed
+      // artifact download look identical to a clean scanner run (zero
+      // counts everywhere, no marker). The fix is to mkdir ONLY inside
+      // the if-then branch where we have a tarball to extract — when
+      // the artifact is absent, the dir stays nonexistent and the CLI
+      // takes its absent-summary path. Lock the structure.
+      //
+      // The mkdir line must appear AFTER the tarball-existence check,
+      // not before it. We verify by checking the relative position of
+      // the two strings inside the extract step.
+      const stepStart = raw.indexOf('Live mode — extract + summarize evidence bundle');
+      const stepEnd = raw.indexOf('- name:', stepStart + 1);
+      expect(stepStart).toBeGreaterThan(0);
+      const stepBody = raw.slice(stepStart, stepEnd === -1 ? undefined : stepEnd);
+      const tarCheckIdx = stepBody.indexOf('if [ -f /tmp/evidence-artifact/verification-bundle.tar.gz ]');
+      const mkdirIdx = stepBody.indexOf('mkdir -p /tmp/evidence-bundle');
+      expect(tarCheckIdx).toBeGreaterThan(0);
+      expect(mkdirIdx).toBeGreaterThan(0);
+      expect(
+        mkdirIdx,
+        'mkdir of /tmp/evidence-bundle must appear AFTER the tarball-existence check (codex P2)',
+      ).toBeGreaterThan(tarCheckIdx);
+    });
+
+    it('injects the evidence summary into every reviewer prompt with sed sanitization', () => {
+      // Cognition's anti-multi-agent argument resolved: all three reviewers
+      // see the SAME EvidenceBundle summary in the SAME wrapper position.
+      // The wrapper goes through the same sed sanitization as the diff —
+      // scanner output can contain attacker-controlled substrings (e.g. a
+      // PR adding adversarial fixture content that gitleaks's `Match` field
+      // echoes back).
+      expect(raw).toMatch(/EvidenceBundle scanner summary \(untrusted/);
+      expect(raw).toMatch(/<untrusted_content source="evidence_summary">/);
+      // Sed must run on /tmp/evidence-summary.json with the same closing-tag
+      // neutralization as the diff path.
+      expect(raw).toMatch(
+        /sed 's\|<\/\[uU\]\[nN\]\[tT\]\[rR\]\[uU\]\[sS\]\[tT\]\[eE\]\[dD\]_\[cC\]\[oO\]\[nN\]\[tT\]\[eE\]\[nN\]\[tT\]>\|<\/untrusted_content_blocked>\|g' \/tmp\/evidence-summary\.json/,
+      );
+    });
+
+    it('reviewer prompt includes the scanner field in the output JSON shape', () => {
+      // v1.6 reviewers must propagate the scanner attribution so the
+      // aggregator / PR comment can label a finding's origin (gitleaks vs
+      // semgrep vs npm-audit vs scout-llm). The output schema must list
+      // the four valid scanner values.
+      expect(raw).toMatch(/"scanner": "gitleaks" \| "semgrep" \| "npm-audit" \| "scout-llm"/);
+    });
+
+    it('reviewer discipline note marks the deterministic scanners as authoritative', () => {
+      // A swarm reviewer cannot soften a HIGH gitleaks/semgrep/npm-audit
+      // finding — the scanners are the gate. The discipline note in the
+      // rendered prompt must call this out explicitly so a confused
+      // reviewer doesn't downgrade a real CVE because the diff "looks fine".
+      expect(raw).toMatch(/AUTHORITATIVE/);
+      expect(raw).toMatch(/cannot soften their findings/);
+    });
+  });
+
   describe('phase-acm.yml — Critical + Major fixes from PR #77 review', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-acm.yml'), 'utf8');
 
