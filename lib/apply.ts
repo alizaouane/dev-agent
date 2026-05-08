@@ -43,7 +43,7 @@ export type ApplyResult =
 
 const TYPESCRIPT_EXT = new Set(['.ts', '.tsx', '.cts', '.mts']);
 const JAVASCRIPT_EXT = new Set(['.js', '.jsx', '.cjs', '.mjs']);
-const VALIDATABLE_EXT = new Set([...TYPESCRIPT_EXT, ...JAVASCRIPT_EXT]);
+export const VALIDATABLE_EXT = new Set([...TYPESCRIPT_EXT, ...JAVASCRIPT_EXT]);
 const JSX_EXT = new Set(['.tsx', '.jsx']);
 
 function sha256(content: string): string {
@@ -125,7 +125,7 @@ export function applySearchReplace(block: SearchReplaceBlock, opts: ApplyOptions
   return { ok: true, file: block.file, new_sha: sha256(newContent) };
 }
 
-interface SyntaxValidation {
+export interface SyntaxValidation {
   ok: boolean;
   error: string;
 }
@@ -138,8 +138,13 @@ interface SyntaxValidation {
  * For .jsx / .tsx files we use ScriptKind.TSX (the parser handles JSX in both
  * — it's the angle-bracket-type-assertion ambiguity that requires the
  * distinction).
+ *
+ * Exported for use by `lib/cli/apply-audit.ts` (Pillar 4 advisory): the
+ * post-run audit reuses this validator to syntax-check every file in the
+ * agent's commit, catching whole-file rewrites that compile but emit broken
+ * TypeScript before they reach the typecheck step.
  */
-function validateTsSyntax(content: string, ext: string): SyntaxValidation {
+export function validateTsSyntax(content: string, ext: string): SyntaxValidation {
   const scriptKind = JSX_EXT.has(ext)
     ? ts.ScriptKind.TSX
     : JAVASCRIPT_EXT.has(ext)

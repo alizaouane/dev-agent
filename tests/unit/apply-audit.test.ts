@@ -1,0 +1,182 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+
+import { runAudit, renderMarkdown } from '../../lib/cli/apply-audit';
+
+/**
+ * Pillar 4 advisory audit. Tests the report-rendering + the runAudit
+ * function over a real git working tree (since the audit fundamentally
+ * shells out to `git diff`). Each test creates a fresh repo so the
+ * git-diff resolution is deterministic.
+ */
+describe('lib/cli/apply-audit', () => {
+  let repoRoot: string;
+
+  function git(...args: string[]): { status: number | null; stdout: string; stderr: string } {
+    const r = spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr };
+  }
+
+  function initRepoWithBaseCommit(): void {
+    git('init', '-q');
+    git('config', 'user.email', 'test@example.com');
+    git('config', 'user.name', 'Test');
+    git('config', 'commit.gpgsign', 'false');
+    writeFileSync(join(repoRoot, 'README.md'), '# initial\n', 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'initial');
+    // Create a `main` branch alias so origin/main fallback works in tests.
+    git('branch', '-M', 'main');
+    // Simulate `origin/main` by tagging — git diff origin/main...HEAD
+    // works against any ref whose name git can resolve.
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+  }
+
+  beforeEach(() => {
+    repoRoot = mkdtempSync(join(tmpdir(), 'apply-audit-'));
+    initRepoWithBaseCommit();
+  });
+
+  afterEach(() => {
+    rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  it('returns no-files verdict when the diff has no TS/JS files', () => {
+    writeFileSync(join(repoRoot, 'README.md'), '# updated\n', 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'docs');
+    const report = runAudit({
+      baseRef: 'origin/main',
+      output: '/tmp/unused',
+      repoRoot,
+    });
+    expect(report.verdict).toBe('no-files');
+    expect(report.files_checked).toBe(0);
+    expect(report.errors).toEqual([]);
+  });
+
+  it('returns clean verdict when all TS files parse', () => {
+    writeFileSync(join(repoRoot, 'good.ts'), 'export const x: number = 42;\n', 'utf8');
+    writeFileSync(join(repoRoot, 'good.tsx'), "export function F() { return <div>ok</div>; }\n", 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'good');
+    const report = runAudit({
+      baseRef: 'origin/main',
+      output: '/tmp/unused',
+      repoRoot,
+    });
+    expect(report.verdict).toBe('clean');
+    expect(report.files_checked).toBe(2);
+    expect(report.errors).toEqual([]);
+  });
+
+  it('returns syntax-errors verdict + lists the bad file when TS fails to parse', () => {
+    writeFileSync(join(repoRoot, 'good.ts'), 'export const x = 1;\n', 'utf8');
+    // Truncated arrow function — the TS parser will reject this.
+    writeFileSync(join(repoRoot, 'bad.ts'), 'const fn = (a, b) => {\n', 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'mixed');
+    const report = runAudit({
+      baseRef: 'origin/main',
+      output: '/tmp/unused',
+      repoRoot,
+    });
+    expect(report.verdict).toBe('syntax-errors');
+    expect(report.files_checked).toBe(2);
+    expect(report.errors).toHaveLength(1);
+    expect(report.errors[0].file).toBe('bad.ts');
+    expect(report.errors[0].error).toMatch(/syntax error/);
+  });
+
+  it('skips deleted files (diff includes them but content is gone)', () => {
+    writeFileSync(join(repoRoot, 'will-delete.ts'), 'export const x = 1;\n', 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'add');
+    git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+    const r = spawnSync('rm', [join(repoRoot, 'will-delete.ts')]);
+    expect(r.status).toBe(0);
+    git('add', '-A');
+    git('commit', '-q', '-m', 'delete');
+    const report = runAudit({
+      baseRef: 'origin/main',
+      output: '/tmp/unused',
+      repoRoot,
+    });
+    // The deleted file shouldn't crash + shouldn't be counted as checked.
+    expect(report.verdict).toBe('no-files');
+    expect(report.errors).toEqual([]);
+  });
+
+  it('falls back to HEAD~1 when the base ref is unreachable', () => {
+    writeFileSync(join(repoRoot, 'good.ts'), 'export const x = 1;\n', 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'good');
+    const report = runAudit({
+      baseRef: 'origin/nonexistent-ref',
+      output: '/tmp/unused',
+      repoRoot,
+    });
+    // Fallback path: should resolve to HEAD~1 + report findings.
+    expect(report.base_ref).toBe('HEAD~1');
+    expect(report.verdict).toBe('clean');
+    expect(report.files_checked).toBe(1);
+  });
+
+  it('truncates long error messages to fit in the PR comment', () => {
+    // Very long broken file — the TS parser's error includes a substring
+    // of the source. Make sure we cap at 400 chars per error so the PR
+    // comment stays readable.
+    const huge = 'X'.repeat(2000);
+    writeFileSync(join(repoRoot, 'big.ts'), `const fn = (${huge}\n`, 'utf8');
+    git('add', '.');
+    git('commit', '-q', '-m', 'big');
+    const report = runAudit({
+      baseRef: 'origin/main',
+      output: '/tmp/unused',
+      repoRoot,
+    });
+    expect(report.verdict).toBe('syntax-errors');
+    expect(report.errors[0].error.length).toBeLessThanOrEqual(400);
+  });
+
+  describe('renderMarkdown', () => {
+    it('produces a no-files notice when nothing was checked', () => {
+      const md = renderMarkdown({ verdict: 'no-files', files_checked: 0, base_ref: 'origin/main', errors: [] });
+      expect(md).toMatch(/Verdict: no-files/);
+      expect(md).toMatch(/informational, not a failure/);
+    });
+
+    it("produces a clean notice that's positive but brief", () => {
+      const md = renderMarkdown({ verdict: 'clean', files_checked: 5, base_ref: 'origin/main', errors: [] });
+      expect(md).toMatch(/Verdict: clean/);
+      expect(md).toMatch(/Files checked: 5/);
+      expect(md).toMatch(/parsed cleanly/);
+    });
+
+    it('produces a syntax-errors report with a row per error', () => {
+      const md = renderMarkdown({
+        verdict: 'syntax-errors',
+        files_checked: 3,
+        base_ref: 'origin/main',
+        errors: [
+          { file: 'a.ts', error: 'syntax error at line 1' },
+          { file: 'b.ts', error: 'syntax error at line 7' },
+        ],
+      });
+      expect(md).toMatch(/Verdict: syntax-errors \(2 of 3 files\)/);
+      expect(md).toMatch(/`a\.ts` — syntax error at line 1/);
+      expect(md).toMatch(/`b\.ts` — syntax error at line 7/);
+      expect(md).toMatch(/Advisory in v1.*does not block/);
+    });
+
+    it('caps the rendered errors list at 20 with a "more" footer', () => {
+      const errors = Array.from({ length: 25 }, (_, i) => ({ file: `f${i}.ts`, error: `err ${i}` }));
+      const md = renderMarkdown({ verdict: 'syntax-errors', files_checked: 25, base_ref: 'origin/main', errors });
+      expect((md.match(/`f\d+\.ts`/g) ?? []).length).toBe(20);
+      expect(md).toMatch(/and 5 more errors/);
+    });
+  });
+});

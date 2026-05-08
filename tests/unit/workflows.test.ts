@@ -631,6 +631,51 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-implement.yml — Apply-audit (Pillar 4 advisory)', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('runs lib/cli/apply-audit.ts after the agent step', () => {
+      // The audit reuses lib/apply.ts's validateTsSyntax to syntax-check
+      // every TS/JS file in the agent's diff. Locks the CLI invocation
+      // shape so a refactor can't drop the --base-ref / --output flags.
+      expect(raw).toMatch(/Apply-audit \(TS\/JS syntax of changed files\)/);
+      expect(raw).toMatch(/lib\/cli\/apply-audit\.ts/);
+      expect(raw).toMatch(/--base-ref origin\/main/);
+      expect(raw).toMatch(/--output \/tmp\/apply-audit\/report/);
+    });
+
+    it('always-runs the audit (covers post-failure scenarios)', () => {
+      // Even when an earlier step failed, surface broken syntax — that's
+      // when the audit is most useful (broken TS may have caused the
+      // typecheck/test step to fail in the first place).
+      expect(raw).toMatch(/id: apply-audit\s+if: inputs\.invocation_mode == 'live' && always\(\)/);
+    });
+
+    it('applies an apply-audit:<verdict> label regardless of value', () => {
+      // Label taxonomy: apply-audit:no-files | apply-audit:clean |
+      // apply-audit:syntax-errors. Operators filter by `syntax-errors`
+      // to find runs needing attention.
+      expect(raw).toMatch(/apply-audit:\$VERDICT/);
+    });
+
+    it('comments on the issue ONLY when there are syntax errors', () => {
+      // Clean / no-files runs should be silent — the label is enough.
+      expect(raw).toMatch(/if \[ "\$VERDICT" = "syntax-errors" \]/);
+      expect(raw).toMatch(/--body-file \/tmp\/apply-audit\/report\.md/);
+    });
+
+    it('audit step does NOT block the PR (advisory in v1)', () => {
+      // The step body must not exit 1 — that role belongs to the tsc
+      // step in the consumer's CI. Lock the absence of `exit 1`
+      // between the apply-audit step and the next step's `- name:`.
+      const lines = raw.split('\n');
+      const auditStart = lines.findIndex((l) => l.includes('Apply-audit (TS/JS syntax of changed files)'));
+      const nextStepIdx = lines.findIndex((l, i) => i > auditStart && /^\s+- name:/.test(l));
+      const auditBody = lines.slice(auditStart, nextStepIdx).join('\n');
+      expect(auditBody).not.toMatch(/exit 1/);
+    });
+  });
+
   describe('phase-tier2-smoke.yml — live mode (step 13b, Pillar 7)', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-tier2-smoke.yml'), 'utf8');
 

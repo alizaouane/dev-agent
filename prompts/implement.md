@@ -68,6 +68,14 @@ Discipline:
 - The annotation file is advisory in v1: a missing or incomplete log does NOT block the PR. The audit emits a soft warning. v1.1 will fail-closed on missing logs once the prompt has stabilized in production.
 - Don't write annotations for commands the workflow runs around your invocation (e.g. `npm ci`, the staging-deploy step). Only annotate Bash calls you initiate.
 
+## Apply-audit (Pillar 4 — advisory in v1)
+
+After your edits land, the workflow runs `lib/cli/apply-audit.ts` against the diff vs `origin/main` PLUS your uncommitted working-tree changes. The audit re-parses every `.ts` / `.tsx` / `.js` / `.jsx` / `.cjs` / `.mjs` / `.cts` / `.mts` file you touched (committed or not) using the TypeScript parser; any file that fails to parse gets surfaced as an `apply-audit:syntax-errors` label + an issue comment listing the file + first parser error.
+
+You don't need to do anything special — this is an automatic post-hoc check. The advisory exists because whole-file rewrites occasionally land with a missing brace or stray angle bracket that compiles in your local sandbox but breaks the consumer's `tsc` step. The audit catches these earlier and labels them so the operator knows the failure category before reading logs.
+
+If the audit flags a file that you DID author intentionally (e.g. you committed a `.ts.flow` test fixture with deliberate syntax errors), explain it in your final summary — the operator will whitelist on the issue.
+
 ## Self-review (Pillar 6)
 
 After the audit chain and BEFORE `git push`, run a structured self-review against your own diff. This is cheap insurance against bugs your first pass missed; it costs ~$0.10 and catches obvious-in-hindsight issues before any reviewer sees them.
