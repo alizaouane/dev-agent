@@ -421,6 +421,15 @@ jobs:
           echo "mismatch_count=$MISMATCHES" >> "$GITHUB_OUTPUT"
           echo "high_risk_count=$HIGH_RISK" >> "$GITHUB_OUTPUT"
           # Label taxonomy: risk-audit:absent | risk-audit:clean | risk-audit:mismatches.
+          # Re-runs via /approve must NOT accumulate contradictory verdicts —
+          # remove any prior risk-audit:* labels before applying the current
+          # one so the issue reflects the latest run only. (codex P2 #2 from
+          # PR #80 review.)
+          for STALE in absent clean mismatches; do
+            if [ "$STALE" != "$VERDICT" ]; then
+              gh issue edit "$ISSUE_NUMBER" --remove-label "risk-audit:$STALE" 2>/dev/null || true
+            fi
+          done
           gh issue edit "$ISSUE_NUMBER" --add-label "risk-audit:$VERDICT" || true
           # Comment ONLY when there's something to surface (mismatches OR
           # classifier-HIGH calls). Clean-with-zero-HIGH runs are silent —

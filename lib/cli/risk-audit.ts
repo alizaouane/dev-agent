@@ -109,12 +109,16 @@ export function audit(logPath: string): AuditReport {
     try {
       parsed = JSON.parse(line);
     } catch {
-      // Treat malformed JSON as a high-risk-rated 'unknown' entry — the
-      // agent's tooling failed and we'd rather over-report than miss a
-      // genuinely dangerous call buried in malformed log output.
-      const cls = { level: 'unknown' as RiskLevel, reason: null };
+      // Malformed JSON: still try classifying the raw line text against the
+      // deterministic ruleset. A line like `{ "cmd": "rm -rf /", "risk": ` (a
+      // truncated record from a crashing tool) would otherwise hide its
+      // dangerous payload under `byClassifier.unknown`. (codex P2 #1 from
+      // PR #80 review: classifier HIGH activity must not be lost just because
+      // the surrounding record was malformed.)
+      const cmdPreview = line.slice(0, 200);
+      const cls = classifyRisk(cmdPreview);
       findings.push({
-        cmd: line.slice(0, 200),
+        cmd: cmdPreview,
         agent_risk: 'unknown',
         classified_risk: cls.level,
         classifier_reason: cls.reason,
@@ -123,23 +127,32 @@ export function audit(logPath: string): AuditReport {
         index: i,
       });
       byAgent.unknown++;
-      byClassifier.unknown++;
+      byClassifier[cls.level]++;
+      if (cls.level === 'high') highRisk++;
       mismatches++;
       continue;
     }
 
     if (!isAnnotated(parsed)) {
+      const cmdStr =
+        typeof (parsed as { cmd?: unknown })?.cmd === 'string' ? (parsed as { cmd: string }).cmd : '';
+      const cls = classifyRisk(cmdStr);
       findings.push({
-        cmd: typeof (parsed as { cmd?: unknown })?.cmd === 'string' ? ((parsed as { cmd: string }).cmd) : '<missing>',
+        cmd: cmdStr || '<missing>',
         agent_risk: 'unknown',
-        classified_risk: classifyRisk(typeof (parsed as { cmd?: unknown })?.cmd === 'string' ? ((parsed as { cmd: string }).cmd) : '').level,
-        classifier_reason: null,
+        // Use the real classified level + reason. The previous code computed
+        // the level for the finding but then incremented `byClassifier.unknown`,
+        // making aggregate counts disagree with the per-finding rows whenever
+        // a malformed record contained a dangerous command. (codex P2 #1.)
+        classified_risk: cls.level,
+        classifier_reason: cls.reason,
         justification: '',
         validation_error: 'missing required fields (cmd | risk | justification)',
         index: i,
       });
       byAgent.unknown++;
-      byClassifier.unknown++;
+      byClassifier[cls.level]++;
+      if (cls.level === 'high') highRisk++;
       mismatches++;
       continue;
     }

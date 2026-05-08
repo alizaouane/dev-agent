@@ -397,6 +397,31 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/risk-audit:\$VERDICT/);
     });
 
+    it('removes stale risk-audit:* labels before applying the new verdict (codex P2)', () => {
+      // codex P2 #2 (PR #80 review): re-runs via /approve must not
+      // accumulate contradictory labels (e.g. both risk-audit:clean AND
+      // risk-audit:mismatches on the same issue). Lock in the cleanup
+      // loop that iterates the three known verdict values + skips the
+      // current one + removes the rest.
+      expect(raw).toMatch(/for STALE in absent clean mismatches; do/);
+      expect(raw).toMatch(/if \[ "\$STALE" != "\$VERDICT" \]; then/);
+      expect(raw).toMatch(/--remove-label "risk-audit:\$STALE"/);
+      // The remove loop must appear BEFORE the final --add-label call,
+      // not after — otherwise we'd add then immediately remove our own
+      // label.
+      const auditStart = raw.indexOf('Risk-annotation audit (advisory)');
+      const auditEnd = raw.indexOf('- name:', auditStart + 1);
+      const auditBody = raw.slice(auditStart, auditEnd);
+      const removeLoopIdx = auditBody.indexOf('for STALE in absent clean mismatches');
+      const addLabelIdx = auditBody.indexOf('--add-label "risk-audit:$VERDICT"');
+      expect(removeLoopIdx).toBeGreaterThan(0);
+      expect(addLabelIdx).toBeGreaterThan(0);
+      expect(
+        removeLoopIdx,
+        'stale-label cleanup loop must run BEFORE the --add-label of the new verdict (codex P2)',
+      ).toBeLessThan(addLabelIdx);
+    });
+
     it('comments on the issue ONLY when there are mismatches or HIGH-risk calls', () => {
       // Clean runs with zero HIGH-risk calls should be silent — the label
       // is enough signal. Otherwise every PR would get a noisy "0 / 0 / 0"

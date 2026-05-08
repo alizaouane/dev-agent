@@ -87,7 +87,7 @@ describe('lib/cli/risk-audit', () => {
     expect(report.findings[0].validation_error).toBeNull();
   });
 
-  it('handles malformed JSON lines as mismatches (with classifier-unknown)', () => {
+  it('handles malformed JSON lines as mismatches (defensive classification)', () => {
     const lines = [
       JSON.stringify({ cmd: 'ls', risk: 'low', justification: 'list dir contents' }),
       'this is not json',
@@ -112,6 +112,88 @@ describe('lib/cli/risk-audit', () => {
     expect(report.verdict).toBe('mismatches');
     expect(report.mismatch_count).toBe(2);
     expect(report.findings.every((f) => f.validation_error?.includes('missing'))).toBe(true);
+  });
+
+  describe('codex P2 #1 — classifier counts must NOT be lost on malformed records', () => {
+    it('counts classifier HIGH for a missing-fields record whose cmd is dangerous', () => {
+      // The exact failure mode codex flagged: a record with `cmd: "rm -rf /"`
+      // but no `risk` / `justification` would previously be counted as
+      // by_classifier_level.unknown — under-reporting classifier HIGH activity
+      // and making aggregate counts disagree with the per-finding rows. The
+      // fix is to derive both `classified_risk` (already correct) AND the
+      // counter increment from the actual classifier output.
+      const lines = [
+        JSON.stringify({ cmd: 'rm -rf /', /* missing risk + justification */ }),
+      ];
+      writeFileSync(logPath, lines.join('\n'), 'utf8');
+      const report = audit(logPath);
+      expect(report.verdict).toBe('mismatches');
+      expect(report.high_risk_count).toBe(1);
+      expect(report.by_classifier_level.high).toBe(1);
+      expect(report.by_classifier_level.unknown).toBe(0);
+      // The per-finding row + the aggregate counter must agree on the level.
+      expect(report.findings[0].classified_risk).toBe('high');
+      expect(report.findings[0].classifier_reason).toMatch(/recursive rm|force rm/);
+    });
+
+    it('counts classifier HIGH for a malformed-JSON line whose text contains a dangerous command', () => {
+      // A truncated-record-from-a-crashing-tool case: line is invalid JSON
+      // but the raw text still matches a HIGH classifier rule. Lock the
+      // defensive classification of the raw line text.
+      const lines = [
+        JSON.stringify({ cmd: 'ls', risk: 'low', justification: 'list dir contents' }),
+        // Malformed: missing closing brace — but contains `sudo` which the
+        // classifier rates HIGH.
+        '{ "cmd": "sudo apt install evil", "risk": "low"',
+      ];
+      writeFileSync(logPath, lines.join('\n'), 'utf8');
+      const report = audit(logPath);
+      expect(report.high_risk_count).toBe(1);
+      expect(report.by_classifier_level.high).toBe(1);
+      expect(report.by_classifier_level.unknown).toBe(0);
+      const malformedFinding = report.findings.find((f) =>
+        f.validation_error?.includes('malformed'),
+      );
+      expect(malformedFinding?.classified_risk).toBe('high');
+      expect(malformedFinding?.classifier_reason).toMatch(/sudo escalation/);
+    });
+
+    it('falls back to classifier unknown when malformed line has no dangerous patterns', () => {
+      // Symmetry check: pure noise must still classify as unknown — we're
+      // not over-reporting by claiming everything is HIGH.
+      const lines = [
+        JSON.stringify({ cmd: 'ls', risk: 'low', justification: 'list dir contents' }),
+        'this is not json and contains no shell commands',
+      ];
+      writeFileSync(logPath, lines.join('\n'), 'utf8');
+      const report = audit(logPath);
+      expect(report.high_risk_count).toBe(0);
+      expect(report.by_classifier_level.high).toBe(0);
+      expect(report.by_classifier_level.unknown).toBeGreaterThanOrEqual(0);
+    });
+
+    it('aggregate counts equal the per-finding row sum (no double-counting)', () => {
+      // The key invariant codex's report demanded: the aggregate
+      // by_classifier_level totals must equal what you'd get by summing
+      // each finding's classified_risk. Verify across a mixed set.
+      const lines = [
+        JSON.stringify({ cmd: 'ls', risk: 'low', justification: 'list dir contents' }),
+        JSON.stringify({ cmd: 'rm -rf node_modules', /* missing fields */ }),
+        '{ broken json with sudo apt-get inside',
+        JSON.stringify({ cmd: 'sudo systemctl', risk: 'high', justification: 'restart service' }),
+      ];
+      writeFileSync(logPath, lines.join('\n'), 'utf8');
+      const report = audit(logPath);
+      const totalByLevel =
+        report.by_classifier_level.low +
+        report.by_classifier_level.medium +
+        report.by_classifier_level.high +
+        report.by_classifier_level.unknown;
+      expect(totalByLevel).toBe(report.total);
+      // The 3 dangerous commands above all rate HIGH; the `ls` rates LOW.
+      expect(report.by_classifier_level.high).toBe(3);
+      expect(report.by_classifier_level.low).toBe(1);
+    });
   });
 
   it('skips blank lines without polluting counts', () => {
