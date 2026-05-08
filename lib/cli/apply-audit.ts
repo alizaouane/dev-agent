@@ -82,35 +82,73 @@ function parseArgs(argv: string[]): Args {
   return args as Args;
 }
 
+/**
+ * Collect TS/JS files in the agent's diff. The audit must see the same
+ * files the salvage step is about to commit, not just the files already
+ * committed at audit time. The agent's most common failure mode is
+ * "edited files but ended turn without committing" — phase-implement.yml's
+ * salvage step then auto-commits the working tree. The audit runs BEFORE
+ * salvage, so it must look at:
+ *
+ *   1. Committed files in the diff vs the base ref     (`git diff <base>...HEAD`)
+ *   2. Uncommitted modifications + staged changes      (`git diff HEAD --name-only`)
+ *   3. Untracked files (new files the agent wrote)     (`git ls-files --others --exclude-standard`)
+ *
+ * Without (2) + (3), an agent that ends-turn-pre-commit + has the salvage
+ * step land its work would slip past the syntax-audit gate even when the
+ * salvaged commit contains broken TS — the exact failure mode the audit
+ * is meant to surface. (codex P2 from PR #82 review.)
+ */
 function listChangedFiles(repoRoot: string, baseRef: string): { files: string[]; resolved_ref: string } {
-  // Try the requested base ref first. If it fails (shallow clone, post-
-  // rebase), fall back to HEAD~1 — the latest commit's diff.
-  const tryRef = (ref: string) =>
-    spawnSync('git', ['diff', '--name-only', `${ref}...HEAD`], {
+  const run = (args: string[]) =>
+    spawnSync('git', args, {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
       encoding: 'utf8',
     });
 
-  const primary = tryRef(baseRef);
-  if (primary.status === 0) {
-    return {
-      files: primary.stdout.split('\n').filter((l) => l.trim().length > 0),
-      resolved_ref: baseRef,
-    };
+  const collected = new Set<string>();
+
+  // (1) Committed: diff vs requested base ref, with HEAD~1 fallback for
+  // shallow-clone runners. Track the actually-resolved ref for the report.
+  let resolvedRef = baseRef;
+  let committedRun = run(['diff', '--name-only', `${baseRef}...HEAD`]);
+  if (committedRun.status !== 0) {
+    committedRun = run(['diff', '--name-only', 'HEAD~1...HEAD']);
+    if (committedRun.status === 0) {
+      resolvedRef = 'HEAD~1';
+    } else {
+      // No git history available (single-commit shallow clone). Skip the
+      // committed channel; uncommitted + untracked still work.
+      resolvedRef = 'unavailable';
+      committedRun = { ...committedRun, stdout: '' } as typeof committedRun;
+    }
+  }
+  for (const f of committedRun.stdout.split('\n')) {
+    if (f.trim()) collected.add(f);
   }
 
-  const fallback = tryRef('HEAD~1');
-  if (fallback.status === 0) {
-    return {
-      files: fallback.stdout.split('\n').filter((l) => l.trim().length > 0),
-      resolved_ref: 'HEAD~1',
-    };
+  // (2) Uncommitted: `git diff HEAD --name-only` covers BOTH staged and
+  // unstaged changes against the current HEAD (modifications + deletions,
+  // not untracked).
+  const uncommitted = run(['diff', 'HEAD', '--name-only']);
+  if (uncommitted.status === 0) {
+    for (const f of uncommitted.stdout.split('\n')) {
+      if (f.trim()) collected.add(f);
+    }
   }
 
-  // No git diff possible (single-commit branch on a fresh shallow clone).
-  // Treat as no-files. The audit isn't useful here anyway.
-  return { files: [], resolved_ref: 'unavailable' };
+  // (3) Untracked: new files the agent wrote that haven't been `git add`ed.
+  // `--exclude-standard` honors .gitignore so we don't audit node_modules /
+  // build artifacts the agent might have touched incidentally.
+  const untracked = run(['ls-files', '--others', '--exclude-standard']);
+  if (untracked.status === 0) {
+    for (const f of untracked.stdout.split('\n')) {
+      if (f.trim()) collected.add(f);
+    }
+  }
+
+  return { files: Array.from(collected), resolved_ref: resolvedRef };
 }
 
 export function runAudit(args: Args): AuditReport {

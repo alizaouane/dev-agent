@@ -125,6 +125,123 @@ describe('lib/cli/apply-audit', () => {
     expect(report.files_checked).toBe(1);
   });
 
+  describe('codex P2 — working-tree visibility (uncommitted + untracked)', () => {
+    it('audits an UNTRACKED .ts file the agent wrote but never `git add`ed', () => {
+      // The exact failure mode codex flagged: agent ends turn without
+      // committing → audit step runs → salvage step (which runs AFTER
+      // the audit) auto-commits broken TS. Without working-tree
+      // visibility, the audit reports `no-files` and the broken code
+      // ships. Lock the visibility in.
+      writeFileSync(join(repoRoot, 'agent-wrote.ts'), 'const fn = (a, b => {\n', 'utf8');
+      // Note: NO `git add`, NO commit — exactly the agent-pre-salvage state.
+      const report = runAudit({
+        baseRef: 'origin/main',
+        output: '/tmp/unused',
+        repoRoot,
+      });
+      expect(report.verdict).toBe('syntax-errors');
+      expect(report.files_checked).toBe(1);
+      expect(report.errors).toHaveLength(1);
+      expect(report.errors[0].file).toBe('agent-wrote.ts');
+    });
+
+    it('audits a STAGED-but-not-committed .ts edit', () => {
+      // The agent did `git add` but ended turn before `git commit`. The
+      // salvage step would then commit + push. Audit must see the staged
+      // change.
+      writeFileSync(join(repoRoot, 'staged.ts'), 'const broken = (\n', 'utf8');
+      git('add', 'staged.ts');
+      // No commit.
+      const report = runAudit({
+        baseRef: 'origin/main',
+        output: '/tmp/unused',
+        repoRoot,
+      });
+      expect(report.verdict).toBe('syntax-errors');
+      expect(report.errors[0].file).toBe('staged.ts');
+    });
+
+    it('audits a MODIFIED-but-not-committed change to a tracked file', () => {
+      // Agent edited an existing tracked file then exited; salvage will
+      // commit the modification. The audit must catch broken syntax in
+      // the working-tree version even though HEAD has the clean version.
+      writeFileSync(join(repoRoot, 'tracked.ts'), 'export const x: number = 1;\n', 'utf8');
+      git('add', '.');
+      git('commit', '-q', '-m', 'add tracked');
+      git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+      // Now break it in the working tree (no add, no commit).
+      writeFileSync(join(repoRoot, 'tracked.ts'), 'export const x: number = (\n', 'utf8');
+      const report = runAudit({
+        baseRef: 'origin/main',
+        output: '/tmp/unused',
+        repoRoot,
+      });
+      expect(report.verdict).toBe('syntax-errors');
+      expect(report.errors[0].file).toBe('tracked.ts');
+    });
+
+    it('honors .gitignore (does NOT audit ignored files)', () => {
+      // Defensive: the untracked-file scan uses --exclude-standard so
+      // node_modules, dist/, etc. don't get audited. A broken .ts in an
+      // ignored path must NOT be reported.
+      writeFileSync(join(repoRoot, '.gitignore'), 'ignored/\n', 'utf8');
+      git('add', '.gitignore');
+      git('commit', '-q', '-m', 'gitignore');
+      git('update-ref', 'refs/remotes/origin/main', 'HEAD');
+      // Drop a broken file inside the ignored path.
+      const ignoredDir = join(repoRoot, 'ignored');
+      spawnSync('mkdir', ['-p', ignoredDir]);
+      writeFileSync(join(ignoredDir, 'broken.ts'), 'const fn = (\n', 'utf8');
+      const report = runAudit({
+        baseRef: 'origin/main',
+        output: '/tmp/unused',
+        repoRoot,
+      });
+      // No real changes outside ignored/ → no-files. The broken ignored
+      // file must not surface.
+      expect(report.verdict).toBe('no-files');
+      expect(report.errors).toEqual([]);
+    });
+
+    it('dedupes a file that appears in both committed + working-tree channels', () => {
+      // Agent committed a partial edit, then edited again without
+      // committing. The same path appears in `git diff <base>...HEAD`
+      // AND in `git diff HEAD --name-only`. The audit must check it
+      // once (not double-count). Counter invariant.
+      writeFileSync(join(repoRoot, 'evolving.ts'), 'export const a = 1;\n', 'utf8');
+      git('add', '.');
+      git('commit', '-q', '-m', 'first edit');
+      // Now modify in working tree without committing.
+      writeFileSync(join(repoRoot, 'evolving.ts'), 'export const a = 2;\n', 'utf8');
+      const report = runAudit({
+        baseRef: 'origin/main',
+        output: '/tmp/unused',
+        repoRoot,
+      });
+      // Both passes find evolving.ts; dedupe → files_checked === 1.
+      expect(report.files_checked).toBe(1);
+      expect(report.verdict).toBe('clean');
+    });
+
+    it('still works when no committed history exists (only working-tree changes)', () => {
+      // Edge case: a fresh shallow clone with the base ref unreachable
+      // AND no HEAD~1. The committed channel returns nothing; the
+      // uncommitted + untracked channels still work. Lock that the
+      // audit doesn't crash + still surfaces broken syntax.
+      writeFileSync(join(repoRoot, 'fresh.ts'), 'const fn = (\n', 'utf8');
+      const report = runAudit({
+        baseRef: 'origin/nonexistent-ref',
+        output: '/tmp/unused',
+        repoRoot,
+      });
+      // base_ref reflects either HEAD~1 fallback (initial commit exists) or 'unavailable'.
+      expect(['HEAD~1', 'unavailable']).toContain(report.base_ref);
+      // Either way, the broken untracked file MUST be flagged.
+      expect(report.verdict).toBe('syntax-errors');
+      expect(report.errors[0].file).toBe('fresh.ts');
+    });
+  });
+
   it('truncates long error messages to fit in the PR comment', () => {
     // Very long broken file — the TS parser's error includes a substring
     // of the source. Make sure we cap at 400 chars per error so the PR
