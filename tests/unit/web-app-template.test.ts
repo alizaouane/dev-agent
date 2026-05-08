@@ -106,6 +106,19 @@ describe('examples/web-app-template', () => {
     expect(raw).not.toMatch(/pull_request_target:/);
   });
 
+  it('verification wrapper uses startsWith (not contains) for /approve match', () => {
+    // CodeRabbit nitpick (PR #77): `contains(comment.body, '/approve')`
+    // matches `> /approve` (quoted reply), `Please don't /approve yet`
+    // (prose), and `/approveplus` (typo). With the same-author guard
+    // these aren't exploitable, but they fire surprising runs and waste
+    // runner minutes on every comment in the repo. `startsWith` only
+    // matches when the comment begins with the command.
+    const raw = readFileSync(resolve(templateRoot, '.github/workflows/dev-agent-verification.yml'), 'utf8');
+    expect(raw).toMatch(/startsWith\(github\.event\.comment\.body, '\/approve'\)/);
+    // Negative: ensure the old contains-based match isn't restored.
+    expect(raw).not.toMatch(/contains\(github\.event\.comment\.body, '\/approve'\)/);
+  });
+
   it('verification wrapper guards every PR-triggered job to same-repo only', () => {
     // P2 (PR #77 review): `pull_request` from forks would otherwise enter
     // evidence/swarm-review jobs and crash on missing secrets / read-only
