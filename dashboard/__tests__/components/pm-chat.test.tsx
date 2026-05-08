@@ -150,6 +150,52 @@ describe('<PmChat> — stale-draft handling', () => {
       screen.queryByRole('region', { name: /previous draft/i }),
     ).not.toBeInTheDocument();
   });
+
+  it('typing in the input while the banner is up implicitly discards it AND persists the new work', async () => {
+    // Regression for PR #83 review: freezing saveDraft while the banner
+    // was visible meant a user who started a fresh conversation (typed
+    // a feature description, then refreshed) would lose what they
+    // wrote. The implicit-discard effect resolves this by dismissing
+    // the banner the moment the user actually engages with the form,
+    // so saveDraft can take over and persist the new state.
+    plantStaleDraft();
+    const user = userEvent.setup();
+    render(<PmChat repos={repos} />);
+
+    // Banner visible at first.
+    expect(
+      await screen.findByRole('region', { name: /previous draft/i }),
+    ).toBeInTheDocument();
+
+    // User starts typing a fresh description without clicking either
+    // banner button.
+    const textarea = screen.getByPlaceholderText(/Describe the feature/i);
+    await user.type(textarea, 'fresh idea pitch');
+
+    // Banner dismissed — implicit discard.
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('region', { name: /previous draft/i }),
+      ).not.toBeInTheDocument();
+    });
+
+    // New work is persisted to localStorage.
+    await waitFor(() => {
+      const stored = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+      expect(stored).not.toBeNull();
+      const parsed = JSON.parse(stored as string) as {
+        repo: string;
+        title: string;
+        input: string;
+      };
+      expect(parsed.input).toBe('fresh idea pitch');
+      // The stale repo is gone — saveDraft now reflects the live form
+      // state, which still points at the dropdown's defaultRepo.
+      expect(parsed.repo).toBe('q/social-media');
+      expect(parsed.title).toBe('');
+    });
+  });
+
 });
 
 describe('<PmChat> — Approve card surfaces the target repo', () => {

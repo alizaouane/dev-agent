@@ -112,12 +112,27 @@ export function PmChat({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Implicit discard: if the user starts working on the form while the
+  // banner is still up (typing a feature description, sending a
+  // message, naming a feature), treat that as "I've moved on" and
+  // dismiss the banner. saveDraft below then takes over and persists
+  // the new work — without this, a user who refreshes mid-typing would
+  // lose what they just wrote (PR #83 review caught this regression).
+  useEffect(() => {
+    if (!pendingDraft) return;
+    if (input.length > 0 || title.length > 0 || messages.length > 0) {
+      setPendingDraft(null);
+    }
+  }, [pendingDraft, input, title, messages]);
+
   // Save draft whenever any meaningful field changes, but not before
   // hydration completes (would otherwise overwrite the just-loaded
   // draft with the empty defaults). While a banner is up
-  // (`pendingDraft` set), keep localStorage frozen — the user hasn't
-  // chosen yet, and overwriting it would lose what they were considering
-  // resuming.
+  // (`pendingDraft` set with the form still untouched), keep
+  // localStorage frozen so we don't clobber the entry the user is
+  // being asked about. The implicit-discard effect above hides the
+  // banner the moment the user actually starts working, so this gate
+  // never strands new content.
   useEffect(() => {
     if (!hydratedFromDraft) return;
     if (pendingDraft) return;
