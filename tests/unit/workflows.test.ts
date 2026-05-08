@@ -265,8 +265,36 @@ describe('.github/workflows/', () => {
       // in: a "Post crash comment when aggregator failed" step gated on
       // `aggregate.outcome == 'failure'` that applies `swarm-review:error`.
       expect(raw).toMatch(/Post crash comment when aggregator failed/);
-      expect(raw).toMatch(/steps\.aggregate\.outcome == 'failure'/);
       expect(raw).toMatch(/swarm-review:error/);
+    });
+
+    it("if-clause starts with always() so the step actually runs after a failure", () => {
+      // codex P2 (PR #78 review): GitHub Actions implicitly prepends
+      // `success()` to every `if:` expression that does not already
+      // contain a status-check function. A bare
+      //   if: steps.aggregate.outcome == 'failure'
+      // therefore evaluates as
+      //   success() && steps.aggregate.outcome == 'failure'
+      // which is always false when the aggregator step has actually
+      // failed — the step skips in the exact scenario it's meant to
+      // cover. The fix is to start the if-clause with `always() &&`
+      // (or `failure() &&`); lock that in as a regression guard.
+      expect(raw).toMatch(/if: always\(\) && steps\.aggregate\.outcome == 'failure'/);
+      // Negative: the bare form must NOT come back.
+      expect(raw).not.toMatch(/if: steps\.aggregate\.outcome == 'failure'\s*$/m);
+    });
+
+    it('reflects the actual invocation_mode in the fallback message (no hardcoded "live")', () => {
+      // CodeRabbit minor (PR #78 review): the fallback message used to
+      // hardcode `Mode: live` even though the step can fire in stub
+      // runs too (it's gated only on aggregator failure, not on mode).
+      // Read the value from inputs.invocation_mode via env so the
+      // diagnostic is honest about which mode crashed.
+      expect(raw).toMatch(/INVOCATION_MODE: \$\{\{ inputs\.invocation_mode \}\}/);
+      // The body must use printf with %s + the env var (not a literal).
+      expect(raw).toMatch(/printf '🤖 Phase: swarm-review.*Mode: %s.*' "\$INVOCATION_MODE"/s);
+      // Negative: the hardcoded "Mode: live" line must not return.
+      expect(raw).not.toMatch(/Verdict: error\\nMode: live\\n/);
     });
   });
 
