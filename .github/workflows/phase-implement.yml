@@ -465,6 +465,49 @@ jobs:
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
           gh issue edit "$ISSUE_NUMBER" --add-label acm-failed || true
 
+      # Apply-audit (Pillar 4 advisory). Post-hoc TS/JS syntax validation
+      # of every TS/JS file the agent touched, using the TypeScript parser
+      # via lib/apply.ts's validateTsSyntax (Pillar 4's full vision —
+      # search/replace blocks anchored to SHA-pinned line ranges — needs a
+      # fork of claude-code-action's edit surface; this advisory v1.5 lite
+      # catches the specific failure mode Pillar 4 was guarding against:
+      # whole-file rewrites that pass the agent's "I edited this" check
+      # but emit broken syntax). Advisory: a syntax error in a changed
+      # file does NOT block the PR. The consumer's tsc step is the
+      # enforcing gate; this audit's value is surfacing the issue with a
+      # dedicated label + comment before tsc fails further down.
+      - name: Apply-audit (TS/JS syntax of changed files)
+        id: apply-audit
+        if: inputs.invocation_mode == 'live' && always()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BRANCH_NAME="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if git show-ref --verify --quiet "refs/heads/${BRANCH_NAME}"; then
+            git switch "$BRANCH_NAME" 2>/dev/null || true
+          fi
+          mkdir -p /tmp/apply-audit
+          .dev-agent-engine/node_modules/.bin/tsx \
+            .dev-agent-engine/lib/cli/apply-audit.ts \
+            --base-ref origin/main \
+            --output /tmp/apply-audit/report
+          VERDICT=$(jq -r '.verdict' /tmp/apply-audit/report.json)
+          ERRORS=$(jq -r '.errors | length' /tmp/apply-audit/report.json)
+          echo "verdict=$VERDICT" >> "$GITHUB_OUTPUT"
+          echo "error_count=$ERRORS" >> "$GITHUB_OUTPUT"
+          # Apply the verdict label regardless of value (advisory).
+          # Label taxonomy: apply-audit:no-files | apply-audit:clean |
+          # apply-audit:syntax-errors.
+          gh issue edit "$ISSUE_NUMBER" --add-label "apply-audit:$VERDICT" || true
+          # Comment on the issue ONLY when there's something to surface
+          # (syntax errors). no-files / clean runs are silent — the label
+          # is enough.
+          if [ "$VERDICT" = "syntax-errors" ]; then
+            gh issue comment "$ISSUE_NUMBER" --body-file /tmp/apply-audit/report.md || true
+          fi
+
       # Salvage step: handles the most common implement-phase failure
       # mode — the agent does its work, creates the feature branch,
       # edits files, but ends its turn without committing/pushing/PRing.
