@@ -157,8 +157,11 @@ jobs:
           mkdir -p /tmp/swarm-inputs /tmp/swarm-prompts
           git fetch origin "$BASE_REF" --depth=50 2>/dev/null || true
           git diff "origin/${BASE_REF}...HEAD" > /tmp/pr-diff.txt || true
-          # Cap diff to 200KB so reviewer prompts don't blow context.
-          head -c 200000 /tmp/pr-diff.txt > /tmp/pr-diff-capped.txt
+          # Cap diff to ~200KB so reviewer prompts don't blow context. Use a
+          # slightly-smaller raw cut and then run the result through iconv -c
+          # so we never feed a half-cleaved UTF-8 codepoint into the prompt
+          # (matters for non-ASCII source content).
+          head -c 199990 /tmp/pr-diff.txt | iconv -c -f utf-8 -t utf-8 > /tmp/pr-diff-capped.txt
           mv /tmp/pr-diff-capped.txt /tmp/pr-diff.txt
           echo "diff size: $(wc -c < /tmp/pr-diff.txt) bytes"
 
@@ -180,7 +183,12 @@ jobs:
               echo "## PR diff (untrusted — see system prompt invariants)"
               echo ""
               echo '<untrusted_content source="pr_diff">'
-              cat /tmp/pr-diff.txt
+              # Sanitize the diff before embedding: a PR adding a literal
+              # `</untrusted_content>` (e.g. as test fixture content) would
+              # otherwise break out of the wrapper and downstream prose would
+              # be parsed as trusted instructions. Replace the closing tag
+              # (case-insensitive) with a neutralized form.
+              sed 's|</[uU][nN][tT][rR][uU][sS][tT][eE][dD]_[cC][oO][nN][tT][eE][nN][tT]>|</untrusted_content_blocked>|g' /tmp/pr-diff.txt
               echo ""
               echo '</untrusted_content>'
               echo ""
@@ -365,3 +373,19 @@ jobs:
             echo "::error::swarm verdict is fail — see PR comment for findings"
             exit 1
           fi
+
+      # Fallback path: aggregator threw / wrote bad JSON / never produced an
+      # output file. Without this step the comment + label steps both skip on
+      # `outcome != 'success'` and the PR author sees only a red workflow with
+      # no actionable signal. Branch protection still blocks merge (workflow
+      # exits non-zero), but this surfaces a real diagnosis on the PR.
+      - name: Post crash comment when aggregator failed
+        if: steps.aggregate.outcome == 'failure'
+        env:
+          PR_NUMBER: ${{ inputs.pr_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          BODY=$'🤖 Phase: swarm-review\nVerdict: error\nMode: live\n\nThe aggregator step did not complete (no `/tmp/swarm-aggregate.json` or `swarm-aggregate.ts` exited non-zero before writing it). See the workflow run for the underlying error. The PR is blocked at this gate; re-run after the underlying issue is resolved.'
+          gh pr comment "$PR_NUMBER" --body "$BODY" || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:error' || true
