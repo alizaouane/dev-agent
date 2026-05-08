@@ -294,6 +294,32 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/--output \/tmp\/evidence-summary\.json/);
     });
 
+    it('preserves the missing-bundle signal — only mkdirs the bundle dir on successful download', () => {
+      // codex P2 (PR #79 review): an unconditional `mkdir -p
+      // /tmp/evidence-bundle` followed by the summarizer makes a failed
+      // artifact download look identical to a clean scanner run (zero
+      // counts everywhere, no marker). The fix is to mkdir ONLY inside
+      // the if-then branch where we have a tarball to extract — when
+      // the artifact is absent, the dir stays nonexistent and the CLI
+      // takes its absent-summary path. Lock the structure.
+      //
+      // The mkdir line must appear AFTER the tarball-existence check,
+      // not before it. We verify by checking the relative position of
+      // the two strings inside the extract step.
+      const stepStart = raw.indexOf('Live mode — extract + summarize evidence bundle');
+      const stepEnd = raw.indexOf('- name:', stepStart + 1);
+      expect(stepStart).toBeGreaterThan(0);
+      const stepBody = raw.slice(stepStart, stepEnd === -1 ? undefined : stepEnd);
+      const tarCheckIdx = stepBody.indexOf('if [ -f /tmp/evidence-artifact/verification-bundle.tar.gz ]');
+      const mkdirIdx = stepBody.indexOf('mkdir -p /tmp/evidence-bundle');
+      expect(tarCheckIdx).toBeGreaterThan(0);
+      expect(mkdirIdx).toBeGreaterThan(0);
+      expect(
+        mkdirIdx,
+        'mkdir of /tmp/evidence-bundle must appear AFTER the tarball-existence check (codex P2)',
+      ).toBeGreaterThan(tarCheckIdx);
+    });
+
     it('injects the evidence summary into every reviewer prompt with sed sanitization', () => {
       // Cognition's anti-multi-agent argument resolved: all three reviewers
       // see the SAME EvidenceBundle summary in the SAME wrapper position.

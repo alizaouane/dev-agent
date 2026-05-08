@@ -18,6 +18,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { summarizeBundle, EvidenceSummary } from '../evidence-summary';
 
@@ -46,7 +47,7 @@ function parseArgs(argv: string[]): Args {
   return args as Args;
 }
 
-function emptySummary(reason: string): EvidenceSummary {
+export function emptySummary(reason: string): EvidenceSummary {
   return {
     meta: { pr_number: null, head_sha: null, generated_at: null },
     scanners: {
@@ -58,6 +59,20 @@ function emptySummary(reason: string): EvidenceSummary {
   };
 }
 
+/**
+ * The four files the evidence-collector workflow writes into a bundle. If
+ * NONE of these are present in the bundle directory, the dir is effectively
+ * empty and we cannot distinguish "scanner ran clean" from "bundle never
+ * populated". codex P2 (PR #79 review): in that case, emit the absent stub
+ * so reviewers see the missing-evidence marker rather than zero counts that
+ * look identical to a clean run.
+ */
+const BUNDLE_FILES = ['gitleaks.json', 'semgrep.json', 'npm-audit.json', 'ast-diff.txt'];
+
+export function isBundlePopulated(bundleDir: string): boolean {
+  return BUNDLE_FILES.some((f) => fs.existsSync(path.join(bundleDir, f)));
+}
+
 function main(): void {
   const args = parseArgs(process.argv.slice(2));
   const bundleAbs = path.resolve(args.bundleDir);
@@ -65,10 +80,16 @@ function main(): void {
 
   let summary: EvidenceSummary;
   if (!fs.existsSync(bundleAbs) || !fs.statSync(bundleAbs).isDirectory()) {
-    // Soft-fail path: emit an absent-summary stub so the reviewer prompt
-    // still has a deterministic shape to render. Workflow-level decisions
-    // about whether to proceed without evidence stay in the workflow.
+    // Soft-fail path #1: dir doesn't exist (download-artifact failed; the
+    // workflow leaves the dir nonexistent on purpose so this branch fires).
     summary = emptySummary(`bundle dir missing at ${bundleAbs}`);
+  } else if (!isBundlePopulated(bundleAbs)) {
+    // Soft-fail path #2: dir exists but has none of the recognized scanner
+    // output files. Defense in depth — even if a future workflow change
+    // creates the dir unconditionally again, reviewers still see the
+    // explicit missing-evidence marker rather than a misleading zero-counts
+    // summary.
+    summary = emptySummary(`bundle dir empty (no scanner outputs present at ${bundleAbs})`);
   } else {
     summary = summarizeBundle(bundleAbs);
   }
@@ -80,4 +101,15 @@ function main(): void {
   );
 }
 
-main();
+// Only run main() when executed as a CLI — importing the module (e.g.
+// from tests that exercise isBundlePopulated / emptySummary) must not
+// trigger argv parsing + process.exit(1).
+const invokedAsCli = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
+if (invokedAsCli) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`evidence-summarize failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(2);
+  }
+}

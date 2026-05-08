@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { summarizeBundle, CAP_PER_SCANNER, AST_DIFF_EXCERPT_BYTES } from '../../lib/evidence-summary';
+import { isBundlePopulated, emptySummary } from '../../lib/cli/evidence-summarize';
 
 /**
  * v1.6 (PR follow-up to #77): the swarm reviewers go from "PR diff only" to
@@ -164,5 +165,87 @@ describe('lib/evidence-summary', () => {
     expect(summary.scanners.gitleaks.count).toBe(0);
     expect(summary.scanners.semgrep.total_count).toBe(0);
     expect(summary.scanners.npm_audit.total_count).toBe(0);
+  });
+});
+
+/**
+ * codex P2 (PR #79 review): the missing-bundle signal must survive even
+ * when the workflow accidentally creates an empty bundle dir. The CLI's
+ * absent-summary stub is the difference between "scanner ran clean" (zero
+ * findings, real signal) and "scanner output unavailable" (don't trust
+ * the diff-only verdict). These tests lock both layers of the defense:
+ * isBundlePopulated detects empty dirs, and emptySummary's ast_diff_excerpt
+ * field carries the marker reviewers grep for.
+ */
+describe('lib/cli/evidence-summarize — missing-bundle defense (codex P2)', () => {
+  let bundleDir: string;
+
+  beforeEach(() => {
+    bundleDir = mkdtempSync(join(tmpdir(), 'evidence-summarize-cli-'));
+  });
+
+  afterEach(() => {
+    rmSync(bundleDir, { recursive: true, force: true });
+  });
+
+  describe('isBundlePopulated', () => {
+    it('returns false for an empty directory', () => {
+      // The exact failure mode codex flagged: workflow mkdir's the dir
+      // but the artifact download failed, so the dir is empty. Without
+      // this check the CLI happily returns zero scanner counts.
+      expect(isBundlePopulated(bundleDir)).toBe(false);
+    });
+
+    it('returns true when any of the four scanner outputs exist', () => {
+      writeFileSync(join(bundleDir, 'gitleaks.json'), '[]', 'utf8');
+      expect(isBundlePopulated(bundleDir)).toBe(true);
+    });
+
+    it('returns true even when only ast-diff.txt is present', () => {
+      // ast-diff is the most likely solo-survivor in a partial bundle —
+      // it's computed locally + always written, while the JSON scanners
+      // can fail individually.
+      writeFileSync(join(bundleDir, 'ast-diff.txt'), 'diff content', 'utf8');
+      expect(isBundlePopulated(bundleDir)).toBe(true);
+    });
+
+    it('returns false when only meta.json is present (not a recognized scanner output)', () => {
+      // meta.json is workflow metadata, not scanner output. A bundle dir
+      // with only meta.json means the scanners failed to write — the
+      // CLI must take its absent path so reviewers know.
+      writeFileSync(join(bundleDir, 'meta.json'), '{}', 'utf8');
+      expect(isBundlePopulated(bundleDir)).toBe(false);
+    });
+
+    it('returns false when only an unrecognized file is present', () => {
+      writeFileSync(join(bundleDir, 'random.log'), 'noise', 'utf8');
+      expect(isBundlePopulated(bundleDir)).toBe(false);
+    });
+  });
+
+  describe('emptySummary', () => {
+    it('marks the absent state in ast_diff_excerpt where reviewers will see it', () => {
+      // The reviewer prompt embeds ast_diff_excerpt in the
+      // <untrusted_content source="evidence_summary"> wrapper. The
+      // "(no evidence available — ...)" prefix is the reviewer's signal
+      // to treat their verdict as diff-only. Lock the marker text so a
+      // refactor can't change it without updating the reviewer prompts.
+      const summary = emptySummary('bundle dir empty');
+      expect(summary.ast_diff_excerpt).toMatch(/^\(no evidence available — /);
+      expect(summary.ast_diff_excerpt).toContain('bundle dir empty');
+    });
+
+    it('returns zero scanner counts (so reviewers can still parse the shape)', () => {
+      // The shape itself must remain stable so reviewer prompts don't
+      // throw on missing keys. The signal is the ast_diff_excerpt
+      // prefix, not the absence of the scanners object.
+      const summary = emptySummary('reason');
+      expect(summary.scanners.gitleaks.count).toBe(0);
+      expect(summary.scanners.gitleaks.findings).toEqual([]);
+      expect(summary.scanners.semgrep.total_count).toBe(0);
+      expect(summary.scanners.semgrep.high_count).toBe(0);
+      expect(summary.scanners.npm_audit.total_count).toBe(0);
+      expect(summary.scanners.npm_audit.high_count).toBe(0);
+    });
   });
 });

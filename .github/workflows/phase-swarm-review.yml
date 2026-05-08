@@ -165,24 +165,31 @@ jobs:
         if: inputs.invocation_mode == 'live'
         run: |
           set -euo pipefail
-          mkdir -p /tmp/evidence-bundle
-          # The artifact contains a single tarball; extract its contents
-          # into /tmp/evidence-bundle. If the artifact is missing (the
-          # download step uses continue-on-error: true so a missing bundle
-          # doesn't crash the gate), evidence-summarize.ts emits an
-          # absent-summary stub and the reviewers fall back to diff-only.
+          # IMPORTANT: do NOT mkdir /tmp/evidence-bundle unconditionally.
+          # The summarize CLI distinguishes "bundle dir absent" (emits an
+          # explicit absent-summary stub the reviewers can act on) from
+          # "bundle dir present" (proceeds to read scanner files). If we
+          # always create the dir, a failed artifact download produces an
+          # empty dir, and the CLI returns zero scanner counts that look
+          # identical to a legitimate clean run — masking the missing-
+          # evidence signal. (codex P2 from PR #79 review.)
           if [ -f /tmp/evidence-artifact/verification-bundle.tar.gz ]; then
+            mkdir -p /tmp/evidence-bundle
             tar -xzf /tmp/evidence-artifact/verification-bundle.tar.gz -C /tmp/evidence-bundle
             echo "evidence bundle contents:"
             ls -la /tmp/evidence-bundle/ || true
           else
-            echo "::warning::verification-bundle artifact not found — reviewers will see PR diff only"
+            # Leave /tmp/evidence-bundle nonexistent so the CLI takes its
+            # absent path (verdict says scanner input unavailable, not
+            # zero findings).
+            echo "::warning::verification-bundle artifact not found — reviewers will see diff-only with explicit missing-evidence marker"
           fi
           .dev-agent-engine/node_modules/.bin/tsx \
             .dev-agent-engine/lib/cli/evidence-summarize.ts \
             --bundle-dir /tmp/evidence-bundle \
             --output /tmp/evidence-summary.json
           echo "evidence summary head:"
+          jq -r '.ast_diff_excerpt | .[0:200]' /tmp/evidence-summary.json || true
           jq -r '.scanners | to_entries[] | "\(.key): \(.value | tostring | .[0:200])"' /tmp/evidence-summary.json || true
 
       - name: Live mode — compute PR diff + setup inputs
