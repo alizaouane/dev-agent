@@ -87,7 +87,7 @@ dashboard/__tests__/e2e/
 ## Conventions
 
 - **Test pattern:** copy the existing style from `__tests__/components/inbox-item.test.tsx` (component) and `__tests__/lib/pipeline.test.ts` (lib). Use vitest's `describe`/`it`/`expect`, `@testing-library/react` for rendering. No `import React` at top of `.tsx` (vitest config's automatic JSX runtime handles it).
-- **Server-only modules:** start every file under `lib/verification/` and `lib/dashboard/` with `import 'server-only';` (existing pattern in `lib/pipeline.ts`, `lib/repos.ts`).
+- **Server-only modules:** files that perform server I/O (Octokit calls, in-memory caches, data loaders) start with `import 'server-only';` — `lib/verification/cache.ts`, `lib/verification/aggregate.ts`, the extractors, and `lib/dashboard/*`. **Exception:** `lib/verification/types.ts` is a pure types-and-constants module and MUST NOT have `server-only` (client components import its types/constants — `server-only` would crash the client at runtime).
 - **Octokit mocks in tests:** instantiate via `new Octokit()` and stub specific methods with `vi.fn()` returning the canned response (existing pattern in `__tests__/lib/pipeline.test.ts`).
 - **Branch:** create a fresh branch `feat/dashboard-ux-redesign` off `main` for this work — keep it isolated from the in-flight `feat/verification-pillar4-apply-audit` branch.
 - **Commit cadence:** after every passing test (Step N's "Commit" is its own checkbox).
@@ -175,7 +175,9 @@ Expected: FAIL with module-not-found / type-not-exported.
 
 ```typescript
 // dashboard/lib/verification/types.ts
-import 'server-only';
+// Pure types + constants. NO `import 'server-only'` here — client components
+// (verification badges, feature cards, posture strip) import from this file
+// and `server-only` would crash the client bundle at runtime.
 
 export const PILLAR_IDS = ['gate_b', 'audit_p4', 'risk_p5', 'smoke_p7', 'evidence_p2'] as const;
 export type PillarId = (typeof PILLAR_IDS)[number];
