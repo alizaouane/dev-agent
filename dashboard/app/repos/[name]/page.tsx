@@ -1,11 +1,19 @@
+// dashboard/app/repos/[name]/page.tsx
+import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos } from '@/lib/repos';
-import { fetchPipeline } from '@/lib/pipeline';
-import { InboxList } from '@/components/inbox-list';
+import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
+import { runAllScouts } from '@/lib/scout';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
+import { Button } from '@/components/ui/button';
+import { FeatureCard } from '@/components/feature-card';
+import { VerificationPostureStrip } from '@/components/verification-posture-strip';
+import { EmptyState } from '@/components/empty-state';
 import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
 import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
+import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
+import { PILLAR_LABELS } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
 const CLEANUP_WORKFLOW_PATH = '.github/workflows/dev-agent-cleanup-scout.yml';
@@ -20,8 +28,22 @@ async function isWorkflowInstalled(
   try {
     await octokit.repos.getContent({ owner, repo, path, ref: default_branch });
     return true;
-  } catch (err) {
-    if ((err as { status?: number }).status === 404) return false;
+  } catch {
+    return false;
+  }
+}
+
+async function probeFile(
+  octokit: Awaited<ReturnType<typeof getOctokit>>,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<boolean> {
+  try {
+    await octokit.repos.getContent({ owner, repo, path, ref });
+    return true;
+  } catch {
     return false;
   }
 }
@@ -32,75 +54,192 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
   const octokit = await getOctokit();
   const allRepos = await listAllowedRepos(octokit);
   const repo = allRepos.find((r) => `${r.owner}/${r.name}` === name);
-  if (!repo) {
-    return <p className="text-muted-foreground">Repo not found in allowlist.</p>;
-  }
-  const items = await fetchPipeline(octokit, [repo], { include_terminal: true });
+  if (!repo) return <p className="text-muted-foreground">Repo not found in allowlist.</p>;
 
-  // Bug-scout schedule + unfinished-work scout install state both live
-  // on the repo's default branch. Lookups are best-effort — failures
-  // (rate-limit, transient network) shouldn't break the whole repo page,
-  // so we surface forms in a degraded state.
-  let scheduleSnapshot: Awaited<ReturnType<typeof readBugScoutSchedule>> | null = null;
-  let scheduleError: string | null = null;
-  let unfinishedWorkInstalled = false;
-  let cleanupInstalled = false;
-  if (repo.wired_up) {
-    try {
-      [scheduleSnapshot, unfinishedWorkInstalled, cleanupInstalled] = await Promise.all([
-        readBugScoutSchedule(octokit, repo.owner, repo.name, repo.default_branch),
-        isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, UNFINISHED_WORK_WORKFLOW_PATH),
-        isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, CLEANUP_WORKFLOW_PATH),
-      ]);
-    } catch (err) {
-      scheduleError = err instanceof Error ? err.message : String(err);
-    }
-  }
+  const [workspace, proposals, scheduleSnapshot, unfinishedWorkInstalled, cleanupInstalled] =
+    await Promise.all([
+      loadRepoWorkspace(octokit, repo),
+      runAllScouts(octokit, [repo]).catch(() => []),
+      repo.wired_up
+        ? readBugScoutSchedule(octokit, repo.owner, repo.name, repo.default_branch).catch(() => null)
+        : Promise.resolve(null),
+      repo.wired_up
+        ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, UNFINISHED_WORK_WORKFLOW_PATH)
+        : Promise.resolve(false),
+      repo.wired_up
+        ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, CLEANUP_WORKFLOW_PATH)
+        : Promise.resolve(false),
+    ]);
+
+  const [pmMdPresent] = await Promise.all([
+    repo.wired_up
+      ? probeFile(octokit, repo.owner, repo.name, '.dev-agent/pm.md', repo.default_branch)
+      : Promise.resolve(false),
+  ]);
+  const setupSteps: SetupSteps = {
+    wired: repo.wired_up,
+    pm_md_present: pmMdPresent,
+    scout_configured: unfinishedWorkInstalled,
+    first_proposal: proposals.length > 0,
+    first_feature_shipped: workspace.recentlyShipped.length > 0,
+  };
 
   return (
-    <div>
-      <h1 className="mb-4 text-2xl font-semibold">{name}</h1>
+    <div className="flex flex-col gap-10">
+      <SetupChecklist repoName={name} steps={setupSteps} />
+      {/* Band 1 — Repo header */}
+      <section className="flex flex-wrap items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">{name}</h1>
+          <p className="mt-1 text-xs text-muted-foreground">
+            {repo.wired_up ? 'Wired ✓' : 'Not wired'} · default branch {repo.default_branch} ·{' '}
+            <a href={repo.html_url} target="_blank" rel="noreferrer noopener" className="underline">
+              GitHub
+            </a>
+          </p>
+        </div>
+        <Button asChild size="lg">
+          <Link href={`/intent?repo=${encodeURIComponent(name)}`}>Brainstorm new work on {name}</Link>
+        </Button>
+      </section>
 
-      {repo.wired_up ? (
-        <>
-          <section className="mb-8 rounded-md border border-border bg-card p-5">
-            <h2 className="mb-1 text-base font-semibold">Scan with PM (deep)</h2>
-            <ScanWithPmButton repo={name} workflowPresent={unfinishedWorkInstalled} />
-          </section>
+      {/* Band 2 — In flight */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">In flight</h2>
+        {workspace.inFlight.length === 0 ? (
+          <EmptyState title="Nothing in flight on this repo." body="" />
+        ) : (
+          <div className="flex flex-col gap-2">
+            {workspace.inFlight.map((i) => (
+              <FeatureCard key={`${i.repo}#${i.issue_number}`} item={i} hideRepo />
+            ))}
+          </div>
+        )}
+      </section>
 
-          <section className="mb-8 rounded-md border border-border bg-card p-5">
-            <h2 className="mb-1 text-base font-semibold">Cleanup scan</h2>
-            <ScanCleanupButton repo={name} workflowPresent={cleanupInstalled} />
-          </section>
+      {/* Band 3 — PM proposes */}
+      <section>
+        <div className="mb-3 flex items-baseline justify-between">
+          <h2 className="text-lg font-semibold">PM proposes</h2>
+          <Link href="/proposals" className="text-sm underline">
+            See all
+          </Link>
+        </div>
+        {proposals.length === 0 ? (
+          <EmptyState title="PM doesn't see anything pressing for this repo right now." body="" />
+        ) : (
+          <ul className="divide-y divide-border rounded-md border border-border">
+            {proposals.slice(0, 5).map((p) => (
+              <li key={p.id} className="flex flex-col gap-1 p-4 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <span className="text-xs uppercase tracking-wide text-muted-foreground">{p.source}</span>
+                  <a href={p.url} target="_blank" rel="noopener noreferrer" className="mt-1 block font-medium hover:underline">
+                    {p.title}
+                  </a>
+                </div>
+                <Link
+                  href={`/intent?repo=${encodeURIComponent(name)}&prefill=${encodeURIComponent(p.title)}`}
+                  className="text-sm underline"
+                >
+                  Discuss with PM
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
-          <section className="mb-8 rounded-md border border-border bg-card p-5">
-            <h2 className="mb-1 text-base font-semibold">Bug-scout schedule</h2>
-            <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
-              Controls how often the bug-scout LLM agent scans this repo for
-              security, broken-logic, and code-smell findings. Each scan costs
-              $0.30–$1.00 in Anthropic tokens; the listed monthly range
-              assumes that. Findings appear under{' '}
-              <code>kind:bug-scout</code> issues + on{' '}
-              <code>/proposals</code>.
-            </p>
-            {scheduleError ? (
-              <div className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm">
-                <p className="font-medium">Failed to read current schedule</p>
-                <p className="mt-1 text-muted-foreground">{scheduleError}</p>
+      {/* Band 4 — Recently shipped */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Recently shipped (last 14d)</h2>
+        {workspace.recentlyShipped.length === 0 ? (
+          <EmptyState title="No features shipped in the last 14 days." body="" />
+        ) : (
+          <div className="flex flex-col gap-2">
+            {workspace.recentlyShipped.map((i) => (
+              <FeatureCard key={`${i.repo}#${i.issue_number}`} item={i} hideRepo />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Band 5 — Verification posture for this repo */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Verification posture (this repo)</h2>
+        <div className="flex flex-col gap-3">
+          <VerificationPostureStrip rollup={workspace.posture} />
+          <div className="rounded-md border border-border bg-card p-4 text-sm">
+            <p className="mb-2 font-medium">Configured pillars</p>
+            <ul className="grid grid-cols-1 gap-1 sm:grid-cols-2">
+              {(Object.keys(workspace.pillars) as Array<keyof typeof workspace.pillars>).map((p) => (
+                <li key={p} className="flex items-center gap-2">
+                  <span aria-hidden>{workspace.pillars[p] ? '✓' : '·'}</span>
+                  <span className={workspace.pillars[p] ? '' : 'text-muted-foreground'}>
+                    {PILLAR_LABELS[p]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      {/* Band 6 — Cost (placeholder for v1) */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Cost (this repo, last 30d)</h2>
+        <Link href={`/cost?repo=${encodeURIComponent(name)}`} className="text-sm underline">
+          Open full cost view →
+        </Link>
+      </section>
+
+      {/* Band 7 — Settings & links */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Settings &amp; links</h2>
+        {repo.wired_up ? (
+          <div className="flex flex-col gap-6">
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">Scan with PM (deep)</h3>
+              <ScanWithPmButton repo={name} workflowPresent={unfinishedWorkInstalled} />
+            </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">Cleanup scan</h3>
+              <ScanCleanupButton repo={name} workflowPresent={cleanupInstalled} />
+            </div>
+            {scheduleSnapshot ? (
+              <div className="rounded-md border border-border bg-card p-5">
+                <h3 className="mb-1 text-base font-semibold">Bug-scout schedule</h3>
+                <BugScoutScheduleForm
+                  repo={name}
+                  current={scheduleSnapshot.preset}
+                  currentCron={scheduleSnapshot.cron}
+                />
               </div>
-            ) : scheduleSnapshot ? (
-              <BugScoutScheduleForm
-                repo={name}
-                current={scheduleSnapshot.preset}
-                currentCron={scheduleSnapshot.cron}
-              />
             ) : null}
-          </section>
-        </>
-      ) : null}
-
-      <h2 className="mb-3 text-base font-semibold">Pipeline</h2>
-      <InboxList items={items} />
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">Files</h3>
+              <ul className="text-sm">
+                <li>
+                  <a className="underline" href={`${repo.html_url}/blob/${repo.default_branch}/.dev-agent.yml`} target="_blank" rel="noreferrer noopener">
+                    .dev-agent.yml
+                  </a>
+                </li>
+                <li>
+                  <a className="underline" href={`${repo.html_url}/blob/${repo.default_branch}/.dev-agent/pm.md`} target="_blank" rel="noreferrer noopener">
+                    .dev-agent/pm.md
+                  </a>
+                </li>
+                <li>
+                  <a className="underline" href={`${repo.html_url}/blob/${repo.default_branch}/.dev-agent/SESSION_LOG.md`} target="_blank" rel="noreferrer noopener">
+                    SESSION_LOG.md
+                  </a>
+                </li>
+              </ul>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-muted-foreground">Repo is not wired up yet.</p>
+        )}
+      </section>
     </div>
   );
 }

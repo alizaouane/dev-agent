@@ -1,6 +1,38 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { HelpPanel } from '@/components/help-panel';
 import { auth, signOut } from '@/lib/auth';
+
+const PRIMARY = [
+  { href: '/', label: 'Home' },
+  { href: '/repos', label: 'Repos' },
+  { href: '/intent', label: 'Brainstorm' },
+];
+
+const SECONDARY = [
+  { href: '/proposals', label: 'Proposals' },
+  { href: '/pipeline', label: 'Pipeline' },
+  { href: '/activity', label: 'Activity' },
+  { href: '/cost', label: 'Cost' },
+];
+
+export function NavLinks() {
+  return (
+    <nav className="flex flex-wrap items-center gap-4 text-sm">
+      {PRIMARY.map((l) => (
+        <Link key={l.href} href={l.href} className="font-medium hover:text-foreground">
+          {l.label}
+        </Link>
+      ))}
+      <span aria-hidden className="hidden text-border sm:inline">|</span>
+      {SECONDARY.map((l) => (
+        <Link key={l.href} href={l.href} className="text-muted-foreground hover:text-foreground">
+          {l.label}
+        </Link>
+      ))}
+    </nav>
+  );
+}
 
 export async function NavHeader() {
   const session = await auth();
@@ -10,33 +42,14 @@ export async function NavHeader() {
         <Link href="/" className="font-semibold">
           dev-agent
         </Link>
-        <nav className="hidden gap-4 text-sm sm:flex">
-          <Link href="/" className="text-muted-foreground hover:text-foreground">
-            Inbox
-          </Link>
-          <Link href="/repos" className="text-muted-foreground hover:text-foreground">
-            Repos
-          </Link>
-          <Link href="/proposals" className="text-muted-foreground hover:text-foreground">
-            Proposals
-          </Link>
-          <Link href="/next" className="text-muted-foreground hover:text-foreground">
-            Next
-          </Link>
-          <Link href="/pipeline" className="text-muted-foreground hover:text-foreground">
-            Pipeline
-          </Link>
-          <Link href="/cost" className="text-muted-foreground hover:text-foreground">
-            Cost
-          </Link>
-          <Link href="/activity" className="text-muted-foreground hover:text-foreground">
-            Activity
-          </Link>
-        </nav>
+        <div className="hidden sm:block">
+          <NavLinks />
+        </div>
         <div className="flex items-center gap-3">
-          <Link href="/intent">
-            <Button size="sm">Brainstorm with PM</Button>
-          </Link>
+          <Button asChild size="sm">
+            <Link href="/intent">Brainstorm new work</Link>
+          </Button>
+          <HelpPanel />
           {session?.user && (
             <form
               action={async () => {

@@ -13,20 +13,22 @@ import {
 import { fetchActiveRunsForIssue } from '@/lib/active-runs';
 import { fetchRecentFailuresForIssue } from '@/lib/run-failures';
 import { fetchFeaturePR } from '@/lib/feature-pr';
+import { outcomesForFeature } from '@/lib/verification/aggregate';
+import { PILLAR_IDS, type PillarId } from '@/lib/verification/types';
 
 // Auth-bearing dynamic page; ISR doesn't apply, but we want a brief
 // server-side cache so a manual refresh during a long agent run
 // doesn't hammer GitHub's API. 15s feels live without burning rate.
 export const revalidate = 15;
 
-type SearchParams = Promise<{ repo?: string }>;
+type SearchParams = Promise<{ repo?: string; tab?: string; pillar?: string }>;
 
 export default async function FeaturePage(props: {
   params: Promise<{ issue: string }>;
   searchParams: SearchParams;
 }) {
   const { issue } = await props.params;
-  const { repo } = await props.searchParams;
+  const { repo, tab, pillar } = await props.searchParams;
   if (!repo) throw new Error('repo query param required');
   const [owner, name] = repo.split('/');
   const issue_number = parseInt(issue, 10);
@@ -39,6 +41,7 @@ export default async function FeaturePage(props: {
     activeRuns,
     failedRuns,
     featurePR,
+    outcomes,
   ] = await Promise.all([
     octokit.issues.get({ owner, repo: name, issue_number }),
     octokit.issues.listComments({ owner, repo: name, issue_number, per_page: 100 }),
@@ -46,7 +49,12 @@ export default async function FeaturePage(props: {
     fetchActiveRunsForIssue(octokit, owner, name, issue_number),
     fetchRecentFailuresForIssue(octokit, owner, name, issue_number),
     fetchFeaturePR(octokit, owner, name, issue_number),
+    outcomesForFeature(octokit, `${owner}/${name}`, issue_number),
   ]);
+  const expandedPillar: PillarId | null =
+    tab === 'verification' && pillar && (PILLAR_IDS as readonly string[]).includes(pillar)
+      ? (pillar as PillarId)
+      : null;
   const stateLabel =
     (issueData.labels.map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean) as string[]).find((l) =>
       l.startsWith('state:'),
@@ -103,6 +111,7 @@ export default async function FeaturePage(props: {
         }}
         telemetry={telemetry}
         prUrl={prUrl}
+        verification={{ outcomes, expandedPillar }}
       />
       <ActiveRunsPanel runs={activeRuns} repo={`${owner}/${name}`} />
       <FailedRunsPanel runs={failedRuns} />

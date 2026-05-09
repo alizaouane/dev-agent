@@ -9,6 +9,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { ParsedTelemetry } from '@/lib/telemetry';
+import { PILLAR_LABELS, type PillarId, type VerificationOutcome } from '@/lib/verification/types';
 
 type IssueShape = {
   number: number;
@@ -23,11 +24,13 @@ export function FeatureDetail({
   issue,
   telemetry,
   prUrl,
+  verification,
 }: {
   repo: string;
   issue: IssueShape;
   telemetry: ParsedTelemetry[];
   prUrl: string | null;
+  verification?: { outcomes: VerificationOutcome[]; expandedPillar: PillarId | null };
 }) {
   return (
     <div className="flex flex-col gap-4">
@@ -95,6 +98,36 @@ export function FeatureDetail({
           )}
         </CardContent>
       </Card>
+
+      {verification && verification.outcomes.length > 0 ? (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Verification</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="flex flex-col gap-2">
+              {verification.outcomes.map((o) => (
+                <details
+                  key={o.pillar}
+                  open={verification.expandedPillar === o.pillar}
+                  className="rounded border border-border p-3"
+                >
+                  <summary className="cursor-pointer text-sm font-medium">
+                    {PILLAR_LABELS[o.pillar]} — {o.status} — {o.summary}
+                  </summary>
+                  <div className="mt-2 text-sm text-muted-foreground">
+                    Ran at {o.ran_at}.{' '}
+                    <a className="underline" href={o.details_url} target="_blank" rel="noreferrer noopener">
+                      Open details
+                    </a>
+                    {typeof o.cost_usd === 'number' ? <> · cost ${o.cost_usd.toFixed(4)}</> : null}
+                  </div>
+                </details>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
     </div>
   );
 }
