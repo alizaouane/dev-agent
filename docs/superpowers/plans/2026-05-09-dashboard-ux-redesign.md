@@ -435,7 +435,7 @@ describe('extractAuditOutcome (Pillar 4)', () => {
     expect(await extractAuditOutcome(oct, 'a/b', 142)).toBeNull();
   });
 
-  it('returns passed when verdict is clean', async () => {
+  it('returns passed when verdict is clean and forwards cost_usd from telemetry', async () => {
     const oct = mkOctokit([{ body: cleanBody, html_url: 'https://example/c1', created_at: '2026-05-09T10:00:00Z' }]);
     const out = await extractAuditOutcome(oct, 'a/b', 142);
     expect(out).toMatchObject({
@@ -443,6 +443,7 @@ describe('extractAuditOutcome (Pillar 4)', () => {
       status: 'passed',
       details_url: 'https://example/c1',
       ran_at: '2026-05-09T10:00:00Z',
+      cost_usd: 0.04,
     });
   });
 
@@ -534,6 +535,7 @@ export async function extractAuditOutcome(
       summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
+      cost_usd: t.cost_usd, // forward from parseTelemetry — feeds VerificationRollup.total_cost_usd
     };
   }
   return null;
@@ -695,6 +697,7 @@ export async function extractRiskOutcome(
       summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
+      cost_usd: t.cost_usd, // forward from parseTelemetry
     };
   }
   return null;
@@ -849,6 +852,7 @@ export async function extractSmokeOutcome(
       summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
+      cost_usd: t.cost_usd, // forward from parseTelemetry
     };
   }
   return null;
@@ -1050,6 +1054,7 @@ export async function extractGateBOutcome(
         summary,
         details_url: comments[i].html_url,
         ran_at: comments[i].created_at ?? new Date().toISOString(),
+        cost_usd: t.cost_usd, // forward from parseTelemetry (rich-format path has no telemetry block)
       };
     }
   }
