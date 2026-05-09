@@ -22,11 +22,12 @@ dashboard/lib/verification/
 ├── aggregate.ts                    # aggregate(repos, window) — orchestrates extractors, returns rollup
 ├── cache.ts                        # 30-min in-memory cache keyed on input hash (mirror categorize-proposals)
 └── extractors/
-    ├── gate-b.ts                   # readGateBOutcomes(octokit, repo, issueNumber) → VerificationOutcome | null
-    ├── audit.ts                    # Pillar 4 — TS/JS apply audit
-    ├── risk.ts                     # Pillar 5 — risk-annotation audit
-    ├── smoke.ts                    # Pillar 7 — Tier-2 smoke live mode
-    └── evidence.ts                 # Pillar 2 — EvidenceBundle freeze
+    ├── gate-b.ts                   # Gate B (swarm-review) — handles rich + telemetry formats
+    ├── audit.ts                    # Pillar 4 — TS/JS apply audit (telemetry comment)
+    ├── risk.ts                     # Pillar 5 — risk-annotation audit (telemetry comment)
+    └── smoke.ts                    # Pillar 7 — Tier-2 smoke live mode (telemetry comment)
+    # Pillar 2 (evidence) extractor deferred to v2 — no comment artifact;
+    # would need workflow-runs API. See deferred sub-task tracker.
 
 dashboard/lib/dashboard/
 ├── home-bands.ts                   # one async fn per home band; returns typed band data
@@ -61,8 +62,7 @@ dashboard/__tests__/lib/verification/
     ├── gate-b.test.ts
     ├── audit.test.ts
     ├── risk.test.ts
-    ├── smoke.test.ts
-    └── evidence.test.ts
+    └── smoke.test.ts
 
 dashboard/__tests__/lib/dashboard/
 ├── home-bands.test.ts
@@ -357,85 +357,154 @@ git commit -m "feat(dashboard): verification cache — 30-min TTL, hash-keyed"
 
 ---
 
-### Task 1.3: Pillar 4 audit extractor
+### Pillar artifact formats — what the extractors actually parse
+
+> **Important:** Investigation showed the dev-agent engine emits *telemetry-style* comments (`🤖 Phase: <pillar-id>\nVerdict: <value>`), not Markdown-heading comments as originally assumed. The original plan's `## <Pillar Name> (Pillar N)` regex was wrong and would have caused every extractor to silently return `null` in production while passing tests.
+>
+> Confirmed formats (cite: `lib/cli/apply-audit.ts:191-230`, `lib/cli/risk-audit.ts:193-214`, `.github/workflows/phase-tier2-smoke.yml:331-364`, `lib/swarm-review.ts:185-231` + `.github/workflows/phase-swarm-review.yml:375,424`):
+>
+> | Pillar | Phase ID in comment | Verdict values | Status mapping |
+> | --- | --- | --- | --- |
+> | Pillar 4 (apply-audit) | `apply-audit` | `clean` / `syntax-errors` / `no-files` | `clean` → passed; `syntax-errors` → advisory (advisory in v1); `no-files` → not_run |
+> | Pillar 5 (risk-audit) | `risk-audit` | `absent` / `clean` / `mismatches` | `clean` → passed; `mismatches` → advisory; `absent` → not_run |
+> | Pillar 7 (tier2-smoke) | `tier2-smoke` | `pass` / `fail` / `ambiguous` | `pass` → passed; `fail` → failed; `ambiguous` → advisory |
+> | Gate B (swarm-review) | `swarm-review` (telemetry, outage/error only) **OR** `## ✅/🛑/⚠️ swarm-review: pass\|fail\|concern` (success aggregator comment) | telemetry: `outage` / `error`; markdown: `pass` / `concern` / `fail` | telemetry → failed (it's only used for outages); markdown: `pass` → passed; `concern` → advisory; `fail` → failed |
+> | Pillar 2 (evidence) | **No comment** — only uploads `verification-bundle.tar.gz` workflow artifact | n/a | **DEFERRED**: would need workflow-runs API, not comment scanning. See deferred sub-task tracker. |
+
+Tasks 1.3–1.6 below build one extractor per active pillar. **Task 1.7 (Pillar 2 evidence) is dropped from v1** — it's documented in the deferred sub-task tracker at the bottom of this plan and the aggregator (Task 1.8) only orchestrates four extractors.
+
+---
+
+### Task 1.3: Pillar 4 apply-audit extractor
 
 **Files:**
 - Create: `dashboard/lib/verification/extractors/audit.ts`
 - Test: `dashboard/__tests__/lib/verification/extractors/audit.test.ts`
 
-**Investigation step before coding:** read `lib/cli/risk-audit.ts` and `prompts/` and `.github/workflows/phase-implement.yml` to find where Pillar 4 (TS/JS apply audit) writes its output. The audit is advisory and posts results as a PR comment with a recognizable heading like `## Apply Audit (Pillar 4)`. The extractor reads the issue's PR comments and looks for that heading.
+Reuses the existing `parseTelemetry` helper at `dashboard/lib/telemetry.ts` to find the `🤖 Phase: apply-audit` comment, then extracts `Verdict: <value>` via regex on the same comment body.
 
-- [ ] **Step 1: Investigation note (no code)**
-
-Run these to confirm the artifact format:
-
-```bash
-grep -rn "Apply Audit\|Pillar 4\|apply-audit" /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/lib /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/prompts /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/.github/workflows | head -30
-git log --oneline -10 --all -- 'lib/cli/risk-audit.ts'
-```
-
-Capture the exact heading the audit writes (and where) before implementing the extractor. Update the test fixture below to match the real format.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```typescript
 // dashboard/__tests__/lib/verification/extractors/audit.test.ts
 import { describe, it, expect, vi } from 'vitest';
 import { extractAuditOutcome } from '@/lib/verification/extractors/audit';
 
-function mkOctokit(comments: Array<{ body: string; html_url: string }>) {
+function mkOctokit(comments: Array<{ body: string; html_url: string; created_at?: string }>) {
   return {
-    issues: {
-      listComments: vi.fn().mockResolvedValue({ data: comments }),
-    },
-    paginate: vi.fn(async (_fn: unknown, _opts: unknown) => comments),
+    issues: { listComments: vi.fn() },
+    paginate: vi.fn(async () => comments),
   } as unknown as Parameters<typeof extractAuditOutcome>[0];
 }
 
+const cleanBody = `🤖 Phase: apply-audit
+Model: claude-sonnet-4-6
+Tokens: 1.2k in / 0.4k out
+Cost: $0.04
+Mode: live
+Status: clean
+Verdict: clean
+Files checked: 5 (TS / JS in diff vs \`origin/main\`)`;
+
+const errorsBody = `🤖 Phase: apply-audit
+Model: claude-sonnet-4-6
+Tokens: 1.2k in / 0.4k out
+Cost: $0.04
+Mode: live
+Status: failed
+Verdict: syntax-errors (2 of 5 files)
+Base ref: \`origin/main\`
+
+Files with TypeScript parser errors:
+
+- \`src/foo.ts\` — Unexpected token`;
+
+const noFilesBody = `🤖 Phase: apply-audit
+Model: claude-sonnet-4-6
+Tokens: 0.1k in / 0.05k out
+Cost: $0.001
+Mode: live
+Status: ok
+Verdict: no-files
+
+No TypeScript / JavaScript files changed in the diff vs \`origin/main\`.`;
+
 describe('extractAuditOutcome (Pillar 4)', () => {
-  it('returns null when no audit comment exists', async () => {
+  it('returns null when no apply-audit comment exists', async () => {
     const oct = mkOctokit([{ body: 'unrelated comment', html_url: 'x' }]);
-    const out = await extractAuditOutcome(oct, 'a/b', 142);
-    expect(out).toBeNull();
+    expect(await extractAuditOutcome(oct, 'a/b', 142)).toBeNull();
   });
 
-  it('returns passed when audit found 0 issues', async () => {
-    const body = '## Apply Audit (Pillar 4)\n\nResult: passed\nIssues: 0';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c1' }]);
+  it('returns passed when verdict is clean', async () => {
+    const oct = mkOctokit([{ body: cleanBody, html_url: 'https://example/c1', created_at: '2026-05-09T10:00:00Z' }]);
     const out = await extractAuditOutcome(oct, 'a/b', 142);
     expect(out).toMatchObject({
       pillar: 'audit_p4',
       status: 'passed',
       details_url: 'https://example/c1',
+      ran_at: '2026-05-09T10:00:00Z',
     });
   });
 
-  it('returns advisory when audit found N issues but did not block', async () => {
-    const body = '## Apply Audit (Pillar 4)\n\nResult: advisory\nIssues: 2';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c2' }]);
+  it('returns advisory when verdict is syntax-errors (advisory in v1)', async () => {
+    const oct = mkOctokit([{ body: errorsBody, html_url: 'https://example/c2' }]);
     const out = await extractAuditOutcome(oct, 'a/b', 142);
     expect(out?.status).toBe('advisory');
     expect(out?.summary).toMatch(/2/);
   });
+
+  it('returns not_run when verdict is no-files', async () => {
+    const oct = mkOctokit([{ body: noFilesBody, html_url: 'https://example/c3' }]);
+    const out = await extractAuditOutcome(oct, 'a/b', 142);
+    expect(out?.status).toBe('not_run');
+  });
+
+  it('walks newest-first and uses the latest apply-audit comment', async () => {
+    const oct = mkOctokit([
+      { body: errorsBody, html_url: 'https://example/old' }, // older
+      { body: cleanBody, html_url: 'https://example/new' }, // newer (last in array)
+    ]);
+    const out = await extractAuditOutcome(oct, 'a/b', 142);
+    expect(out?.status).toBe('passed');
+    expect(out?.details_url).toBe('https://example/new');
+  });
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/audit.test.ts`
 Expected: FAIL with module-not-found.
 
-- [ ] **Step 4: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
 ```typescript
 // dashboard/lib/verification/extractors/audit.ts
 import 'server-only';
 import type { Octokit } from '@octokit/rest';
-import type { VerificationOutcome } from '../types';
+import type { VerificationOutcome, PillarStatus } from '../types';
+import { parseTelemetry } from '@/lib/telemetry';
 
-const HEADING = /^##\s*Apply\s+Audit\s*\(Pillar\s*4\)/im;
-const RESULT_LINE = /Result:\s*(passed|advisory|blocked|failed)/i;
-const ISSUES_LINE = /Issues:\s*(\d+)/i;
+const VERDICT_LINE = /^Verdict:\s*(\S+)/im;
+const SYNTAX_ERROR_COUNT = /Verdict:\s*syntax-errors\s*\((\d+)\s+of/i;
+
+function mapVerdict(verdict: string, body: string): { status: PillarStatus; summary: string } {
+  switch (verdict.toLowerCase()) {
+    case 'clean':
+      return { status: 'passed', summary: 'No syntax issues found' };
+    case 'syntax-errors': {
+      const n = parseInt(body.match(SYNTAX_ERROR_COUNT)?.[1] ?? '0', 10);
+      return {
+        status: 'advisory', // advisory in v1 per renderMarkdown footer
+        summary: `${n} file${n === 1 ? '' : 's'} with syntax errors`,
+      };
+    }
+    case 'no-files':
+      return { status: 'not_run', summary: 'No TS/JS files changed' };
+    default:
+      return { status: 'advisory', summary: `Verdict: ${verdict}` };
+  }
+}
 
 export async function extractAuditOutcome(
   octokit: Octokit,
@@ -450,19 +519,19 @@ export async function extractAuditOutcome(
     issue_number: issueNumber,
     per_page: 100,
   })) as C[];
-  // Walk newest-first to find the latest audit comment.
+  // Walk newest-first to find the latest apply-audit telemetry comment.
   for (let i = comments.length - 1; i >= 0; i--) {
     const body = comments[i].body ?? '';
-    if (!HEADING.test(body)) continue;
-    const result = body.match(RESULT_LINE)?.[1]?.toLowerCase() ?? 'advisory';
-    const issues = parseInt(body.match(ISSUES_LINE)?.[1] ?? '0', 10);
-    const status = result === 'passed' ? 'passed' : (result as 'advisory' | 'blocked' | 'failed');
+    const t = parseTelemetry(body);
+    if (!t || t.phase !== 'apply-audit') continue;
+    const verdict = body.match(VERDICT_LINE)?.[1] ?? 'unknown';
+    const { status, summary } = mapVerdict(verdict, body);
     return {
       feature_id: issueNumber,
       repo,
       pillar: 'audit_p4',
       status,
-      summary: status === 'passed' ? 'No syntax issues found' : `${issues} issue${issues === 1 ? '' : 's'}`,
+      summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
     };
@@ -471,37 +540,29 @@ export async function extractAuditOutcome(
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/audit.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS, 5 tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add dashboard/lib/verification/extractors/audit.ts dashboard/__tests__/lib/verification/extractors/audit.test.ts
-git commit -m "feat(dashboard): Pillar 4 audit outcome extractor"
+git commit -m "feat(dashboard): Pillar 4 apply-audit extractor (telemetry-style comment)"
 ```
 
 ---
 
-### Task 1.4: Pillar 5 risk extractor
+### Task 1.4: Pillar 5 risk-audit extractor
 
 **Files:**
 - Create: `dashboard/lib/verification/extractors/risk.ts`
 - Test: `dashboard/__tests__/lib/verification/extractors/risk.test.ts`
 
-Same pattern as Task 1.3. Investigation: read `lib/cli/risk-audit.ts` and find the comment heading (likely `## Risk Annotation Audit (Pillar 5)`).
+Same pattern as Task 1.3. Engine source: `lib/cli/risk-audit.ts:193-214`.
 
-- [ ] **Step 1: Investigation**
-
-```bash
-grep -rn "Risk\s*Annotation\|Pillar 5\|risk-audit\|risk_audit" /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/lib /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/prompts | head -20
-```
-
-Confirm the heading + status field names. Update the fixture in Step 2 if the format differs.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```typescript
 // dashboard/__tests__/lib/verification/extractors/risk.test.ts
@@ -515,44 +576,97 @@ function mkOctokit(comments: Array<{ body: string; html_url: string; created_at?
   } as unknown as Parameters<typeof extractRiskOutcome>[0];
 }
 
+const cleanBody = `🤖 Phase: risk-audit
+Model: claude-haiku-4-5
+Tokens: 0.5k in / 0.1k out
+Cost: $0.005
+Mode: live
+Status: clean
+Verdict: clean
+Total Bash calls: 12
+Mismatches (agent rated < classifier): 0
+Classifier-HIGH calls: 0`;
+
+const mismatchBody = `🤖 Phase: risk-audit
+Model: claude-haiku-4-5
+Tokens: 0.5k in / 0.1k out
+Cost: $0.005
+Mode: live
+Status: mismatches
+Verdict: mismatches
+Total Bash calls: 12
+Mismatches (agent rated < classifier): 2
+Classifier-HIGH calls: 1`;
+
+const absentBody = `🤖 Phase: risk-audit
+Model: claude-haiku-4-5
+Tokens: 0.1k in / 0.05k out
+Cost: $0.001
+Mode: live
+Status: absent
+Verdict: absent
+
+No \`.dev-agent/bash-log.jsonl\` was authored by the implement-agent during this run.`;
+
 describe('extractRiskOutcome (Pillar 5)', () => {
-  it('returns null with no risk comment', async () => {
+  it('returns null with no risk-audit comment', async () => {
     const oct = mkOctokit([{ body: 'noise', html_url: 'x' }]);
     expect(await extractRiskOutcome(oct, 'a/b', 1)).toBeNull();
   });
 
-  it('returns advisory when risk-flagged for re-review', async () => {
-    const body = '## Risk Annotation Audit (Pillar 5)\n\nResult: advisory\nFlags: re-review';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c' }]);
+  it('returns passed when verdict is clean', async () => {
+    const oct = mkOctokit([{ body: cleanBody, html_url: 'https://example/c' }]);
     const out = await extractRiskOutcome(oct, 'a/b', 1);
-    expect(out?.status).toBe('advisory');
+    expect(out?.status).toBe('passed');
     expect(out?.pillar).toBe('risk_p5');
   });
 
-  it('returns passed when no risk flags', async () => {
-    const body = '## Risk Annotation Audit (Pillar 5)\n\nResult: passed';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c' }]);
+  it('returns advisory when verdict is mismatches and reports the count', async () => {
+    const oct = mkOctokit([{ body: mismatchBody, html_url: 'https://example/c' }]);
     const out = await extractRiskOutcome(oct, 'a/b', 1);
-    expect(out?.status).toBe('passed');
+    expect(out?.status).toBe('advisory');
+    expect(out?.summary).toMatch(/2/);
+  });
+
+  it('returns not_run when verdict is absent', async () => {
+    const oct = mkOctokit([{ body: absentBody, html_url: 'https://example/c' }]);
+    const out = await extractRiskOutcome(oct, 'a/b', 1);
+    expect(out?.status).toBe('not_run');
   });
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/risk.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 4: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
 ```typescript
 // dashboard/lib/verification/extractors/risk.ts
 import 'server-only';
 import type { Octokit } from '@octokit/rest';
-import type { VerificationOutcome } from '../types';
+import type { VerificationOutcome, PillarStatus } from '../types';
+import { parseTelemetry } from '@/lib/telemetry';
 
-const HEADING = /^##\s*Risk\s+Annotation\s+Audit\s*\(Pillar\s*5\)/im;
-const RESULT_LINE = /Result:\s*(passed|advisory|blocked|failed)/i;
+const VERDICT_LINE = /^Verdict:\s*(\S+)/im;
+const MISMATCH_COUNT = /Mismatches[^:]*:\s*(\d+)/i;
+
+function mapVerdict(verdict: string, body: string): { status: PillarStatus; summary: string } {
+  switch (verdict.toLowerCase()) {
+    case 'clean':
+      return { status: 'passed', summary: 'No risk-rating mismatches' };
+    case 'mismatches': {
+      const n = parseInt(body.match(MISMATCH_COUNT)?.[1] ?? '0', 10);
+      return { status: 'advisory', summary: `${n} mismatch${n === 1 ? '' : 'es'} flagged` };
+    }
+    case 'absent':
+      return { status: 'not_run', summary: 'No bash-log to audit' };
+    default:
+      return { status: 'advisory', summary: `Verdict: ${verdict}` };
+  }
+}
 
 export async function extractRiskOutcome(
   octokit: Octokit,
@@ -569,15 +683,16 @@ export async function extractRiskOutcome(
   })) as C[];
   for (let i = comments.length - 1; i >= 0; i--) {
     const body = comments[i].body ?? '';
-    if (!HEADING.test(body)) continue;
-    const result = body.match(RESULT_LINE)?.[1]?.toLowerCase() ?? 'advisory';
-    const status = result === 'passed' ? 'passed' : (result as 'advisory' | 'blocked' | 'failed');
+    const t = parseTelemetry(body);
+    if (!t || t.phase !== 'risk-audit') continue;
+    const verdict = body.match(VERDICT_LINE)?.[1] ?? 'unknown';
+    const { status, summary } = mapVerdict(verdict, body);
     return {
       feature_id: issueNumber,
       repo,
       pillar: 'risk_p5',
       status,
-      summary: status === 'passed' ? 'No risk flags' : 'Risk flags raised',
+      summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
     };
@@ -586,37 +701,29 @@ export async function extractRiskOutcome(
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/risk.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS, 4 tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add dashboard/lib/verification/extractors/risk.ts dashboard/__tests__/lib/verification/extractors/risk.test.ts
-git commit -m "feat(dashboard): Pillar 5 risk outcome extractor"
+git commit -m "feat(dashboard): Pillar 5 risk-audit extractor (telemetry-style comment)"
 ```
 
 ---
 
-### Task 1.5: Pillar 7 smoke extractor
+### Task 1.5: Pillar 7 tier2-smoke extractor
 
 **Files:**
 - Create: `dashboard/lib/verification/extractors/smoke.ts`
 - Test: `dashboard/__tests__/lib/verification/extractors/smoke.test.ts`
 
-Smoke results are produced by `phase-tier2-smoke.yml` and `phase-smoke-verify.yml`. They post a comment summarizing the smoke run; we extract status from a heading like `## Tier-2 Smoke (Pillar 7)`.
+Same pattern. Engine source: `.github/workflows/phase-tier2-smoke.yml:331,359-364`.
 
-- [ ] **Step 1: Investigation**
-
-```bash
-grep -rn "Tier-2 Smoke\|Pillar 7\|smoke-verify\|tier2_smoke" /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/.github/workflows /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/lib | head -20
-```
-
-Confirm the comment heading. Update fixture if needed.
-
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```typescript
 // dashboard/__tests__/lib/verification/extractors/smoke.test.ts
@@ -630,43 +737,90 @@ function mkOctokit(comments: Array<{ body: string; html_url: string; created_at?
   } as unknown as Parameters<typeof extractSmokeOutcome>[0];
 }
 
+const passBody = `🤖 Phase: tier2-smoke
+Model: claude-sonnet-4-6
+Tokens: 0.8k in / 0.3k out
+Cost: $0.02
+Mode: live
+Status: pass
+Verdict: pass
+
+UI assertions all green.`;
+
+const failBody = `🤖 Phase: tier2-smoke
+Model: claude-sonnet-4-6
+Tokens: 0.8k in / 0.3k out
+Cost: $0.02
+Mode: live
+Status: fail
+Verdict: fail
+
+Tier-2 smoke detected a UI failure.`;
+
+const ambiguousBody = `🤖 Phase: tier2-smoke
+Model: claude-sonnet-4-6
+Tokens: 0.1k in / 0.05k out
+Cost: $0.002
+Mode: live
+Status: ambiguous
+Verdict: ambiguous
+
+No probe authored — spec had no UI-mapped criteria.`;
+
 describe('extractSmokeOutcome (Pillar 7)', () => {
-  it('returns null without a smoke comment', async () => {
+  it('returns null without a tier2-smoke comment', async () => {
     const oct = mkOctokit([{ body: 'x', html_url: 'y' }]);
     expect(await extractSmokeOutcome(oct, 'a/b', 1)).toBeNull();
   });
 
-  it('returns passed when smoke succeeded', async () => {
-    const body = '## Tier-2 Smoke (Pillar 7)\n\nResult: passed';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c' }]);
+  it('returns passed when verdict is pass', async () => {
+    const oct = mkOctokit([{ body: passBody, html_url: 'https://example/c' }]);
     const out = await extractSmokeOutcome(oct, 'a/b', 1);
     expect(out?.status).toBe('passed');
   });
 
-  it('returns failed when smoke failed', async () => {
-    const body = '## Tier-2 Smoke (Pillar 7)\n\nResult: failed\nFailures: 1';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c' }]);
+  it('returns failed when verdict is fail', async () => {
+    const oct = mkOctokit([{ body: failBody, html_url: 'https://example/c' }]);
     const out = await extractSmokeOutcome(oct, 'a/b', 1);
     expect(out?.status).toBe('failed');
+  });
+
+  it('returns advisory when verdict is ambiguous', async () => {
+    const oct = mkOctokit([{ body: ambiguousBody, html_url: 'https://example/c' }]);
+    const out = await extractSmokeOutcome(oct, 'a/b', 1);
+    expect(out?.status).toBe('advisory');
   });
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/smoke.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 4: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
 ```typescript
 // dashboard/lib/verification/extractors/smoke.ts
 import 'server-only';
 import type { Octokit } from '@octokit/rest';
-import type { VerificationOutcome } from '../types';
+import type { VerificationOutcome, PillarStatus } from '../types';
+import { parseTelemetry } from '@/lib/telemetry';
 
-const HEADING = /^##\s*Tier-2\s+Smoke\s*\(Pillar\s*7\)/im;
-const RESULT_LINE = /Result:\s*(passed|advisory|blocked|failed)/i;
+const VERDICT_LINE = /^Verdict:\s*(\S+)/im;
+
+function mapVerdict(verdict: string): { status: PillarStatus; summary: string } {
+  switch (verdict.toLowerCase()) {
+    case 'pass':
+      return { status: 'passed', summary: 'Smoke passed' };
+    case 'fail':
+      return { status: 'failed', summary: 'Smoke failed' };
+    case 'ambiguous':
+      return { status: 'advisory', summary: 'No probe authored' };
+    default:
+      return { status: 'advisory', summary: `Verdict: ${verdict}` };
+  }
+}
 
 export async function extractSmokeOutcome(
   octokit: Octokit,
@@ -683,15 +837,16 @@ export async function extractSmokeOutcome(
   })) as C[];
   for (let i = comments.length - 1; i >= 0; i--) {
     const body = comments[i].body ?? '';
-    if (!HEADING.test(body)) continue;
-    const result = body.match(RESULT_LINE)?.[1]?.toLowerCase() ?? 'advisory';
-    const status = result === 'passed' ? 'passed' : (result as 'advisory' | 'blocked' | 'failed');
+    const t = parseTelemetry(body);
+    if (!t || t.phase !== 'tier2-smoke') continue;
+    const verdict = body.match(VERDICT_LINE)?.[1] ?? 'unknown';
+    const { status, summary } = mapVerdict(verdict);
     return {
       feature_id: issueNumber,
       repo,
       pillar: 'smoke_p7',
       status,
-      summary: status === 'passed' ? 'Smoke passed' : 'Smoke failed',
+      summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
     };
@@ -700,35 +855,34 @@ export async function extractSmokeOutcome(
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/smoke.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS, 4 tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add dashboard/lib/verification/extractors/smoke.ts dashboard/__tests__/lib/verification/extractors/smoke.test.ts
-git commit -m "feat(dashboard): Pillar 7 smoke outcome extractor"
+git commit -m "feat(dashboard): Pillar 7 tier2-smoke extractor (telemetry-style comment)"
 ```
 
 ---
 
-### Task 1.6: Gate B reviewer extractor
+### Task 1.6: Gate B (swarm-review) extractor — handles BOTH formats
 
 **Files:**
 - Create: `dashboard/lib/verification/extractors/gate-b.ts`
 - Test: `dashboard/__tests__/lib/verification/extractors/gate-b.test.ts`
 
-Gate B is the swarm-review phase. `phase-swarm-review.yml` posts a summary comment with a heading like `## Swarm Review (Gate B)` and a per-reviewer breakdown.
+Gate B has TWO comment shapes (engine source: `lib/swarm-review.ts:185-231` for the rich aggregator output, `.github/workflows/phase-swarm-review.yml:375,474` for the telemetry outage/error fallback):
 
-- [ ] **Step 1: Investigation**
+1. **Success/normal path:** rich Markdown comment starting with `## ✅ swarm-review: pass` / `## 🛑 swarm-review: fail` / `## ⚠️ swarm-review: concern` (posted by `gh pr comment ... --body-file /tmp/swarm-aggregate.md`).
+2. **Outage/error path:** telemetry-style `🤖 Phase: swarm-review\nVerdict: outage|error`.
 
-```bash
-grep -rn "Swarm Review\|Gate B\|swarm_review\|swarm-review" /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/.github/workflows /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/lib /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/prompts | head -20
-```
+The extractor checks for the rich format first (since success is the dominant case) and falls back to the telemetry format.
 
-- [ ] **Step 2: Write the failing test**
+- [ ] **Step 1: Write the failing test**
 
 ```typescript
 // dashboard/__tests__/lib/verification/extractors/gate-b.test.ts
@@ -742,45 +896,118 @@ function mkOctokit(comments: Array<{ body: string; html_url: string; created_at?
   } as unknown as Parameters<typeof extractGateBOutcome>[0];
 }
 
+const passBody = `## ✅ swarm-review: pass
+
+_All three reviewers approved._
+
+### spec-compliance — \`pass\`
+
+(Reviewer notes…)
+
+### regression-guard — \`pass\`
+
+### security-scout — \`pass\``;
+
+const concernBody = `## ⚠️ swarm-review: concern
+
+_Two reviewers concerned, one passed._`;
+
+const failBody = `## 🛑 swarm-review: fail
+
+_Two reviewers failed._`;
+
+const outageBody = `🤖 Phase: swarm-review
+Model: claude-haiku-4-5
+Tokens: 0 in / 0 out
+Cost: $0.000
+Mode: live
+Status: outage
+Verdict: outage
+
+All three reviewer agents produced no output.`;
+
 describe('extractGateBOutcome', () => {
-  it('returns null without a Gate B comment', async () => {
-    const oct = mkOctokit([{ body: 'x', html_url: 'y' }]);
+  it('returns null with no swarm-review comment of either shape', async () => {
+    const oct = mkOctokit([{ body: 'unrelated', html_url: 'x' }]);
     expect(await extractGateBOutcome(oct, 'a/b', 1)).toBeNull();
   });
 
-  it('returns passed and counts reviewers', async () => {
-    const body = '## Swarm Review (Gate B)\n\nResult: passed\nReviewers: 3';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c' }]);
+  it('returns passed when rich comment shows pass', async () => {
+    const oct = mkOctokit([{ body: passBody, html_url: 'https://example/c' }]);
     const out = await extractGateBOutcome(oct, 'a/b', 1);
     expect(out?.status).toBe('passed');
-    expect(out?.summary).toMatch(/3/);
+    expect(out?.pillar).toBe('gate_b');
   });
 
-  it('returns blocked when any reviewer blocked', async () => {
-    const body = '## Swarm Review (Gate B)\n\nResult: blocked\nReviewers: 3';
-    const oct = mkOctokit([{ body, html_url: 'https://example/c' }]);
+  it('returns advisory when rich comment shows concern', async () => {
+    const oct = mkOctokit([{ body: concernBody, html_url: 'https://example/c' }]);
     const out = await extractGateBOutcome(oct, 'a/b', 1);
-    expect(out?.status).toBe('blocked');
+    expect(out?.status).toBe('advisory');
+  });
+
+  it('returns failed when rich comment shows fail', async () => {
+    const oct = mkOctokit([{ body: failBody, html_url: 'https://example/c' }]);
+    const out = await extractGateBOutcome(oct, 'a/b', 1);
+    expect(out?.status).toBe('failed');
+  });
+
+  it('returns failed when telemetry-style comment shows outage', async () => {
+    const oct = mkOctokit([{ body: outageBody, html_url: 'https://example/c' }]);
+    const out = await extractGateBOutcome(oct, 'a/b', 1);
+    expect(out?.status).toBe('failed');
+    expect(out?.summary).toMatch(/outage/i);
+  });
+
+  it('prefers a newer rich-format comment over an older telemetry one', async () => {
+    const oct = mkOctokit([
+      { body: outageBody, html_url: 'https://example/old' },
+      { body: passBody, html_url: 'https://example/new' },
+    ]);
+    const out = await extractGateBOutcome(oct, 'a/b', 1);
+    expect(out?.status).toBe('passed');
+    expect(out?.details_url).toBe('https://example/new');
   });
 });
 ```
 
-- [ ] **Step 3: Run test to verify it fails**
+- [ ] **Step 2: Run test to verify it fails**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/gate-b.test.ts`
 Expected: FAIL.
 
-- [ ] **Step 4: Write minimal implementation**
+- [ ] **Step 3: Write minimal implementation**
 
 ```typescript
 // dashboard/lib/verification/extractors/gate-b.ts
 import 'server-only';
 import type { Octokit } from '@octokit/rest';
-import type { VerificationOutcome } from '../types';
+import type { VerificationOutcome, PillarStatus } from '../types';
+import { parseTelemetry } from '@/lib/telemetry';
 
-const HEADING = /^##\s*Swarm\s+Review\s*\(Gate\s*B\)/im;
-const RESULT_LINE = /Result:\s*(passed|advisory|blocked|failed)/i;
-const REVIEWERS_LINE = /Reviewers:\s*(\d+)/i;
+// Rich aggregator comment format (success path).
+const RICH_HEADING = /^##\s*(?:✅|🛑|⚠️)\s*swarm-review:\s*(pass|fail|concern)/im;
+// Telemetry fallback (outage / error path).
+const VERDICT_LINE = /^Verdict:\s*(\S+)/im;
+
+type ParsedGateB = { status: PillarStatus; summary: string };
+
+function fromRich(verdict: string): ParsedGateB {
+  switch (verdict.toLowerCase()) {
+    case 'pass':
+      return { status: 'passed', summary: 'All reviewers approved' };
+    case 'concern':
+      return { status: 'advisory', summary: 'Reviewer concerns raised' };
+    case 'fail':
+      return { status: 'failed', summary: 'Reviewer failure' };
+    default:
+      return { status: 'advisory', summary: `Verdict: ${verdict}` };
+  }
+}
+
+function fromTelemetry(verdict: string): ParsedGateB {
+  // The telemetry path is only used for outage/error cases; both are failures.
+  return { status: 'failed', summary: `Reviewer ${verdict.toLowerCase()}` };
+}
 
 export async function extractGateBOutcome(
   octokit: Octokit,
@@ -795,142 +1022,62 @@ export async function extractGateBOutcome(
     issue_number: issueNumber,
     per_page: 100,
   })) as C[];
+  // Walk newest-first; first matching comment wins. Either shape qualifies.
   for (let i = comments.length - 1; i >= 0; i--) {
     const body = comments[i].body ?? '';
-    if (!HEADING.test(body)) continue;
-    const result = body.match(RESULT_LINE)?.[1]?.toLowerCase() ?? 'passed';
-    const reviewers = parseInt(body.match(REVIEWERS_LINE)?.[1] ?? '0', 10);
-    const status = result === 'passed' ? 'passed' : (result as 'advisory' | 'blocked' | 'failed');
-    return {
-      feature_id: issueNumber,
-      repo,
-      pillar: 'gate_b',
-      status,
-      summary: `${reviewers} reviewer${reviewers === 1 ? '' : 's'}`,
-      details_url: comments[i].html_url,
-      ran_at: comments[i].created_at ?? new Date().toISOString(),
-    };
+    const richMatch = body.match(RICH_HEADING);
+    if (richMatch) {
+      const { status, summary } = fromRich(richMatch[1]);
+      return {
+        feature_id: issueNumber,
+        repo,
+        pillar: 'gate_b',
+        status,
+        summary,
+        details_url: comments[i].html_url,
+        ran_at: comments[i].created_at ?? new Date().toISOString(),
+      };
+    }
+    const t = parseTelemetry(body);
+    if (t && t.phase === 'swarm-review') {
+      const verdict = body.match(VERDICT_LINE)?.[1] ?? 'unknown';
+      const { status, summary } = fromTelemetry(verdict);
+      return {
+        feature_id: issueNumber,
+        repo,
+        pillar: 'gate_b',
+        status,
+        summary,
+        details_url: comments[i].html_url,
+        ran_at: comments[i].created_at ?? new Date().toISOString(),
+      };
+    }
   }
   return null;
 }
 ```
 
-- [ ] **Step 5: Run test to verify it passes**
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/gate-b.test.ts`
-Expected: PASS, 3 tests.
+Expected: PASS, 6 tests.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add dashboard/lib/verification/extractors/gate-b.ts dashboard/__tests__/lib/verification/extractors/gate-b.test.ts
-git commit -m "feat(dashboard): Gate B reviewer outcome extractor"
+git commit -m "feat(dashboard): Gate B (swarm-review) extractor — handles rich + telemetry formats"
 ```
 
 ---
 
-### Task 1.7: Pillar 2 EvidenceBundle extractor
+### ~~Task 1.7: Pillar 2 EvidenceBundle extractor~~ — **DROPPED from v1**
 
-**Files:**
-- Create: `dashboard/lib/verification/extractors/evidence.ts`
-- Test: `dashboard/__tests__/lib/verification/extractors/evidence.test.ts`
+Pillar 2 (the frozen EvidenceBundle that the swarm reviewers consume) does NOT post a comment on the issue/PR. It uploads `verification-bundle.tar.gz` as a workflow-run artifact, consumed in-flow by `phase-swarm-review.yml` (`tar -xzf /tmp/evidence-artifact/verification-bundle.tar.gz`). Surfacing it in the dashboard would require querying the workflow-runs API (`actions.listWorkflowRuns` + `actions.listWorkflowRunArtifacts`) per feature — a different code path entirely from comment-scanning.
 
-The EvidenceBundle freeze is uploaded as a workflow-run artifact (or linked in a comment via heading `## Evidence Bundle (Pillar 2)`).
+Implicit signal: if `gate_b` (swarm-review) emitted any outcome, the EvidenceBundle WAS produced (it's a hard prerequisite). The Repo Workspace Band 5 "configured pillars" panel can mark Pillar 2 as ✓ when Gate B is configured. Per-feature evidence-bundle download links are deferred to a follow-up.
 
-- [ ] **Step 1: Investigation**
-
-```bash
-grep -rn "Evidence Bundle\|Pillar 2\|evidence-bundle\|EvidenceBundle\|evidence_bundle" /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/.github/workflows /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/lib /Users/alizaouane/Documents/Qualiency/Software\ Dev/dev-agent/prompts | head -20
-```
-
-- [ ] **Step 2: Write the failing test**
-
-```typescript
-// dashboard/__tests__/lib/verification/extractors/evidence.test.ts
-import { describe, it, expect, vi } from 'vitest';
-import { extractEvidenceOutcome } from '@/lib/verification/extractors/evidence';
-
-function mkOctokit(comments: Array<{ body: string; html_url: string; created_at?: string }>) {
-  return {
-    issues: { listComments: vi.fn() },
-    paginate: vi.fn(async () => comments),
-  } as unknown as Parameters<typeof extractEvidenceOutcome>[0];
-}
-
-describe('extractEvidenceOutcome (Pillar 2)', () => {
-  it('returns null without an evidence bundle comment', async () => {
-    const oct = mkOctokit([{ body: 'x', html_url: 'y' }]);
-    expect(await extractEvidenceOutcome(oct, 'a/b', 1)).toBeNull();
-  });
-
-  it('returns passed and exposes the artifact URL', async () => {
-    const body = '## Evidence Bundle (Pillar 2)\n\nFrozen at: https://example/artifact.json';
-    const oct = mkOctokit([{ body, html_url: 'https://example/comment' }]);
-    const out = await extractEvidenceOutcome(oct, 'a/b', 1);
-    expect(out?.status).toBe('passed');
-    expect(out?.details_url).toBe('https://example/artifact.json');
-  });
-});
-```
-
-- [ ] **Step 3: Run test to verify it fails**
-
-Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/evidence.test.ts`
-Expected: FAIL.
-
-- [ ] **Step 4: Write minimal implementation**
-
-```typescript
-// dashboard/lib/verification/extractors/evidence.ts
-import 'server-only';
-import type { Octokit } from '@octokit/rest';
-import type { VerificationOutcome } from '../types';
-
-const HEADING = /^##\s*Evidence\s+Bundle\s*\(Pillar\s*2\)/im;
-const URL_LINE = /Frozen at:\s*(\S+)/i;
-
-export async function extractEvidenceOutcome(
-  octokit: Octokit,
-  repo: string,
-  issueNumber: number,
-): Promise<VerificationOutcome | null> {
-  const [owner, name] = repo.split('/');
-  type C = { body?: string | null; html_url: string; created_at?: string };
-  const comments = (await octokit.paginate(octokit.issues.listComments, {
-    owner,
-    repo: name,
-    issue_number: issueNumber,
-    per_page: 100,
-  })) as C[];
-  for (let i = comments.length - 1; i >= 0; i--) {
-    const body = comments[i].body ?? '';
-    if (!HEADING.test(body)) continue;
-    const artifactUrl = body.match(URL_LINE)?.[1] ?? comments[i].html_url;
-    return {
-      feature_id: issueNumber,
-      repo,
-      pillar: 'evidence_p2',
-      status: 'passed',
-      summary: 'Evidence frozen',
-      details_url: artifactUrl,
-      ran_at: comments[i].created_at ?? new Date().toISOString(),
-    };
-  }
-  return null;
-}
-```
-
-- [ ] **Step 5: Run test to verify it passes**
-
-Run: `cd dashboard && npm test -- __tests__/lib/verification/extractors/evidence.test.ts`
-Expected: PASS, 2 tests.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add dashboard/lib/verification/extractors/evidence.ts dashboard/__tests__/lib/verification/extractors/evidence.test.ts
-git commit -m "feat(dashboard): Pillar 2 EvidenceBundle outcome extractor"
-```
+This is captured in the deferred sub-task tracker at the bottom of this plan.
 
 ---
 
@@ -972,7 +1119,6 @@ describe('outcomesForFeature', () => {
       extractAudit: vi.fn().mockResolvedValue(passed('audit_p4')),
       extractRisk: vi.fn().mockResolvedValue(null),
       extractSmoke: vi.fn().mockResolvedValue(passed('smoke_p7')),
-      extractEvidence: vi.fn().mockResolvedValue(null),
     };
     const out = await outcomesForFeature({} as never, 'a/b', 1, deps);
     expect(out.map((o) => o.pillar).sort()).toEqual(['audit_p4', 'gate_b', 'smoke_p7']);
@@ -1017,15 +1163,17 @@ import { extractAuditOutcome } from './extractors/audit';
 import { extractRiskOutcome } from './extractors/risk';
 import { extractSmokeOutcome } from './extractors/smoke';
 import { extractGateBOutcome } from './extractors/gate-b';
-import { extractEvidenceOutcome } from './extractors/evidence';
 import type { VerificationOutcome, VerificationRollup } from './types';
 
+// Pillar 2 (evidence) is not in v1 — it has no comment artifact; surfacing it
+// would require the workflow-runs API. Implicit signal: if Gate B produced an
+// outcome, the EvidenceBundle was frozen (it's a hard prerequisite). See the
+// deferred sub-task tracker.
 export type AggregatorDeps = {
   extractGateB: typeof extractGateBOutcome;
   extractAudit: typeof extractAuditOutcome;
   extractRisk: typeof extractRiskOutcome;
   extractSmoke: typeof extractSmokeOutcome;
-  extractEvidence: typeof extractEvidenceOutcome;
 };
 
 const DEFAULT_DEPS: AggregatorDeps = {
@@ -1033,7 +1181,6 @@ const DEFAULT_DEPS: AggregatorDeps = {
   extractAudit: extractAuditOutcome,
   extractRisk: extractRiskOutcome,
   extractSmoke: extractSmokeOutcome,
-  extractEvidence: extractEvidenceOutcome,
 };
 
 export async function outcomesForFeature(
@@ -1047,7 +1194,6 @@ export async function outcomesForFeature(
     deps.extractAudit(octokit, repo, issueNumber),
     deps.extractRisk(octokit, repo, issueNumber),
     deps.extractSmoke(octokit, repo, issueNumber),
-    deps.extractEvidence(octokit, repo, issueNumber),
   ]);
   return results.filter((r): r is VerificationOutcome => r !== null);
 }
@@ -3339,3 +3485,4 @@ These were called out in the spec but are not implemented in v1:
 - **Mobile polish** — responsive but not designed for mobile-first.
 - **Per-pillar cost in `VerificationOutcome.cost_usd`** — currently `undefined` for all extractors because pillar artifacts don't carry cost yet. Wire when telemetry comments per pillar land.
 - **In-flight "Discuss with PM" CTA on feature cards** — spec calls for a per-card CTA that pre-loads `/intent` with the existing issue body so the user can refine scope mid-build. Deferred because it needs its own data plumbing (issue body fetch for prefill); the existing `<FeatureCard>` link to `/features/[issue]` is the v1 fallback.
+- **Pillar 2 (EvidenceBundle) per-feature extractor** — Pillar 2 doesn't post a comment on the issue/PR; the bundle is uploaded as a `verification-bundle.tar.gz` workflow-run artifact and consumed in-flow by `phase-swarm-review.yml`. Surfacing per-feature evidence-bundle download links would require querying `actions.listWorkflowRuns` + `actions.listWorkflowRunArtifacts` per feature — a different code path from comment-scanning. v1 surfaces Pillar 2 implicitly: when Gate B (swarm-review) emitted any outcome, the EvidenceBundle was frozen (it's a hard prerequisite). The Repo Workspace Band 5 "configured pillars" panel can mark Pillar 2 ✓ when Gate B is configured. v2 adds the per-feature evidence-bundle download link.
