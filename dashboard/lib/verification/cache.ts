@@ -11,18 +11,18 @@ export function hashInputs(repos: string[], windowDays: number): string {
   return createHash('sha256').update(`${sorted}|${windowDays}`).digest('hex');
 }
 
-export function getCached<T>(key: string): T | undefined {
+export function getCached<T>(key: string, now: number = Date.now()): T | undefined {
   const e = store.get(key);
   if (!e) return undefined;
-  if (Date.now() > e.expires_at) {
+  if (now >= e.expires_at) {
     store.delete(key);
     return undefined;
   }
   return e.value as T;
 }
 
-export function setCached<T>(key: string, value: T): void {
-  store.set(key, { value, expires_at: Date.now() + TTL_MS });
+export function setCached<T>(key: string, value: T, now: number = Date.now()): void {
+  store.set(key, { value, expires_at: now + TTL_MS });
 }
 
 export function clearCache(): void {

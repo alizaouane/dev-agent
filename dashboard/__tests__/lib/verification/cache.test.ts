@@ -33,4 +33,12 @@ describe('verification cache', () => {
     vi.setSystemTime(new Date(start.getTime() + 31 * 60 * 1000));
     expect(getCached(k)).toBeUndefined();
   });
+
+  it('expires at exactly 30 minutes (boundary case)', () => {
+    const start = 1_000_000;
+    const k = hashInputs(['x/y'], 7);
+    setCached(k, { window_days: 7 } as never, start);
+    expect(getCached(k, start + 30 * 60 * 1000 - 1)).toBeDefined();
+    expect(getCached(k, start + 30 * 60 * 1000)).toBeUndefined();
+  });
 });
