@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { Button } from '@/components/ui/button';
+import { HelpPanel } from '@/components/help-panel';
 import { auth, signOut } from '@/lib/auth';
 
 const PRIMARY = [
@@ -48,6 +49,7 @@ export async function NavHeader() {
           <Link href="/intent">
             <Button size="sm">Brainstorm new work</Button>
           </Link>
+          <HelpPanel />
           {session?.user && (
             <form
               action={async () => {
