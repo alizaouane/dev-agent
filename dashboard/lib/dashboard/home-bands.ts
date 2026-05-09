@@ -3,7 +3,7 @@ import type { Octokit } from '@octokit/rest';
 import type { RepoInfo } from '@/lib/repos';
 import type { FeatureItem } from '@/lib/pipeline';
 import { fetchPipeline, needsActionFilter, isTerminalState } from '@/lib/pipeline';
-import { outcomesForFeature, rollup } from '@/lib/verification/aggregate';
+import { outcomesForFeatures, rollupFromOutcomes } from '@/lib/verification/aggregate';
 import type { VerificationOutcome, VerificationRollup } from '@/lib/verification/types';
 
 export type HeroBand =
@@ -13,9 +13,9 @@ export type HeroBand =
 export type RepoSummary = {
   repo: string;
   in_flight_count: number;
-  proposals_count: number; // populated 0 in v1; scout-per-repo wiring is a follow-up
+  proposals_count: number;
   last_shipped_age_seconds: number | null;
-  cost_7d_usd: number; // populated 0 in v1; cost-per-repo aggregation is a follow-up
+  cost_7d_usd: number;
 };
 
 export function buildHero(
@@ -51,18 +51,6 @@ export function partitionPipeline(items: FeatureItem[]) {
   return { needsAction, inMotion, recentlyShipped };
 }
 
-export async function attachOutcomes(
-  octokit: Octokit,
-  items: FeatureItem[],
-): Promise<Array<FeatureItem & { outcomes: VerificationOutcome[] }>> {
-  return Promise.all(
-    items.map(async (i) => ({
-      ...i,
-      outcomes: await outcomesForFeature(octokit, i.repo, i.issue_number),
-    })),
-  );
-}
-
 export function buildRepoSummaries(
   wired: RepoInfo[],
   items: FeatureItem[],
@@ -70,7 +58,9 @@ export function buildRepoSummaries(
   return wired.map((r) => {
     const repo = `${r.owner}/${r.name}`;
     const repoItems = items.filter((i) => i.repo === repo);
-    const inFlight = repoItems.filter((i) => !isTerminalState(i.state) && !needsActionFilter(i));
+    // Issue #7 fix: include needs-action items in in-flight count. A repo
+    // where 3 features are all awaiting review should not show "0 in flight".
+    const inFlight = repoItems.filter((i) => !isTerminalState(i.state));
     const lastShipped = repoItems
       .filter((i) => i.state === 'state:done')
       .sort((a, b) => a.age_seconds - b.age_seconds)[0];
@@ -84,33 +74,57 @@ export function buildRepoSummaries(
   });
 }
 
-export async function buildVerificationRollup(
-  octokit: Octokit,
-  items: FeatureItem[],
-  windowDays = 7,
-): Promise<VerificationRollup> {
-  const recent = items.filter((i) => i.state === 'state:done' && i.age_seconds <= windowDays * 24 * 3600);
-  const all: VerificationOutcome[] = (
-    await Promise.all(recent.map((i) => outcomesForFeature(octokit, i.repo, i.issue_number)))
-  ).flat();
-  const totalCost = all.reduce((sum, o) => sum + (o.cost_usd ?? 0), 0);
-  return rollup(all, {
-    window_days: windowDays,
-    shipped_count: recent.length,
-    total_cost_usd: totalCost,
-  });
-}
-
 export async function loadHomeBands(octokit: Octokit, wired: RepoInfo[]) {
   const items = await fetchPipeline(octokit, wired, { include_terminal: true });
   const { needsAction, inMotion, recentlyShipped } = partitionPipeline(items);
-  const [needsActionWithOutcomes, inMotionWithOutcomes, recentWithOutcomes, postureRollup] =
-    await Promise.all([
-      attachOutcomes(octokit, needsAction.slice(0, 5)),
-      attachOutcomes(octokit, inMotion.slice(0, 5)),
-      attachOutcomes(octokit, recentlyShipped.slice(0, 5)),
-      buildVerificationRollup(octokit, items),
-    ]);
+
+  // Cap each band at 5 for rendering. Combine into a single cached batched
+  // fetch — the cache key is order-independent so the same features fetched
+  // by different bands hit the same cache entry. Then distribute outcomes
+  // back to each band by (repo, issue_number) lookup.
+  const topNeeds = needsAction.slice(0, 5);
+  const topMotion = inMotion.slice(0, 5);
+  const topRecent = recentlyShipped.slice(0, 5);
+
+  // Dedupe on (repo, issue_number) before fetching — the same feature can in
+  // theory appear in two bands during a transition.
+  const seen = new Set<string>();
+  const uniqueFeatures: Array<{ repo: string; issue_number: number }> = [];
+  for (const item of [...topNeeds, ...topMotion, ...topRecent]) {
+    const k = `${item.repo}#${item.issue_number}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    uniqueFeatures.push({ repo: item.repo, issue_number: item.issue_number });
+  }
+
+  const outcomesList = await outcomesForFeatures(octokit, uniqueFeatures);
+  const outcomesByKey = new Map<string, VerificationOutcome[]>();
+  uniqueFeatures.forEach((f, i) => {
+    outcomesByKey.set(`${f.repo}#${f.issue_number}`, outcomesList[i]);
+  });
+
+  function attach(items: FeatureItem[]): Array<FeatureItem & { outcomes: VerificationOutcome[] }> {
+    return items.map((i) => ({
+      ...i,
+      outcomes: outcomesByKey.get(`${i.repo}#${i.issue_number}`) ?? [],
+    }));
+  }
+
+  const needsActionWithOutcomes = attach(topNeeds);
+  const inMotionWithOutcomes = attach(topMotion);
+  const recentWithOutcomes = attach(topRecent);
+
+  // Build rollup from the recentlyShipped band's outcomes — no extra fetch.
+  // shipped_count counts ALL recently-shipped items (not just the top-5
+  // shown), so we use the full list length.
+  const recentOutcomesFlat = recentWithOutcomes.flatMap((r) => r.outcomes);
+  const totalCost = recentOutcomesFlat.reduce((sum, o) => sum + (o.cost_usd ?? 0), 0);
+  const postureRollup: VerificationRollup = rollupFromOutcomes(recentOutcomesFlat, {
+    window_days: 7,
+    shipped_count: recentlyShipped.length,
+    total_cost_usd: totalCost,
+  });
+
   const hero = buildHero(wired, {
     needs_action_count: needsAction.length,
     in_motion_count: inMotion.length,

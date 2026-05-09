@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { clearCache } from '@/lib/verification/cache';
 import {
   outcomesForFeature,
+  outcomesForFeatures,
   rollup,
   type AggregatorDeps,
 } from '@/lib/verification/aggregate';
@@ -51,5 +52,27 @@ describe('rollup', () => {
       smoke_failed_count: 1,
       total_cost_usd: 4.2,
     });
+  });
+});
+
+describe('outcomesForFeatures', () => {
+  it('caches results by feature-set key — second call does not re-fetch', async () => {
+    const extractGateB = vi.fn().mockResolvedValue(passed('gate_b'));
+    const extractAudit = vi.fn().mockResolvedValue(passed('audit_p4'));
+    const extractRisk = vi.fn().mockResolvedValue(null);
+    const extractSmoke = vi.fn().mockResolvedValue(null);
+    const deps: AggregatorDeps = { extractGateB, extractAudit, extractRisk, extractSmoke };
+
+    const features = [{ repo: 'a/b', issue_number: 42 }];
+    // First call — populates cache
+    const r1 = await outcomesForFeatures({} as never, features, deps);
+    expect(r1.length).toBe(1);
+    expect(r1[0].length).toBe(2);
+    expect(extractGateB).toHaveBeenCalledTimes(1);
+
+    // Second call — should hit cache, not re-call extractors
+    const r2 = await outcomesForFeatures({} as never, features, deps);
+    expect(r2).toEqual(r1);
+    expect(extractGateB).toHaveBeenCalledTimes(1); // still 1, no re-call
   });
 });

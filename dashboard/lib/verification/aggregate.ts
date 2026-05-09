@@ -4,12 +4,10 @@ import { extractAuditOutcome } from './extractors/audit';
 import { extractRiskOutcome } from './extractors/risk';
 import { extractSmokeOutcome } from './extractors/smoke';
 import { extractGateBOutcome } from './extractors/gate-b';
+import { hashInputs, getCached, setCached } from './cache';
 import type { VerificationOutcome, VerificationRollup } from './types';
 
-// Pillar 2 (evidence) is not in v1 — it has no comment artifact; surfacing it
-// would require the workflow-runs API. Implicit signal: if Gate B produced an
-// outcome, the EvidenceBundle was frozen (it's a hard prerequisite). See the
-// deferred sub-task tracker.
+// Pillar 2 (evidence) is not in v1 — see deferred sub-task tracker.
 export type AggregatorDeps = {
   extractGateB: typeof extractGateBOutcome;
   extractAudit: typeof extractAuditOutcome;
@@ -39,7 +37,30 @@ export async function outcomesForFeature(
   return results.filter((r): r is VerificationOutcome => r !== null);
 }
 
-export function rollup(
+/**
+ * Batched outcomes for a list of features, with 30-min in-memory cache. Returns
+ * one outcomes array per input feature, in the same order. Cache key is the
+ * sorted list of `<repo>#<issue_number>` so two callers with the same feature
+ * set hit the same cache slot regardless of input order.
+ */
+export async function outcomesForFeatures(
+  octokit: Octokit,
+  features: Array<{ repo: string; issue_number: number }>,
+  deps: AggregatorDeps = DEFAULT_DEPS,
+): Promise<VerificationOutcome[][]> {
+  if (features.length === 0) return [];
+  const keyParts = features.map((f) => `${f.repo}#${f.issue_number}`);
+  const cacheKey = hashInputs(keyParts, 0);
+  const cached = getCached<VerificationOutcome[][]>(cacheKey);
+  if (cached) return cached;
+  const fresh = await Promise.all(
+    features.map((f) => outcomesForFeature(octokit, f.repo, f.issue_number, deps)),
+  );
+  setCached(cacheKey, fresh);
+  return fresh;
+}
+
+export function rollupFromOutcomes(
   outcomes: VerificationOutcome[],
   base: { window_days: number; shipped_count: number; total_cost_usd: number },
 ): VerificationRollup {
@@ -59,3 +80,6 @@ export function rollup(
     total_cost_usd: base.total_cost_usd,
   };
 }
+
+// Deprecated alias — keep export so nothing breaks if external callers exist.
+export const rollup = rollupFromOutcomes;
