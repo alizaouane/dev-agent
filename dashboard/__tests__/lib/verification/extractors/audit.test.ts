@@ -46,7 +46,7 @@ describe('extractAuditOutcome (Pillar 4)', () => {
     expect(await extractAuditOutcome(oct, 'a/b', 142)).toBeNull();
   });
 
-  it('returns passed when verdict is clean', async () => {
+  it('returns passed when verdict is clean and forwards cost_usd from telemetry', async () => {
     const oct = mkOctokit([{ body: cleanBody, html_url: 'https://example/c1', created_at: '2026-05-09T10:00:00Z' }]);
     const out = await extractAuditOutcome(oct, 'a/b', 142);
     expect(out).toMatchObject({
@@ -54,6 +54,7 @@ describe('extractAuditOutcome (Pillar 4)', () => {
       status: 'passed',
       details_url: 'https://example/c1',
       ran_at: '2026-05-09T10:00:00Z',
+      cost_usd: 0.04,
     });
   });
 

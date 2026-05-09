@@ -51,6 +51,7 @@ export async function extractAuditOutcome(
       summary,
       details_url: comments[i].html_url,
       ran_at: comments[i].created_at ?? new Date().toISOString(),
+      cost_usd: t.cost_usd, // forward from parseTelemetry — feeds VerificationRollup.total_cost_usd
     };
   }
   return null;
