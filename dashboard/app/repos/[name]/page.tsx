@@ -12,6 +12,7 @@ import { EmptyState } from '@/components/empty-state';
 import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
 import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
+import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { PILLAR_LABELS } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
@@ -26,6 +27,21 @@ async function isWorkflowInstalled(
 ): Promise<boolean> {
   try {
     await octokit.repos.getContent({ owner, repo, path, ref: default_branch });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function probeFile(
+  octokit: Awaited<ReturnType<typeof getOctokit>>,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<boolean> {
+  try {
+    await octokit.repos.getContent({ owner, repo, path, ref });
     return true;
   } catch {
     return false;
@@ -55,8 +71,22 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
         : Promise.resolve(false),
     ]);
 
+  const [pmMdPresent] = await Promise.all([
+    repo.wired_up
+      ? probeFile(octokit, repo.owner, repo.name, '.dev-agent/pm.md', repo.default_branch)
+      : Promise.resolve(false),
+  ]);
+  const setupSteps: SetupSteps = {
+    wired: repo.wired_up,
+    pm_md_present: pmMdPresent,
+    scout_configured: unfinishedWorkInstalled,
+    first_proposal: proposals.length > 0,
+    first_feature_shipped: workspace.recentlyShipped.length > 0 || workspace.inFlight.length > 0,
+  };
+
   return (
     <div className="flex flex-col gap-10">
+      <SetupChecklist repoName={name} steps={setupSteps} />
       {/* Band 1 — Repo header */}
       <section className="flex flex-wrap items-start justify-between gap-4">
         <div>
