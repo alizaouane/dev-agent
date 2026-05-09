@@ -1,5 +1,3 @@
-import 'server-only';
-
 export const PILLAR_IDS = ['gate_b', 'audit_p4', 'risk_p5', 'smoke_p7', 'evidence_p2'] as const;
 export type PillarId = (typeof PILLAR_IDS)[number];
 
@@ -11,7 +9,9 @@ export const PILLAR_LABELS: Record<PillarId, string> = {
   evidence_p2: 'Evidence (Pillar 2)',
 };
 
-export type PillarStatus = 'passed' | 'blocked' | 'advisory' | 'failed' | 'not_run';
+const PILLAR_STATUSES = ['passed', 'blocked', 'advisory', 'failed', 'not_run'] as const;
+export type PillarStatus = (typeof PILLAR_STATUSES)[number];
+const VALID_STATUSES: ReadonlySet<string> = new Set(PILLAR_STATUSES);
 
 export type VerificationOutcome = {
   feature_id: number;
@@ -23,14 +23,6 @@ export type VerificationOutcome = {
   cost_usd?: number;
   ran_at: string; // ISO 8601
 };
-
-const VALID_STATUSES: ReadonlySet<string> = new Set([
-  'passed',
-  'blocked',
-  'advisory',
-  'failed',
-  'not_run',
-]);
 
 export function isVerificationOutcome(v: unknown): v is VerificationOutcome {
   if (typeof v !== 'object' || v === null) return false;
@@ -44,6 +36,7 @@ export function isVerificationOutcome(v: unknown): v is VerificationOutcome {
     VALID_STATUSES.has(o.status) &&
     typeof o.summary === 'string' &&
     typeof o.details_url === 'string' &&
+    (o.cost_usd === undefined || typeof o.cost_usd === 'number') &&
     typeof o.ran_at === 'string'
   );
 }

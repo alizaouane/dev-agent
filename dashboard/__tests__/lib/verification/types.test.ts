@@ -39,6 +39,49 @@ describe('verification types', () => {
     ).toBe(false);
   });
 
+  it('isVerificationOutcome rejects an unknown pillar', () => {
+    expect(
+      isVerificationOutcome({
+        feature_id: 1,
+        repo: 'a/b',
+        pillar: 'nonexistent',
+        status: 'passed',
+        summary: '',
+        details_url: '',
+        ran_at: '2026-05-09T10:00:00Z',
+      } as unknown),
+    ).toBe(false);
+  });
+
+  it('isVerificationOutcome accepts an outcome without the optional cost_usd', () => {
+    expect(
+      isVerificationOutcome({
+        feature_id: 1,
+        repo: 'a/b',
+        pillar: 'audit_p4',
+        status: 'passed',
+        summary: '',
+        details_url: '',
+        ran_at: '2026-05-09T10:00:00Z',
+      }),
+    ).toBe(true);
+  });
+
+  it('isVerificationOutcome rejects a non-numeric cost_usd', () => {
+    expect(
+      isVerificationOutcome({
+        feature_id: 1,
+        repo: 'a/b',
+        pillar: 'audit_p4',
+        status: 'passed',
+        summary: '',
+        details_url: '',
+        cost_usd: '0.04',
+        ran_at: '2026-05-09T10:00:00Z',
+      } as unknown),
+    ).toBe(false);
+  });
+
   it('VerificationRollup compiles with required fields', () => {
     const rollup: VerificationRollup = {
       window_days: 7,
