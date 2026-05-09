@@ -14,10 +14,11 @@ export type FeatureCardItem = {
 };
 
 function ageLabel(seconds: number): string {
-  if (seconds < 60) return `${seconds}s`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
-  return `${Math.floor(seconds / 86400)}d`;
+  const s = Math.max(0, seconds); // clamp negative
+  if (s < 60) return `${s}s`;
+  if (s < 3600) return `${Math.floor(s / 60)}m`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h`;
+  return `${Math.floor(s / 86400)}d`;
 }
 
 export function FeatureCard({ item, hideRepo = false }: { item: FeatureCardItem; hideRepo?: boolean }) {

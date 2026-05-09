@@ -22,26 +22,48 @@ const DEFAULT_DEPS: AggregatorDeps = {
   extractSmoke: extractSmokeOutcome,
 };
 
+/**
+ * Per-feature outcomes with 30-min in-memory cache. Key is the feature
+ * (`<repo>#<issue_number>`) — caching at this granularity means features
+ * shared across two page loads (e.g. the same repo on Home + per-repo
+ * workspace) hit the same cache slot, AND the order of any batched call
+ * cannot pollute the cached value (Codex P1).
+ *
+ * One extractor failing does NOT drop the rest of the feature's outcomes
+ * (CodeRabbit R5): we use Promise.allSettled and warn on rejections.
+ */
 export async function outcomesForFeature(
   octokit: Octokit,
   repo: string,
   issueNumber: number,
   deps: AggregatorDeps = DEFAULT_DEPS,
 ): Promise<VerificationOutcome[]> {
-  const results = await Promise.all([
+  const cacheKey = hashInputs([`${repo}#${issueNumber}`], 0);
+  const cached = getCached<VerificationOutcome[]>(cacheKey);
+  if (cached) return cached;
+
+  const settled = await Promise.allSettled([
     deps.extractGateB(octokit, repo, issueNumber),
     deps.extractAudit(octokit, repo, issueNumber),
     deps.extractRisk(octokit, repo, issueNumber),
     deps.extractSmoke(octokit, repo, issueNumber),
   ]);
-  return results.filter((r): r is VerificationOutcome => r !== null);
+  const fresh: VerificationOutcome[] = [];
+  for (const r of settled) {
+    if (r.status === 'fulfilled' && r.value !== null) {
+      fresh.push(r.value);
+    } else if (r.status === 'rejected') {
+      console.warn(`outcomesForFeature: extractor failed for ${repo}#${issueNumber}:`, r.reason);
+    }
+  }
+  setCached(cacheKey, fresh);
+  return fresh;
 }
 
 /**
- * Batched outcomes for a list of features, with 30-min in-memory cache. Returns
- * one outcomes array per input feature, in the same order. Cache key is the
- * sorted list of `<repo>#<issue_number>` so two callers with the same feature
- * set hit the same cache slot regardless of input order.
+ * Batched parallel mapper. Returns one outcomes array per input feature,
+ * in the caller's input order. Caching happens per-feature inside
+ * `outcomesForFeature`, so this function is itself stateless wrt cache.
  */
 export async function outcomesForFeatures(
   octokit: Octokit,
@@ -49,15 +71,9 @@ export async function outcomesForFeatures(
   deps: AggregatorDeps = DEFAULT_DEPS,
 ): Promise<VerificationOutcome[][]> {
   if (features.length === 0) return [];
-  const keyParts = features.map((f) => `${f.repo}#${f.issue_number}`);
-  const cacheKey = hashInputs(keyParts, 0);
-  const cached = getCached<VerificationOutcome[][]>(cacheKey);
-  if (cached) return cached;
-  const fresh = await Promise.all(
+  return Promise.all(
     features.map((f) => outcomesForFeature(octokit, f.repo, f.issue_number, deps)),
   );
-  setCached(cacheKey, fresh);
-  return fresh;
 }
 
 export function rollupFromOutcomes(

@@ -46,9 +46,9 @@ export async function NavHeader() {
           <NavLinks />
         </div>
         <div className="flex items-center gap-3">
-          <Link href="/intent">
-            <Button size="sm">Brainstorm new work</Button>
-          </Link>
+          <Button asChild size="sm">
+            <Link href="/intent">Brainstorm new work</Link>
+          </Button>
           <HelpPanel />
           {session?.user && (
             <form

@@ -28,7 +28,7 @@ export function isVerificationOutcome(v: unknown): v is VerificationOutcome {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
   return (
-    typeof o.feature_id === 'number' &&
+    Number.isFinite(o.feature_id) &&
     typeof o.repo === 'string' &&
     typeof o.pillar === 'string' &&
     (PILLAR_IDS as readonly string[]).includes(o.pillar) &&
@@ -36,7 +36,7 @@ export function isVerificationOutcome(v: unknown): v is VerificationOutcome {
     VALID_STATUSES.has(o.status) &&
     typeof o.summary === 'string' &&
     typeof o.details_url === 'string' &&
-    (o.cost_usd === undefined || typeof o.cost_usd === 'number') &&
+    (o.cost_usd === undefined || Number.isFinite(o.cost_usd)) &&
     typeof o.ran_at === 'string'
   );
 }

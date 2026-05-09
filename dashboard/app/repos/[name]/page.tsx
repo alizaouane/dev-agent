@@ -81,7 +81,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     pm_md_present: pmMdPresent,
     scout_configured: unfinishedWorkInstalled,
     first_proposal: proposals.length > 0,
-    first_feature_shipped: workspace.recentlyShipped.length > 0 || workspace.inFlight.length > 0,
+    first_feature_shipped: workspace.recentlyShipped.length > 0,
   };
 
   return (
@@ -98,9 +98,9 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             </a>
           </p>
         </div>
-        <Link href={`/intent?repo=${encodeURIComponent(name)}`}>
-          <Button size="lg">Brainstorm new work on {name}</Button>
-        </Link>
+        <Button asChild size="lg">
+          <Link href={`/intent?repo=${encodeURIComponent(name)}`}>Brainstorm new work on {name}</Link>
+        </Button>
       </section>
 
       {/* Band 2 — In flight */}

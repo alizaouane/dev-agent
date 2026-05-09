@@ -41,4 +41,18 @@ describe('verification cache', () => {
     expect(getCached(k, start + 30 * 60 * 1000 - 1)).toBeDefined();
     expect(getCached(k, start + 30 * 60 * 1000)).toBeUndefined();
   });
+
+  it('evicts oldest entry when MAX_ENTRIES exceeded', () => {
+    // The MAX_ENTRIES const is 256; this test depends on it. If the cap
+    // changes, update this number too.
+    const cap = 256;
+    for (let i = 0; i < cap; i++) {
+      setCached(`key-${i}`, i);
+    }
+    expect(getCached('key-0')).toBe(0); // still present
+    setCached('overflow', 'X');
+    expect(getCached('key-0')).toBeUndefined(); // oldest evicted
+    expect(getCached('overflow')).toBe('X');    // newest present
+    expect(getCached('key-1')).toBe(1);         // second-oldest still present
+  });
 });

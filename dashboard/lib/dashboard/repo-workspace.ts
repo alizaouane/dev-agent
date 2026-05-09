@@ -49,12 +49,20 @@ export async function loadRepoWorkspace(octokit: Octokit, repo: RepoInfo) {
   const items = await fetchPipeline(octokit, [repo], { include_terminal: true });
   const { inFlight, recentlyShipped } = partitionRepoPipeline(items);
 
+  // Top-10 are rendered. Posture rollup uses the full 7-day shipped subset
+  // (capped at POSTURE_CAP) so audit/risk/smoke counts cover every shipped
+  // item the shipped_count includes, not just the top-10 rendered cards
+  // (Codex P2 / CodeRabbit R4). Per-feature caching keeps warm hits cheap.
+  const POSTURE_CAP = 50; // hard upper bound on rollup-input fetches per page load
+  const sevenDayShippedAll = recentlyShipped.filter((i) => i.age_seconds <= 7 * 24 * 3600);
+  const sevenDayShipped = sevenDayShippedAll.slice(0, POSTURE_CAP);
+
   const topInFlight = inFlight.slice(0, 10);
   const topRecent = recentlyShipped.slice(0, 10);
 
   const seen = new Set<string>();
   const uniqueFeatures: Array<{ repo: string; issue_number: number }> = [];
-  for (const item of [...topInFlight, ...topRecent]) {
+  for (const item of [...topInFlight, ...topRecent, ...sevenDayShipped]) {
     const k = `${item.repo}#${item.issue_number}`;
     if (seen.has(k)) continue;
     seen.add(k);
@@ -81,9 +89,9 @@ export async function loadRepoWorkspace(octokit: Octokit, repo: RepoInfo) {
   const inFlightOutcomes = attach(topInFlight);
   const recentOutcomes = attach(topRecent);
 
-  // Build rollup from the recently-shipped outcomes (window: 7 days subset of
-  // the 14-day shown list). shipped_count counts only items in the 7-day window.
-  const sevenDayShipped = recentlyShipped.filter((i) => i.age_seconds <= 7 * 24 * 3600);
+  // Posture covers the FULL 7-day shipped window (capped at POSTURE_CAP),
+  // not just the top-10 rendered above. shipped_count uses the same
+  // capped set so the displayed shipped count matches the outcome counts.
   const sevenDayOutcomes = sevenDayShipped.flatMap(
     (i) => outcomesByKey.get(`${i.repo}#${i.issue_number}`) ?? [],
   );

@@ -75,4 +75,41 @@ describe('outcomesForFeatures', () => {
     expect(r2).toEqual(r1);
     expect(extractGateB).toHaveBeenCalledTimes(1); // still 1, no re-call
   });
+
+  it('order-independence: outcomes match the caller-supplied feature order (Codex P1)', async () => {
+    // Per-feature cache: gives outcomes specific to (repo, issue_number).
+    // Two callers passing the same features in DIFFERENT orders both get
+    // their own outcomes correctly mapped, regardless of insertion order.
+    const f1 = { repo: 'a/b', issue_number: 1 };
+    const f2 = { repo: 'a/b', issue_number: 2 };
+    const deps: AggregatorDeps = {
+      extractGateB: vi.fn(async (_o, _r, n) => ({ ...passed('gate_b'), feature_id: n })),
+      extractAudit: vi.fn().mockResolvedValue(null),
+      extractRisk: vi.fn().mockResolvedValue(null),
+      extractSmoke: vi.fn().mockResolvedValue(null),
+    };
+
+    // First caller: [f1, f2]
+    const r1 = await outcomesForFeatures({} as never, [f1, f2], deps);
+    expect(r1[0][0].feature_id).toBe(1);
+    expect(r1[1][0].feature_id).toBe(2);
+
+    // Second caller: [f2, f1] — must still map outcomes to the right feature
+    const r2 = await outcomesForFeatures({} as never, [f2, f1], deps);
+    expect(r2[0][0].feature_id).toBe(2); // f2 first
+    expect(r2[1][0].feature_id).toBe(1); // f1 second
+  });
+});
+
+describe('outcomesForFeature with allSettled', () => {
+  it('continues when one extractor throws — partial outcomes returned', async () => {
+    const deps = {
+      extractGateB: vi.fn().mockResolvedValue(passed('gate_b')),
+      extractAudit: vi.fn().mockRejectedValue(new Error('boom')),
+      extractRisk: vi.fn().mockResolvedValue(passed('risk_p5')),
+      extractSmoke: vi.fn().mockResolvedValue(null),
+    };
+    const out = await outcomesForFeature({} as never, 'a/b', 1, deps);
+    expect(out.map((o) => o.pillar).sort()).toEqual(['gate_b', 'risk_p5']);
+  });
 });

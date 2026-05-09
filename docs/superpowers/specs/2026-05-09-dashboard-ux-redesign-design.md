@@ -1,6 +1,6 @@
 # Dashboard UX Redesign — Two-Layer Surface + Verification Visibility
 
-**Status:** Design approved 2026-05-09. Awaiting implementation plan.
+**Status:** Implementation merged in PR #84 (2026-05-09).
 **Author:** ali (with Claude Code, brainstorming skill)
 **Branch context:** drafted on `feat/verification-pillar4-apply-audit`; design lands separately, not coupled to that branch's verification work.
 

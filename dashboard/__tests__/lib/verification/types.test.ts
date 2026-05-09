@@ -82,6 +82,35 @@ describe('verification types', () => {
     ).toBe(false);
   });
 
+  it('isVerificationOutcome rejects NaN feature_id', () => {
+    expect(
+      isVerificationOutcome({
+        feature_id: NaN,
+        repo: 'a/b',
+        pillar: 'audit_p4',
+        status: 'passed',
+        summary: '',
+        details_url: '',
+        ran_at: '2026-05-09T10:00:00Z',
+      } as unknown),
+    ).toBe(false);
+  });
+
+  it('isVerificationOutcome rejects Infinity cost_usd', () => {
+    expect(
+      isVerificationOutcome({
+        feature_id: 1,
+        repo: 'a/b',
+        pillar: 'audit_p4',
+        status: 'passed',
+        summary: '',
+        details_url: '',
+        cost_usd: Infinity,
+        ran_at: '2026-05-09T10:00:00Z',
+      } as unknown),
+    ).toBe(false);
+  });
+
   it('VerificationRollup compiles with required fields', () => {
     const rollup: VerificationRollup = {
       window_days: 7,

@@ -78,10 +78,14 @@ export async function loadHomeBands(octokit: Octokit, wired: RepoInfo[]) {
   const items = await fetchPipeline(octokit, wired, { include_terminal: true });
   const { needsAction, inMotion, recentlyShipped } = partitionPipeline(items);
 
-  // Cap each band at 5 for rendering. Combine into a single cached batched
-  // fetch — the cache key is order-independent so the same features fetched
-  // by different bands hit the same cache entry. Then distribute outcomes
-  // back to each band by (repo, issue_number) lookup.
+  // Cap each band at 5 for rendering. Posture rollup uses the FULL recently-
+  // shipped set (capped at POSTURE_CAP) so audit/risk/smoke counts cover
+  // every shipped item the shipped_count includes, not just the top-5
+  // rendered cards (Codex P2 / CodeRabbit R4). Per-feature caching makes
+  // this cheap on warm hits.
+  const POSTURE_CAP = 50; // hard upper bound on rollup-input fetches per page load
+  const allRecentForPosture = recentlyShipped.slice(0, POSTURE_CAP);
+
   const topNeeds = needsAction.slice(0, 5);
   const topMotion = inMotion.slice(0, 5);
   const topRecent = recentlyShipped.slice(0, 5);
@@ -90,7 +94,7 @@ export async function loadHomeBands(octokit: Octokit, wired: RepoInfo[]) {
   // theory appear in two bands during a transition.
   const seen = new Set<string>();
   const uniqueFeatures: Array<{ repo: string; issue_number: number }> = [];
-  for (const item of [...topNeeds, ...topMotion, ...topRecent]) {
+  for (const item of [...topNeeds, ...topMotion, ...allRecentForPosture]) {
     const k = `${item.repo}#${item.issue_number}`;
     if (seen.has(k)) continue;
     seen.add(k);
@@ -114,14 +118,17 @@ export async function loadHomeBands(octokit: Octokit, wired: RepoInfo[]) {
   const inMotionWithOutcomes = attach(topMotion);
   const recentWithOutcomes = attach(topRecent);
 
-  // Build rollup from the recentlyShipped band's outcomes — no extra fetch.
-  // shipped_count counts ALL recently-shipped items (not just the top-5
-  // shown), so we use the full list length.
-  const recentOutcomesFlat = recentWithOutcomes.flatMap((r) => r.outcomes);
-  const totalCost = recentOutcomesFlat.reduce((sum, o) => sum + (o.cost_usd ?? 0), 0);
-  const postureRollup: VerificationRollup = rollupFromOutcomes(recentOutcomesFlat, {
+  // Posture covers the full 7-day shipped window (capped at POSTURE_CAP),
+  // not just the top-5 cards rendered above. shipped_count uses the same
+  // capped set so the displayed "12 features shipped" matches the
+  // outcomes counts under it.
+  const postureOutcomesFlat = allRecentForPosture.flatMap(
+    (i) => outcomesByKey.get(`${i.repo}#${i.issue_number}`) ?? [],
+  );
+  const totalCost = postureOutcomesFlat.reduce((sum, o) => sum + (o.cost_usd ?? 0), 0);
+  const postureRollup: VerificationRollup = rollupFromOutcomes(postureOutcomesFlat, {
     window_days: 7,
-    shipped_count: recentlyShipped.length,
+    shipped_count: allRecentForPosture.length,
     total_cost_usd: totalCost,
   });
 
