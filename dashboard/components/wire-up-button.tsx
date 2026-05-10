@@ -22,11 +22,9 @@ import { wireUpRepo } from '@/lib/actions';
 export function WireUpButton({
   owner,
   repo,
-  default_branch,
 }: {
   owner: string;
   repo: string;
-  default_branch: string;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -57,7 +55,6 @@ export function WireUpButton({
     >
       <input type="hidden" name="owner" value={owner} />
       <input type="hidden" name="repo" value={repo} />
-      <input type="hidden" name="default_branch" value={default_branch} />
       <Button type="submit" disabled={pending} variant="default">
         {pending ? 'Wiring up…' : 'Wire up dev-agent'}
       </Button>

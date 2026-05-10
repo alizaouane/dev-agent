@@ -294,12 +294,19 @@ export async function wireUpRepo(
   try {
     const session_username = await getCurrentUsername();
     const octokit = await getOctokit();
-    const owner = (formData.get('owner') as string).trim();
-    const repo = (formData.get('repo') as string).trim();
-    const default_branch = (formData.get('default_branch') as string)?.trim() || 'main';
+    const owner = ((formData.get('owner') as string | null) ?? '').trim();
+    const repo = ((formData.get('repo') as string | null) ?? '').trim();
 
     if (!owner || !repo) throw new Error('owner and repo are required');
     await assertWritePermission(octokit, owner, repo, session_username);
+
+    // Resolve the repo's actual default branch server-side instead of
+    // trusting the form's hidden input — same pattern as setBugScoutSchedule
+    // / triggerUnfinishedWorkScan / dispatchRollback. A tampered form value
+    // here would either bypass the "already wired" pre-check (data-loss
+    // risk: re-overwriting an existing config) or 404 the probe.
+    const repoData = await octokit.repos.get({ owner, repo });
+    const default_branch = repoData.data.default_branch ?? 'main';
 
     // Defensive: if the repo already has .dev-agent.yml on its default branch,
     // bail out. /repos derives `wired_up` server-side so this is mostly a

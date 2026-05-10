@@ -116,7 +116,7 @@ function RepoSection({
                 View
               </Link>
             ) : (
-              <WireUpButton owner={r.owner} repo={r.name} default_branch={r.default_branch} />
+              <WireUpButton owner={r.owner} repo={r.name} />
             )}
           </li>
         ))}
