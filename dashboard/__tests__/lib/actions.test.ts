@@ -391,7 +391,7 @@ describe('wireUpRepo', () => {
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
-  it('refuses to wire up an already-wired repo', async () => {
+  it('returns "already wired up" error for an already-wired repo', async () => {
     // .dev-agent.yml already exists on the default branch.
     mockOctokit.repos.getContent.mockResolvedValueOnce({ data: { type: 'file' } });
 
@@ -400,10 +400,16 @@ describe('wireUpRepo', () => {
     fd.append('owner', 'q');
     fd.append('repo', 'already-wired');
     fd.append('default_branch', 'main');
-    await expect(wireUpRepo(fd)).rejects.toThrow(/already wired up/);
+    // Returns instead of throwing so the message survives prod's
+    // Server Components error mask.
+    await expect(wireUpRepo(fd)).resolves.toEqual({
+      error: expect.stringMatching(/already wired up/),
+    });
+    // No file commits attempted on the already-wired path.
+    expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
-  it('refuses without write permission', async () => {
+  it('returns a write-permission error when the user lacks write', async () => {
     mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
       data: { permission: 'read' },
     });
@@ -411,7 +417,9 @@ describe('wireUpRepo', () => {
     const fd = new FormData();
     fd.append('owner', 'q');
     fd.append('repo', 'r');
-    await expect(wireUpRepo(fd)).rejects.toThrow(/lacks write/);
+    await expect(wireUpRepo(fd)).resolves.toEqual({
+      error: expect.stringMatching(/lacks write/),
+    });
   });
 });
 

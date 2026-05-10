@@ -37,7 +37,14 @@ export function WireUpButton({
         setError(null);
         startTransition(async () => {
           try {
-            await wireUpRepo(formData);
+            const result = await wireUpRepo(formData);
+            // Production-mask-resistant error contract: wireUpRepo
+            // returns { error } instead of throwing so the real message
+            // survives the Server Components mask. Success paths fall
+            // through to the redirect (which throws NEXT_REDIRECT).
+            if (result && 'error' in result) {
+              setError(result.error);
+            }
           } catch (e) {
             // Next.js' redirect() throws NEXT_REDIRECT — let it through.
             const msg = e instanceof Error ? e.message : String(e);
