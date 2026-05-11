@@ -3,14 +3,15 @@
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { triggerCleanupScan } from '@/lib/actions';
+import { InstallScoutWorkflowPanel } from '@/components/install-scout-workflow-panel';
 
 type Props = {
   repo: string;
   /**
    * Whether the cleanup-scout workflow file is present on the repo's
    * default branch. Older wire-ups (pre-cleanup-scout) won't have it
-   * yet — show a degraded state pointing at re-wire-up rather than
-   * letting the dispatch 404.
+   * yet — show an inline "Install" panel that backfills the missing
+   * workflow file with a single click.
    */
   workflowPresent: boolean;
 };
@@ -22,15 +23,12 @@ export function ScanCleanupButton({ repo, workflowPresent }: Props) {
 
   if (!workflowPresent) {
     return (
-      <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
-        <p className="font-medium">Cleanup scan isn&apos;t installed.</p>
-        <p className="mt-1 text-muted-foreground">
-          This repo was wired up before the cleanup scout existed. Copy the
-          workflow file from the dev-agent repo&apos;s{' '}
-          <code>examples/web-app-template/.github/workflows/dev-agent-cleanup-scout.yml</code>{' '}
-          and commit it to <code>.github/workflows/</code> on your default branch.
-        </p>
-      </div>
+      <InstallScoutWorkflowPanel
+        repo={repo}
+        workflow="cleanup"
+        title="Cleanup scan"
+        description="This repo was wired up before the cleanup scout existed. Install it to enable LLM scans for dead code, stale TODOs, and abandoned files."
+      />
     );
   }
 

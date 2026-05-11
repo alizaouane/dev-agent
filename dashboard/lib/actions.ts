@@ -6,7 +6,12 @@ import type { Octokit } from '@octokit/rest';
 
 import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
-import { WIRE_UP_FILES } from './wire-up-template';
+import {
+  WIRE_UP_FILES,
+  SCOUT_WORKFLOWS,
+  SCOUT_WORKFLOW_KEYS,
+  type ScoutWorkflowKey,
+} from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
 import {
   parseRepoFromProposalId,
@@ -350,6 +355,85 @@ export async function wireUpRepo(formData: FormData): Promise<void> {
 
   revalidatePath('/repos');
   redirect('/repos');
+}
+
+/**
+ * Server Action: install a single scout workflow file on a repo that was
+ * wired up before this scout existed. Backfills bug-scout / unfinished-work /
+ * cleanup workflows without forcing a full re-wire (which would require
+ * deleting `.dev-agent.yml` first to clear the already-wired guard).
+ *
+ * Returns `{ error }` instead of throwing so production's Server Components
+ * mask doesn't strand the user with no actionable info — same pattern as
+ * `approveAndStart` / `redispatchPhase`.
+ *
+ * Form fields:
+ *  - `repo`     — `owner/name`
+ *  - `workflow` — one of `bug-scout | unfinished-work | cleanup`
+ */
+export async function installScoutWorkflow(
+  formData: FormData,
+): Promise<{ error: string } | void> {
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string | null) ?? '').trim();
+    const workflowRaw = ((formData.get('workflow') as string | null) ?? '').trim();
+
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    if (!SCOUT_WORKFLOW_KEYS.includes(workflowRaw as ScoutWorkflowKey)) {
+      throw new Error(
+        `unknown workflow: ${workflowRaw} (expected one of ${SCOUT_WORKFLOW_KEYS.join(', ')})`,
+      );
+    }
+    const workflow = workflowRaw as ScoutWorkflowKey;
+    const spec = SCOUT_WORKFLOWS[workflow];
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    // Resolve default branch server-side — same reason as wireUpRepo /
+    // setBugScoutSchedule. Don't trust client-supplied branch hints.
+    const repoData = await octokit.repos.get({ owner, repo });
+    const default_branch = repoData.data.default_branch ?? 'main';
+
+    // Idempotency guard: refuse if the workflow file is already there
+    // (TOCTOU between the page render and the click). Distinguishes a
+    // genuine "missing" (404 → proceed) from any other error (re-throw,
+    // surface to user).
+    try {
+      await octokit.repos.getContent({
+        owner,
+        repo,
+        path: spec.path,
+        ref: default_branch,
+      });
+      throw new Error(
+        `${spec.label} workflow is already installed at ${spec.path} on ${default_branch}.`,
+      );
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      if (status !== 404) throw err;
+    }
+
+    await octokit.repos.createOrUpdateFileContents({
+      owner,
+      repo,
+      path: spec.path,
+      message: `chore(dev-agent): install ${spec.label} workflow`,
+      content: Buffer.from(spec.content, 'utf8').toString('base64'),
+    });
+
+    void session_username;
+    revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[installScoutWorkflow] failed', {
+      message,
+      raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
+    });
+    return { error: message };
+  }
 }
 
 /**

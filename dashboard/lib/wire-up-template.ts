@@ -462,3 +462,33 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
   { path: '.dev-agent/pm.md', content: TEMPLATE_PM_MD },
   { path: 'SESSION_LOG.md', content: TEMPLATE_SESSION_LOG_MD },
 ];
+
+/**
+ * Scout workflows that older wire-ups (pre-{bug-scout,unfinished-work,cleanup})
+ * are missing. Drives the one-click "Install" buttons on /repos/[name] so the
+ * user can backfill them without re-running the full wire-up (which would
+ * require deleting `.dev-agent.yml` first to pass the already-wired guard).
+ */
+export const SCOUT_WORKFLOWS = {
+  'bug-scout': {
+    path: '.github/workflows/dev-agent-bug-scout.yml',
+    content: TEMPLATE_BUG_SCOUT_WORKFLOW_YML,
+    label: 'Bug-scout',
+  },
+  'unfinished-work': {
+    path: '.github/workflows/dev-agent-unfinished-work-scout.yml',
+    content: TEMPLATE_UNFINISHED_WORK_SCOUT_WORKFLOW_YML,
+    label: 'PM scan (unfinished-work scout)',
+  },
+  cleanup: {
+    path: '.github/workflows/dev-agent-cleanup-scout.yml',
+    content: TEMPLATE_CLEANUP_SCOUT_WORKFLOW_YML,
+    label: 'Cleanup scan',
+  },
+} as const;
+
+export type ScoutWorkflowKey = keyof typeof SCOUT_WORKFLOWS;
+
+export const SCOUT_WORKFLOW_KEYS: ScoutWorkflowKey[] = Object.keys(
+  SCOUT_WORKFLOWS,
+) as ScoutWorkflowKey[];
