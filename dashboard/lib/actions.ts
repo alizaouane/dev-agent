@@ -282,72 +282,107 @@ export async function dispatchRollback(formData: FormData): Promise<void> {
  *  - `repo`  — repo name
  *  - `default_branch` — defaults to `main` if absent
  *
- * @throws Error if the repo already has .dev-agent.yml on the default branch.
- * @throws ForbiddenError if user lacks write perm.
+ * Returns `{ error }` (does not throw) on failure: production masks any
+ * thrown server-action error with the generic "Server Components render"
+ * string, which strands the user with no actionable info. Same pattern
+ * as `approveAndStart`. On success, falls through to `redirect('/repos')`
+ * which throws NEXT_REDIRECT for the framework.
  */
-export async function wireUpRepo(formData: FormData): Promise<void> {
-  const session_username = await getCurrentUsername();
-  const octokit = await getOctokit();
-  const owner = (formData.get('owner') as string).trim();
-  const repo = (formData.get('repo') as string).trim();
-  const default_branch = (formData.get('default_branch') as string)?.trim() || 'main';
-
-  if (!owner || !repo) throw new Error('owner and repo are required');
-  await assertWritePermission(octokit, owner, repo, session_username);
-
-  // Defensive: if the repo already has .dev-agent.yml on its default branch,
-  // bail out. /repos derives `wired_up` server-side so this is mostly a
-  // TOCTOU guard.
+export async function wireUpRepo(
+  formData: FormData,
+): Promise<{ error: string } | void> {
   try {
-    await octokit.repos.getContent({ owner, repo, path: '.dev-agent.yml', ref: default_branch });
-    throw new Error(`${owner}/${repo} is already wired up`);
-  } catch (err) {
-    const status = (err as { status?: number }).status;
-    if (status !== 404) throw err;
-    // 404 is the happy path: file doesn't exist, proceed.
-  }
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const owner = ((formData.get('owner') as string | null) ?? '').trim();
+    const repo = ((formData.get('repo') as string | null) ?? '').trim();
 
-  // Push the dashboard's ANTHROPIC_API_KEY into the consumer repo's Actions
-  // secrets so the user doesn't have to paste it manually. Failures (e.g.,
-  // user has write but not admin perm — secrets require admin) are non-
-  // fatal; we log and continue. The user will see a workflow run fail later
-  // with a missing-secret error if push didn't succeed.
-  const dashboardKey = process.env.ANTHROPIC_API_KEY;
-  if (dashboardKey) {
+    if (!owner || !repo) throw new Error('owner and repo are required');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    // Resolve the repo's actual default branch server-side instead of
+    // trusting the form's hidden input — same pattern as setBugScoutSchedule
+    // / triggerUnfinishedWorkScan / dispatchRollback. A tampered form value
+    // here would either bypass the "already wired" pre-check (data-loss
+    // risk: re-overwriting an existing config) or 404 the probe.
+    const repoData = await octokit.repos.get({ owner, repo });
+    const default_branch = repoData.data.default_branch ?? 'main';
+
+    // Defensive: if the repo already has .dev-agent.yml on its default branch,
+    // bail out. /repos derives `wired_up` server-side so this is mostly a
+    // TOCTOU guard — but it ALSO catches the case where the dashboard's repo
+    // probe returned a transient error that bucketed an already-wired repo
+    // into "Available to wire up". Bust the path cache so the next render
+    // re-probes (likely correctly this time).
+    let alreadyWired = false;
     try {
-      await pushRepoSecret({
-        octokit,
-        owner,
-        repo,
-        name: 'ANTHROPIC_API_KEY',
-        value: dashboardKey,
-      });
+      await octokit.repos.getContent({ owner, repo, path: '.dev-agent.yml', ref: default_branch });
+      alreadyWired = true;
     } catch (err) {
-      console.warn(`wireUpRepo: pushRepoSecret failed for ${owner}/${repo}:`, err);
+      const status = (err as { status?: number }).status;
+      if (status !== 404) throw err;
+      // 404 is the happy path: file doesn't exist, proceed.
     }
-  }
+    if (alreadyWired) {
+      revalidatePath('/repos');
+      throw new Error(
+        `${owner}/${repo} is already wired up — open it from the "Wired up" section of /repos (refresh the page if it still appears under "Available to wire up").`,
+      );
+    }
 
-  // Direct-commit each template file to the default branch. Without a
-  // `branch` arg, createOrUpdateFileContents targets the repo's default
-  // and handles both populated and empty repos uniformly.
-  // ESLint disable: per-file commits are intentionally serial — Octokit's
-  // createOrUpdateFileContents takes a branch HEAD lock per call, so
-  // parallel calls would race on the same branch ref.
-  // eslint-disable-next-line no-restricted-syntax
-  for (const f of WIRE_UP_FILES) {
-    await octokit.repos.createOrUpdateFileContents({
-      owner,
-      repo,
-      path: f.path,
-      message: `chore(dev-agent): add ${f.path}`,
-      content: Buffer.from(f.content, 'utf8').toString('base64'),
+    // Push the dashboard's ANTHROPIC_API_KEY into the consumer repo's Actions
+    // secrets so the user doesn't have to paste it manually. Failures (e.g.,
+    // user has write but not admin perm — secrets require admin) are non-
+    // fatal; we log and continue. The user will see a workflow run fail later
+    // with a missing-secret error if push didn't succeed.
+    const dashboardKey = process.env.ANTHROPIC_API_KEY;
+    if (dashboardKey) {
+      try {
+        await pushRepoSecret({
+          octokit,
+          owner,
+          repo,
+          name: 'ANTHROPIC_API_KEY',
+          value: dashboardKey,
+        });
+      } catch (err) {
+        console.warn(`wireUpRepo: pushRepoSecret failed for ${owner}/${repo}:`, err);
+      }
+    }
+
+    // Direct-commit each template file to the default branch. Without a
+    // `branch` arg, createOrUpdateFileContents targets the repo's default
+    // and handles both populated and empty repos uniformly.
+    // ESLint disable: per-file commits are intentionally serial — Octokit's
+    // createOrUpdateFileContents takes a branch HEAD lock per call, so
+    // parallel calls would race on the same branch ref.
+    // eslint-disable-next-line no-restricted-syntax
+    for (const f of WIRE_UP_FILES) {
+      await wrapStep(`committing ${f.path}`, () =>
+        octokit.repos.createOrUpdateFileContents({
+          owner,
+          repo,
+          path: f.path,
+          message: `chore(dev-agent): add ${f.path}`,
+          content: Buffer.from(f.content, 'utf8').toString('base64'),
+        }),
+      );
+    }
+
+    // Suppress "unused" on session_username — kept here in case we want to
+    // audit-log the wire-up later.
+    void session_username;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[wireUpRepo] failed', {
+      message,
+      raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
     });
+    return { error: message };
   }
 
-  // Suppress "unused" on session_username — kept here in case we want to
-  // audit-log the wire-up later.
-  void session_username;
-
+  // Outside the try/catch so `redirect()`'s NEXT_REDIRECT signal
+  // propagates to the framework — wrapping it would swallow the redirect.
   revalidatePath('/repos');
   redirect('/repos');
 }

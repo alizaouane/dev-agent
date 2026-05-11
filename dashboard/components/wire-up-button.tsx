@@ -22,11 +22,9 @@ import { wireUpRepo } from '@/lib/actions';
 export function WireUpButton({
   owner,
   repo,
-  default_branch,
 }: {
   owner: string;
   repo: string;
-  default_branch: string;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -37,7 +35,14 @@ export function WireUpButton({
         setError(null);
         startTransition(async () => {
           try {
-            await wireUpRepo(formData);
+            const result = await wireUpRepo(formData);
+            // Production-mask-resistant error contract: wireUpRepo
+            // returns { error } instead of throwing so the real message
+            // survives the Server Components mask. Success paths fall
+            // through to the redirect (which throws NEXT_REDIRECT).
+            if (result && 'error' in result) {
+              setError(result.error);
+            }
           } catch (e) {
             // Next.js' redirect() throws NEXT_REDIRECT — let it through.
             const msg = e instanceof Error ? e.message : String(e);
@@ -50,7 +55,6 @@ export function WireUpButton({
     >
       <input type="hidden" name="owner" value={owner} />
       <input type="hidden" name="repo" value={repo} />
-      <input type="hidden" name="default_branch" value={default_branch} />
       <Button type="submit" disabled={pending} variant="default">
         {pending ? 'Wiring up…' : 'Wire up dev-agent'}
       </Button>

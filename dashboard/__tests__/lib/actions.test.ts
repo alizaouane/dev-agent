@@ -339,7 +339,9 @@ function notFound() {
 
 describe('wireUpRepo', () => {
   it('commits template files directly to the default branch (no PR)', async () => {
-    // Repo is not yet wired up.
+    // Repo is not yet wired up. default_branch is resolved server-side via
+    // repos.get rather than trusting form input.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
@@ -347,7 +349,6 @@ describe('wireUpRepo', () => {
     const fd = new FormData();
     fd.append('owner', 'qualiency');
     fd.append('repo', 'test-repo');
-    fd.append('default_branch', 'main');
 
     try {
       await wireUpRepo(fd);
@@ -371,6 +372,7 @@ describe('wireUpRepo', () => {
   it('uses the same direct-commit path for empty repos', async () => {
     // Empty repos behave identically — the API creates the initial commit
     // and branch ref on first createOrUpdateFileContents.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
@@ -378,7 +380,6 @@ describe('wireUpRepo', () => {
     const fd = new FormData();
     fd.append('owner', 'qualiency');
     fd.append('repo', 'fresh-empty-repo');
-    fd.append('default_branch', 'main');
 
     try {
       await wireUpRepo(fd);
@@ -391,19 +392,51 @@ describe('wireUpRepo', () => {
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
-  it('refuses to wire up an already-wired repo', async () => {
+  it('returns "already wired up" error for an already-wired repo', async () => {
     // .dev-agent.yml already exists on the default branch.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockResolvedValueOnce({ data: { type: 'file' } });
 
     const { wireUpRepo } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('owner', 'q');
     fd.append('repo', 'already-wired');
-    fd.append('default_branch', 'main');
-    await expect(wireUpRepo(fd)).rejects.toThrow(/already wired up/);
+    // Returns instead of throwing so the message survives prod's
+    // Server Components error mask.
+    await expect(wireUpRepo(fd)).resolves.toEqual({
+      error: expect.stringMatching(/already wired up/),
+    });
+    // No file commits attempted on the already-wired path.
+    expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
-  it('refuses without write permission', async () => {
+  it("uses the repo's actual default branch, not a form-supplied value", async () => {
+    // Form-supplied default_branch is now ignored: server resolves the
+    // branch via repos.get to defeat tampering. A repo whose actual
+    // default is 'develop' should be probed against 'develop' regardless
+    // of what the form claims.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    fd.append('default_branch', 'main'); // tampered / stale — should be ignored
+
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
+    }
+
+    expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'develop' }),
+    );
+  });
+
+  it('returns a write-permission error when the user lacks write', async () => {
     mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
       data: { permission: 'read' },
     });
@@ -411,7 +444,9 @@ describe('wireUpRepo', () => {
     const fd = new FormData();
     fd.append('owner', 'q');
     fd.append('repo', 'r');
-    await expect(wireUpRepo(fd)).rejects.toThrow(/lacks write/);
+    await expect(wireUpRepo(fd)).resolves.toEqual({
+      error: expect.stringMatching(/lacks write/),
+    });
   });
 });
 
@@ -757,6 +792,7 @@ describe('applyPmMdUpdate', () => {
 
   it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
@@ -767,7 +803,6 @@ describe('applyPmMdUpdate', () => {
     const fd = new FormData();
     fd.append('owner', 'q');
     fd.append('repo', 'r');
-    fd.append('default_branch', 'main');
     try {
       await wireUpRepo(fd);
     } catch (e) {
@@ -788,6 +823,7 @@ describe('applyPmMdUpdate', () => {
 
   it('skips pushRepoSecret when ANTHROPIC_API_KEY is unset on the dashboard', async () => {
     // No env var.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
@@ -798,7 +834,6 @@ describe('applyPmMdUpdate', () => {
     const fd = new FormData();
     fd.append('owner', 'q');
     fd.append('repo', 'r');
-    fd.append('default_branch', 'main');
     try {
       await wireUpRepo(fd);
     } catch (e) {
@@ -812,6 +847,7 @@ describe('applyPmMdUpdate', () => {
 
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -825,7 +861,6 @@ describe('applyPmMdUpdate', () => {
     const fd = new FormData();
     fd.append('owner', 'q');
     fd.append('repo', 'r');
-    fd.append('default_branch', 'main');
     try {
       await wireUpRepo(fd);
     } catch (e) {

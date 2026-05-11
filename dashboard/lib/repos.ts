@@ -136,9 +136,12 @@ export async function listAllowedRepos(octokit: Octokit): Promise<RepoInfo[]> {
     }
   }
 
-  // Probe each candidate for `.dev-agent.yml`. Per-repo failures map to
-  // wired_up: false (which is the right answer for both "no file" and
-  // "transient API error" — the dashboard will simply show a wire-up button).
+  // Probe each candidate for `.dev-agent.yml`. 404 (genuine "not wired")
+  // is silently mapped to wired_up: false. Non-404 failures (5xx, rate
+  // limit, network blip) are ALSO mapped to wired_up: false because the
+  // UI has no "unknown" state — but they are logged so we can diagnose
+  // why an actually-wired repo bucketed wrong (the wireUpRepo TOCTOU
+  // guard catches this case at click-time and tells the user to refresh).
   const candidateList = Array.from(candidates.values());
   const probed = await Promise.all(
     candidateList.map(async (r): Promise<RepoInfo> => {
@@ -150,7 +153,14 @@ export async function listAllowedRepos(octokit: Octokit): Promise<RepoInfo[]> {
           ref: r.default_branch,
         });
         return { ...r, wired_up: true };
-      } catch {
+      } catch (err) {
+        const status = (err as { status?: number }).status;
+        if (status !== 404) {
+          console.warn(
+            `listAllowedRepos: .dev-agent.yml probe for ${r.owner}/${r.name}@${r.default_branch} failed with status ${status ?? '?'} — bucketing as wired_up:false:`,
+            err,
+          );
+        }
         return { ...r, wired_up: false };
       }
     }),
