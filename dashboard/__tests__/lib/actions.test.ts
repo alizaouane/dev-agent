@@ -450,6 +450,114 @@ describe('wireUpRepo', () => {
   });
 });
 
+describe('installScoutWorkflow', () => {
+  it('commits the bug-scout workflow file when missing', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { installScoutWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'bug-scout');
+    await expect(installScoutWorkflow(fd)).resolves.toBeUndefined();
+
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        path: '.github/workflows/dev-agent-bug-scout.yml',
+      }),
+    );
+    // Direct commit to default branch — no explicit branch arg.
+    const callArgs = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    expect(callArgs.branch).toBeUndefined();
+  });
+
+  it('targets the correct path for each workflow key', async () => {
+    const cases: Array<[string, string]> = [
+      ['bug-scout', '.github/workflows/dev-agent-bug-scout.yml'],
+      ['unfinished-work', '.github/workflows/dev-agent-unfinished-work-scout.yml'],
+      ['cleanup', '.github/workflows/dev-agent-cleanup-scout.yml'],
+    ];
+    const { installScoutWorkflow } = await import('@/lib/actions');
+
+    for (const [key, expectedPath] of cases) {
+      mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+      mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+      mockOctokit.repos.createOrUpdateFileContents.mockClear();
+      mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+      const fd = new FormData();
+      fd.append('repo', 'q/r');
+      fd.append('workflow', key);
+      await installScoutWorkflow(fd);
+
+      expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+        expect.objectContaining({ path: expectedPath }),
+      );
+    }
+  });
+
+  it('returns an error when the workflow is already installed (idempotency guard)', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    // File already exists.
+    mockOctokit.repos.getContent.mockResolvedValueOnce({ data: { type: 'file' } });
+
+    const { installScoutWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'bug-scout');
+    await expect(installScoutWorkflow(fd)).resolves.toEqual({
+      error: expect.stringMatching(/already installed/),
+    });
+    expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it('returns an error for an unknown workflow key (validates input)', async () => {
+    const { installScoutWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'not-a-real-scout');
+    await expect(installScoutWorkflow(fd)).resolves.toEqual({
+      error: expect.stringMatching(/unknown workflow/),
+    });
+    expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it('returns a write-permission error when the user lacks write', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { installScoutWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'bug-scout');
+    await expect(installScoutWorkflow(fd)).resolves.toEqual({
+      error: expect.stringMatching(/lacks write/),
+    });
+    expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it("uses the repo's actual default branch, not a form-supplied value", async () => {
+    // No `default_branch` form input is read — server resolves via repos.get.
+    // Verify the probe + commit target the repo's actual default ('develop').
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { installScoutWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'cleanup');
+    await installScoutWorkflow(fd);
+
+    expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'develop' }),
+    );
+  });
+});
+
 describe('approveAndStart', () => {
   it('files an issue with the agreed scope and dispatches the implement workflow', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });

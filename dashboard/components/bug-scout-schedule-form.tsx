@@ -11,6 +11,7 @@ import {
   type SchedulePreset,
 } from '@/lib/bug-scout-schedule';
 import { setBugScoutSchedule } from '@/lib/actions';
+import { InstallScoutWorkflowPanel } from '@/components/install-scout-workflow-panel';
 
 type Props = {
   repo: string;
@@ -22,22 +23,17 @@ type Props = {
 
 export function BugScoutScheduleForm({ repo, current, currentCron }: Props) {
   // When the file isn't present at all, the form is read-only and points the
-  // user at the wire-up flow. The bug-scout workflow ships in WIRE_UP_FILES
+  // user at a one-click install. The bug-scout workflow ships in WIRE_UP_FILES
   // so a fresh wire-up always has it; this branch covers older wire-ups
   // that pre-date the bug-scout feature.
   if (current === null) {
     return (
-      <div className="rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
-        <p className="font-medium">Bug-scout workflow isn&apos;t installed.</p>
-        <p className="mt-1 text-muted-foreground">
-          This repo was wired up before bug-scout existed. Re-running wire-up
-          would add it, but that requires deleting <code>.dev-agent.yml</code>{' '}
-          first. Open an issue if you want a one-click upgrade — for now,
-          copy the workflow file from the dev-agent repo&apos;s{' '}
-          <code>examples/web-app-template/.github/workflows/dev-agent-bug-scout.yml</code>{' '}
-          and commit it to <code>.github/workflows/</code>.
-        </p>
-      </div>
+      <InstallScoutWorkflowPanel
+        repo={repo}
+        workflow="bug-scout"
+        title="Bug-scout workflow"
+        description="This repo was wired up before bug-scout existed. Install it to start the daily LLM scan that files bug + vulnerability findings as issues."
+      />
     );
   }
 
