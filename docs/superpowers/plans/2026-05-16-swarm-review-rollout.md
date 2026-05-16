@@ -324,9 +324,14 @@ Expected: both `phase-swarm-review.yml` and `phase-evidence-collector.yml` liste
 Create `docs/runbooks/2026-05-16-swarm-review-enforcement.md` with these sections, each fully written out (no placeholders):
 - **What swarm-review is** — 3 reviewers over a frozen evidence bundle, runs on every `feat/dev-agent-issue-*` PR once `dev-agent-verification.yml` is installed.
 - **Canary phase** — leave the check advisory (do not add it to branch protection). Let it run on at least 20 dev-agent PRs. Inspect each `swarm-review:*` label vs. the actual merged outcome; record false positives (gate said fail, code was fine) and false negatives (gate said pass, a bug shipped).
-- **Enforce phase** — once the false-positive rate is acceptable (target < 1 in 10), in the consumer repo go to Settings → Branches → branch protection for the default branch → Require status checks → add `dev-agent · phase-swarm-review`.
-- **Override** — a maintainer comments `/swarm-override` on the PR (handled by `phase-pr-review.yml`); the override is recorded to `events.jsonl`.
-- **Kill switch** — set the repo secret `DEV_AGENT_GATE_KILL_SWITCH=swarm` to bypass the gate during an incident.
+- **Enforce phase** — once the false-positive rate is acceptable (target < 1 in 10), require the verification checks in branch protection for the default branch.
+- **Override** — how a maintainer advances a PR past a failed verification check.
+- **Kill switch** — how to bypass the gate during an infrastructure incident.
+
+> **Superseded during implementation:** The bullets above were drafted before the runbook was verified against v1 code, and three of them turned out to be inaccurate — they are corrected in the as-built runbook (`docs/runbooks/2026-05-16-swarm-review-enforcement.md`), which is the source of truth:
+> - **Enforce** — the runbook requires *both* the `evidence` and `swarm-review` checks (a `needs:`-skipped required check counts as passing, so `evidence` must be required in its own right); it does not name a single `dev-agent · phase-swarm-review` check.
+> - **Override** — `/swarm-override` and its `events.jsonl` logging are a dev-agent-engine-internal mechanism (`phase-pr-review.yml`), *not* shipped to consumer wire-ups in v1. Consumers override via admin merge or by temporarily un-requiring the check.
+> - **Kill switch** — `DEV_AGENT_GATE_KILL_SWITCH` does not exist in v1; the runbook documents the actual v1 bypass options instead.
 
 - [ ] **Step 2: Link the runbook from the README**
 

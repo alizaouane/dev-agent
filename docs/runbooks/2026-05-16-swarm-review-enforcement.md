@@ -38,39 +38,32 @@ During the canary, a `swarm-review:fail` result does not block merge. If the gat
 
 ## Enforce phase
 
-Once the false-positive rate is acceptable — the target is fewer than 1 in 10 PRs flagged wrongly — make swarm-review a required check.
+Once the false-positive rate is acceptable — the target is fewer than 1 in 10 PRs flagged wrongly — make the verification gate required.
 
-In the consumer repo, navigate to: **Settings → Branches → Branch protection rules → edit (or add) the rule covering the default branch** (usually `main` or `master`).
+`dev-agent-verification.yml` runs **two** jobs on each dev-agent PR: `evidence` (the deterministic scanners — gitleaks, Semgrep, npm audit — which fail closed on HIGH-severity findings) and `swarm-review` (the three LLM reviewers). The `swarm-review` job declares `needs: evidence`.
 
-Enable **"Require status checks to pass before merging"** and then add swarm-review to the required list. The exact name that appears in the autocomplete field is derived from how GitHub observed the check. The job name in `dev-agent-verification.yml` is `swarm-review`, but GitHub constructs the displayed status-check name from the workflow file name and job name together — it may appear as something like `dev-agent · verification gates / swarm-review` depending on the workflow's `name:` field and your GitHub version.
+**Require both checks — not just `swarm-review`.** The `swarm-review` job's `if:` condition contains no status function, so GitHub applies an implicit `success()`: if the `evidence` job *fails*, `swarm-review` is **skipped**, not failed. GitHub branch protection treats a skipped required check as passing. So if you require only `swarm-review`, a PR carrying a HIGH-severity secret leak or dependency vulnerability would fail `evidence`, skip `swarm-review`, and still be mergeable. Requiring the `evidence` check as its own required check ensures a failed deterministic scan blocks merge directly, independently of swarm-review.
 
-**Important:** GitHub only shows a check in the branch-protection status-check picker after it has run at least once on a PR in that repo. Do not guess the check name from the YAML — open a PR that has already run the gate, navigate to its checks, find the swarm-review check in the list, and copy the exact name as it appears. Paste that exact string into the branch-protection required-checks field.
+In the consumer repo, navigate to: **Settings → Branches → Branch protection rules → edit (or add) the rule covering the default branch** (usually `main` or `master`). Enable **"Require status checks to pass before merging"** and add **both** the `evidence` check and the `swarm-review` check to the required list.
 
-After enabling the required check, the next PR that receives a `swarm-fail` verdict will be blocked from merging via the GitHub UI and API until the gate is satisfied (the check passes on a re-run, or the verdict is overridden — see below).
+**Important:** GitHub only shows a check in the branch-protection status-check picker after it has run at least once on a PR in that repo. Do not guess the check names from the YAML — open a PR that has already run `dev-agent-verification.yml`, navigate to its checks, find the `evidence` and `swarm-review` checks in the list, and copy each exact name as it appears. The displayed name is derived from the workflow's `name:` field and the job name together, so a check may appear as something like `dev-agent · verification gates / swarm-review`.
+
+After enabling the required checks, a PR with a failed `evidence` scan or a `swarm-fail` verdict will be blocked from merging via the GitHub UI and API until the gate is satisfied — the checks pass on a re-run, or a maintainer advances the PR (see Override below).
 
 ---
 
 ## Override
 
-When a `swarm-fail` verdict is wrong (false positive) or a maintainer decides to accept the risk and advance the PR anyway, a maintainer comments on the PR:
+**In v1, consumer repos do not have a `/swarm-override` comment command.** The `/swarm-override` handler lives in `phase-pr-review.yml`, which runs only inside the dev-agent engine repository — it is not part of the workflow set that wire-up installs into consumer repos. A consumer-side override command is a planned follow-up.
 
-```
-/swarm-override <one-line reason>
-```
+Until it ships, to advance a consumer-repo PR past a failed verification check — a genuine false positive, or an accepted risk — a repository administrator has two options:
 
-This is handled by the `swarm-override` job in `phase-pr-review.yml`. The job:
+1. **Admin merge (preferred for a single PR).** If the branch protection rule does not have **"Do not allow bypassing the above settings"** enabled, a repo admin can merge the PR through GitHub's admin-merge path despite the red check. The merge is recorded in the PR timeline, which is the auditable record of the bypass. Leave a PR comment stating the reason before merging so the rationale is captured alongside it.
+2. **Temporarily un-require the check.** Remove the check from the required list (Settings → Branches → edit the rule), merge, then re-add it. This has a wider blast radius — it lifts the gate for *every* open PR while the check is un-required — so prefer admin merge for a one-off.
 
-1. Verifies the PR's head branch matches `feat/dev-agent-issue-*` (non-dev-agent PRs are ignored).
-2. Strips the `/swarm-override` prefix and captures everything that follows (up to 500 characters) as the reason.
-3. Removes the `swarm-review:fail` and `swarm-review:concern` labels.
-4. Applies `swarm-overridden` and `swarm-review:pass` labels.
-5. Posts an audit comment to the PR recording the actor's GitHub login, the reason, and a UTC timestamp.
+Neither path clears a `swarm-review:outage` or `swarm-review:error` label. Those mean the gate produced no verdict at all (an infrastructure failure, not a code judgment) — re-run `dev-agent-verification.yml` once the underlying issue is resolved rather than overriding.
 
-The audit comment posted to the PR is the canonical record in v1. GitHub's comment history is permanent and immutable, making it the auditable trail for the bypass. The `events.jsonl` append that will mirror these overrides to the repo's event log is deferred to v1.1.
-
-Note that `/swarm-override` is for overriding a fail or concern *verdict*; it does not clear a `swarm-review:outage` or `swarm-review:error` label. Those labels indicate that the gate did not produce a verdict at all — for an outage or error, re-run the swarm-review workflow once the underlying issue is resolved rather than using `/swarm-override`.
-
-Any GitHub user who is not `claude[bot]` or `dev-agent[bot]` can trigger the override command. If you want to restrict override authority to specific maintainers, you must add an explicit actor-allowlist check to the `swarm-override` job's `if:` condition before enabling the required check — otherwise any commenter on the PR can bypass the gate.
+Override authority is already scoped: only repo admins can admin-merge or edit branch protection. No additional actor-allowlist configuration is needed for the v1 consumer override paths.
 
 ---
 
@@ -78,9 +71,9 @@ Any GitHub user who is not `claude[bot]` or `dev-agent[bot]` can trigger the ove
 
 The current v1 workflow (`phase-swarm-review.yml`) does not implement a kill switch. If the gate is blocking all merges due to a reviewer infrastructure outage (e.g., the Anthropic API is unavailable), the options available in v1 are:
 
-1. **Temporarily remove the required check** from branch protection (Settings → Branches → edit the rule → uncheck swarm-review from the required list). Re-add it once the outage is resolved.
-2. **Use `/swarm-override`** on individual blocked PRs while the outage persists.
-3. **Re-run the failed workflow** once the underlying issue (missing `ANTHROPIC_API_KEY` secret, claude-code-action outage, network egress block) is resolved — the gate is designed to fail-closed on all-reviewer outage, so the re-run will either produce a real verdict or surface the outage error more clearly in the workflow logs. For a *transient* outage (e.g. the Anthropic API briefly unavailable), prefer simply re-running the workflow rather than removing the required status check: the gate fails closed precisely so that normal service recovery restores the verdict automatically, and removing the check creates a window where the gate provides no protection at all.
+1. **Temporarily remove the required checks** from branch protection (Settings → Branches → edit the rule → uncheck the `evidence` and `swarm-review` checks from the required list). Re-add them once the outage is resolved.
+2. **Admin-merge individual blocked PRs** while the outage persists — see the Override section above.
+3. **Re-run the failed workflow** once the underlying issue (missing `ANTHROPIC_API_KEY` secret, claude-code-action outage, network egress block) is resolved — the gate is designed to fail-closed on all-reviewer outage, so the re-run will either produce a real verdict or surface the outage error more clearly in the workflow logs. For a *transient* outage (e.g. the Anthropic API briefly unavailable), prefer simply re-running the workflow rather than removing the required status checks: the gate fails closed precisely so that normal service recovery restores the verdict automatically, and removing the checks creates a window where the gate provides no protection at all.
 
 A `DEV_AGENT_GATE_KILL_SWITCH` Actions secret with comma-separated gate names (e.g. `acm,swarm,tier2`) is planned for a future release to provide a single-step bypass during incidents. It is not present in v1.
 
@@ -95,4 +88,5 @@ A `DEV_AGENT_GATE_KILL_SWITCH` Actions secret with comma-separated gate names (e
 | `swarm-review:fail` | At least one reviewer issued a hard fail; workflow exits non-zero | Yes (when check is required) |
 | `swarm-review:outage` | All three reviewers produced no output; gate treats as hard fail | Yes (when check is required) |
 | `swarm-review:error` | The aggregator crashed before producing a verdict | Yes (when check is required) |
-| `swarm-overridden` | A maintainer ran `/swarm-override`; `swarm-review:pass` also applied | No |
+
+The `swarm-overridden` label is applied by the `/swarm-override` command, which runs only in the dev-agent engine repo — it does not appear in consumer repos in v1 (see Override).
