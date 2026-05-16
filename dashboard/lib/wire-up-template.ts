@@ -544,6 +544,8 @@ export const TEMPLATE_SESSION_LOG_MD = `# Session Log
  * The bug-scout workflow ships with a daily cron pre-wired; the
  * unfinished-work-scout and cleanup-scout ship with workflow_dispatch
  * only (manual trigger).
+ * The verification workflow activates automatically on issue and PR events,
+ * running the swarm-review verification gates without requiring manual dispatch.
  * `SESSION_LOG.md` ships empty — every dev cycle and every user-approved
  * scope appends here, giving the PM agent durable activity context for
  * grounding (so empty `pm.md` stops mattering).
