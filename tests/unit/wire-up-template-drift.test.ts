@@ -90,6 +90,18 @@ describe('wire-up-template embedded copy', () => {
     expect(normalized).toContain(onDisk);
   });
 
+  it('verification workflow on disk matches the embedded TEMPLATE_VERIFICATION_WORKFLOW_YML', () => {
+    const onDisk = readFileSync(
+      resolve(tplDir, '.github/workflows/dev-agent-verification.yml'),
+      'utf8',
+    );
+    const normalized = embedded
+      .replace(/\\\$\{\{/g, '${{')
+      .replace(/\\`/g, '`')
+      .replace(/\\\$/g, '$');
+    expect(normalized).toContain(onDisk);
+  });
+
   it('SESSION_LOG.md on disk matches the embedded TEMPLATE_SESSION_LOG_MD', () => {
     const onDisk = readFileSync(resolve(tplDir, 'SESSION_LOG.md'), 'utf8');
     const normalized = embedded.replace(/\\`/g, '`');
