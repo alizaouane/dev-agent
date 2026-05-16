@@ -223,12 +223,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             <div className="rounded-md border border-border bg-card p-5">
               <h3 className="mb-1 text-base font-semibold">Verification gates (swarm-review)</h3>
               {verificationInstalled ? (
-                <p className="text-sm text-muted-foreground">
+                <p className="max-w-xl text-sm text-muted-foreground">
                   Installed. On every dev-agent PR, three reviewers (spec-compliance,
                   regression-guard, security-scout) run over the evidence bundle and post a
-                  verdict. To make it block merges, add the{' '}
-                  <code>dev-agent · phase-swarm-review</code> check as a required status
-                  check in branch protection.
+                  verdict. To make it block merges, mark the swarm-review status check as a
+                  required status check in branch protection (see the enforcement runbook).
                 </p>
               ) : (
                 <InstallWorkflowPanel
