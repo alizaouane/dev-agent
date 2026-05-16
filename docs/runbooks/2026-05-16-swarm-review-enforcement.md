@@ -30,7 +30,7 @@ For each PR that runs the gate during the canary, record:
   - **True positive** — the gate flagged a real issue that was subsequently confirmed and fixed.
   - **True negative** — the gate passed clean code.
 
-Track these in a simple table (a shared doc, a GitHub project, or a labeled issue in the dev-agent repo — whatever your team will actually update). The minimum sample size before moving to enforce phase is 20 PRs; more is better, especially if those PRs span a range of change sizes and types.
+Track these in a simple table (a shared doc, a GitHub project, or a labeled issue in the dev-agent repo — whatever your team will actually update). The minimum sample size before moving to enforce phase is 20 PRs; more is better, especially if those PRs span a range of change sizes and types. To keep the canary representative, the 20+ PRs must span at least two distinct change sizes — for example, some small patch-level PRs alongside some medium multi-file PRs — so the gate is not graduated on a sample composed entirely of trivial chore commits.
 
 During the canary, a `swarm-review:fail` result does not block merge. If the gate fires on a PR you want to merge anyway, you can merge it normally and record it as a false positive (if the code was actually fine) or a true positive with an accepted risk (if the gate was right and you're shipping anyway). Both outcomes are useful data.
 
@@ -68,6 +68,8 @@ This is handled by the `swarm-override` job in `phase-pr-review.yml`. The job:
 
 The audit comment posted to the PR is the canonical record in v1. GitHub's comment history is permanent and immutable, making it the auditable trail for the bypass. The `events.jsonl` append that will mirror these overrides to the repo's event log is deferred to v1.1.
 
+Note that `/swarm-override` is for overriding a fail or concern *verdict*; it does not clear a `swarm-review:outage` or `swarm-review:error` label. Those labels indicate that the gate did not produce a verdict at all — for an outage or error, re-run the swarm-review workflow once the underlying issue is resolved rather than using `/swarm-override`.
+
 Any GitHub user who is not `claude[bot]` or `dev-agent[bot]` can trigger the override command. If you want to restrict override authority to specific maintainers, you must add an explicit actor-allowlist check to the `swarm-override` job's `if:` condition before enabling the required check — otherwise any commenter on the PR can bypass the gate.
 
 ---
@@ -78,7 +80,7 @@ The current v1 workflow (`phase-swarm-review.yml`) does not implement a kill swi
 
 1. **Temporarily remove the required check** from branch protection (Settings → Branches → edit the rule → uncheck swarm-review from the required list). Re-add it once the outage is resolved.
 2. **Use `/swarm-override`** on individual blocked PRs while the outage persists.
-3. **Re-run the failed workflow** once the underlying issue (missing `ANTHROPIC_API_KEY` secret, claude-code-action outage, network egress block) is resolved — the gate is designed to fail-closed on all-reviewer outage, so the re-run will either produce a real verdict or surface the outage error more clearly in the workflow logs.
+3. **Re-run the failed workflow** once the underlying issue (missing `ANTHROPIC_API_KEY` secret, claude-code-action outage, network egress block) is resolved — the gate is designed to fail-closed on all-reviewer outage, so the re-run will either produce a real verdict or surface the outage error more clearly in the workflow logs. For a *transient* outage (e.g. the Anthropic API briefly unavailable), prefer simply re-running the workflow rather than removing the required status check: the gate fails closed precisely so that normal service recovery restores the verdict automatically, and removing the check creates a window where the gate provides no protection at all.
 
 A `DEV_AGENT_GATE_KILL_SWITCH` Actions secret with comma-separated gate names (e.g. `acm,swarm,tier2`) is planned for a future release to provide a single-step bypass during incidents. It is not present in v1.
 
