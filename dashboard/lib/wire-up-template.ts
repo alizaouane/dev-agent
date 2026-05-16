@@ -456,9 +456,11 @@ run-name: \${{ github.event_name }} → verification
 # loudly with a confusing token-permission error.
 #
 # SECURITY: untrusted GitHub event values (issue/PR titles, bodies,
-# comment text) are NEVER interpolated into run: blocks here — this file
-# has zero \`run:\` steps. The reusable workflows handle untrusted content
-# via the lib/untrusted-content.ts wrapper before any prompt rendering.
+# comment text) are NEVER interpolated into run: blocks here. The only
+# run: step is in the \`verification-gate\` job, and it consumes solely
+# \`needs.*.result\` (a fixed success|failure|skipped|cancelled enum,
+# routed through env vars). The reusable workflows handle untrusted
+# content via the lib/untrusted-content.ts wrapper before prompt render.
 
 on:
   issue_comment:
@@ -527,6 +529,37 @@ jobs:
       invocation_mode: live
     secrets:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  # Aggregate gate — require THIS check in branch protection, not the
+  # \`evidence\` / \`swarm-review\` jobs individually. \`swarm-review\` declares
+  # \`needs: evidence\` with an \`if:\` that has no status function, so GitHub
+  # applies an implicit \`success()\`: a failed \`evidence\` job SKIPS
+  # \`swarm-review\`, and a skipped required check counts as passing. This
+  # job runs with \`always()\` and fails unless BOTH upstream jobs succeeded,
+  # so a failed scan cannot slip through the skip. It carries the same
+  # applicability guard as the jobs above, so non-dev-agent and fork PRs
+  # skip it (a skipped required check is correctly treated as not gating
+  # those PRs).
+  verification-gate:
+    needs: [evidence, swarm-review]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require evidence + swarm-review to have passed
+        env:
+          EVIDENCE_RESULT: \${{ needs.evidence.result }}
+          SWARM_RESULT: \${{ needs.swarm-review.result }}
+        run: |
+          echo "evidence=$EVIDENCE_RESULT swarm-review=$SWARM_RESULT"
+          if [ "$EVIDENCE_RESULT" != "success" ] || [ "$SWARM_RESULT" != "success" ]; then
+            echo "::error::verification gate failed — a required verification job did not succeed (evidence=$EVIDENCE_RESULT, swarm-review=$SWARM_RESULT)"
+            exit 1
+          fi
+          echo "verification gate passed"
 `;
 
 export const TEMPLATE_SESSION_LOG_MD = `# Session Log

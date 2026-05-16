@@ -40,15 +40,15 @@ During the canary, a `swarm-review:fail` result does not block merge. If the gat
 
 Once the false-positive rate is acceptable — the target is fewer than 1 in 10 PRs flagged wrongly — make the verification gate required.
 
-`dev-agent-verification.yml` runs **two** jobs on each dev-agent PR: `evidence` (the deterministic scanners — gitleaks, Semgrep, npm audit — which fail closed on HIGH-severity findings) and `swarm-review` (the three LLM reviewers). The `swarm-review` job declares `needs: evidence`.
+`dev-agent-verification.yml` runs three jobs on each dev-agent PR: `evidence` (the deterministic scanners — gitleaks, Semgrep, npm audit — which fail closed on HIGH-severity findings), `swarm-review` (the three LLM reviewers), and `verification-gate` (an aggregate job).
 
-**Require both checks — not just `swarm-review`.** The `swarm-review` job's `if:` condition contains no status function, so GitHub applies an implicit `success()`: if the `evidence` job *fails*, `swarm-review` is **skipped**, not failed. GitHub branch protection treats a skipped required check as passing. So if you require only `swarm-review`, a PR carrying a HIGH-severity secret leak or dependency vulnerability would fail `evidence`, skip `swarm-review`, and still be mergeable. Requiring the `evidence` check as its own required check ensures a failed deterministic scan blocks merge directly, independently of swarm-review.
+**Require the `verification-gate` check — and only that one.** `swarm-review` declares `needs: evidence` with an `if:` that has no status function, so GitHub applies an implicit `success()`: if `evidence` fails, `swarm-review` is *skipped*, and GitHub branch protection treats a skipped required check as passing. Requiring `swarm-review` directly would therefore let a PR with a HIGH-severity scan failure merge. The `verification-gate` job closes this: it runs with `always()` and fails unless **both** `evidence` and `swarm-review` succeeded, so it cannot be bypassed by a skip. Require `verification-gate` and the whole gate is enforced with a single check.
 
-In the consumer repo, navigate to: **Settings → Branches → Branch protection rules → edit (or add) the rule covering the default branch** (usually `main` or `master`). Enable **"Require status checks to pass before merging"** and add **both** the `evidence` check and the `swarm-review` check to the required list.
+In the consumer repo, navigate to: **Settings → Branches → Branch protection rules → edit (or add) the rule covering the default branch** (usually `main` or `master`). Enable **"Require status checks to pass before merging"** and add the `verification-gate` check to the required list.
 
-**Important:** GitHub only shows a check in the branch-protection status-check picker after it has run at least once on a PR in that repo. Do not guess the check names from the YAML — open a PR that has already run `dev-agent-verification.yml`, navigate to its checks, find the `evidence` and `swarm-review` checks in the list, and copy each exact name as it appears. The displayed name is derived from the workflow's `name:` field and the job name together, so a check may appear as something like `dev-agent · verification gates / swarm-review`.
+**Important:** GitHub only shows a check in the branch-protection status-check picker after it has run at least once on a PR in that repo. Do not guess the check name from the YAML — open a PR that has already run `dev-agent-verification.yml`, navigate to its checks, find the `verification-gate` check, and copy the exact name as it appears. The displayed name is derived from the workflow's `name:` field and the job name together, so it may appear as something like `dev-agent · verification gates / verification-gate`.
 
-After enabling the required checks, a PR with a failed `evidence` scan or a `swarm-fail` verdict will be blocked from merging via the GitHub UI and API until the gate is satisfied — the checks pass on a re-run, or a maintainer advances the PR (see Override below).
+After enabling the required check, a PR with a failed `evidence` scan or a `swarm-fail` verdict will be blocked from merging via the GitHub UI and API until the gate is satisfied — the checks pass on a re-run, or a maintainer advances the PR (see Override below).
 
 ---
 
@@ -71,7 +71,7 @@ Override authority is already scoped: only repo admins can admin-merge or edit b
 
 The current v1 workflow (`phase-swarm-review.yml`) does not implement a kill switch. If the gate is blocking all merges due to a reviewer infrastructure outage (e.g., the Anthropic API is unavailable), the options available in v1 are:
 
-1. **Temporarily remove the required checks** from branch protection (Settings → Branches → edit the rule → uncheck the `evidence` and `swarm-review` checks from the required list). Re-add them once the outage is resolved.
+1. **Temporarily remove the required check** from branch protection (Settings → Branches → edit the rule → uncheck the `verification-gate` check from the required list). Re-add it once the outage is resolved.
 2. **Admin-merge individual blocked PRs** while the outage persists — see the Override section above.
 3. **Re-run the failed workflow** once the underlying issue (missing `ANTHROPIC_API_KEY` secret, claude-code-action outage, network egress block) is resolved — the gate is designed to fail-closed on all-reviewer outage, so the re-run will either produce a real verdict or surface the outage error more clearly in the workflow logs. For a *transient* outage (e.g. the Anthropic API briefly unavailable), prefer simply re-running the workflow rather than removing the required status checks: the gate fails closed precisely so that normal service recovery restores the verdict automatically, and removing the checks creates a window where the gate provides no protection at all.
 
