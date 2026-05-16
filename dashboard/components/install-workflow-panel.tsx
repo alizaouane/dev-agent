@@ -2,25 +2,25 @@
 
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
-import { installScoutWorkflow } from '@/lib/actions';
-import type { ScoutWorkflowKey } from '@/lib/wire-up-template';
+import { installWorkflow } from '@/lib/actions';
+import type { WorkflowKey } from '@/lib/wire-up-template';
 
 type Props = {
   repo: string;
-  workflow: ScoutWorkflowKey;
+  workflow: WorkflowKey;
   /** Short noun shown in the heading ("Bug-scout workflow", "PM scan", "Cleanup scan"). */
   title: string;
-  /** One-liner explaining what this scout does, shown beneath the title. */
+  /** One-liner explaining what this workflow does, shown beneath the title. */
   description: string;
 };
 
 /**
- * Amber "not installed" panel shared by the three scout-section components on
- * /repos/[name]. Posts to `installScoutWorkflow` to drop the missing workflow
+ * Amber "not installed" panel shared by workflow-section components on
+ * /repos/[name]. Posts to `installWorkflow` to drop the missing workflow
  * file onto the consumer's default branch in one click — replaces the older
  * "copy this file from examples/web-app-template…" instructions.
  */
-export function InstallScoutWorkflowPanel({
+export function InstallWorkflowPanel({
   repo,
   workflow,
   title,
@@ -36,7 +36,7 @@ export function InstallScoutWorkflowPanel({
         const fd = new FormData();
         fd.append('repo', repo);
         fd.append('workflow', workflow);
-        const result = await installScoutWorkflow(fd);
+        const result = await installWorkflow(fd);
         if (result && 'error' in result) setError(result.error);
         // Success path: revalidatePath re-renders the page, the parent
         // re-probes the workflow file, and this panel disappears.

@@ -571,12 +571,14 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
 ];
 
 /**
- * Scout workflows that older wire-ups (pre-{bug-scout,unfinished-work,cleanup})
- * are missing. Drives the one-click "Install" buttons on /repos/[name] so the
- * user can backfill them without re-running the full wire-up (which would
+ * Installable workflows that older wire-ups may be missing. Drives the
+ * one-click "Install" buttons on /repos/[name] so the user can backfill
+ * any missing workflow without re-running the full wire-up (which would
  * require deleting `.dev-agent.yml` first to pass the already-wired guard).
+ * Covers three scout workflows (bug-scout, unfinished-work, cleanup) plus the
+ * verification-gates workflow introduced in v1.5.
  */
-export const SCOUT_WORKFLOWS = {
+export const INSTALLABLE_WORKFLOWS = {
   'bug-scout': {
     path: '.github/workflows/dev-agent-bug-scout.yml',
     content: TEMPLATE_BUG_SCOUT_WORKFLOW_YML,
@@ -592,10 +594,15 @@ export const SCOUT_WORKFLOWS = {
     content: TEMPLATE_CLEANUP_SCOUT_WORKFLOW_YML,
     label: 'Cleanup scan',
   },
+  verification: {
+    path: '.github/workflows/dev-agent-verification.yml',
+    content: TEMPLATE_VERIFICATION_WORKFLOW_YML,
+    label: 'Verification gates (swarm-review)',
+  },
 } as const;
 
-export type ScoutWorkflowKey = keyof typeof SCOUT_WORKFLOWS;
+export type WorkflowKey = keyof typeof INSTALLABLE_WORKFLOWS;
 
-export const SCOUT_WORKFLOW_KEYS: ScoutWorkflowKey[] = Object.keys(
-  SCOUT_WORKFLOWS,
-) as ScoutWorkflowKey[];
+export const WORKFLOW_KEYS: WorkflowKey[] = Object.keys(
+  INSTALLABLE_WORKFLOWS,
+) as WorkflowKey[];

@@ -8,9 +8,9 @@ import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
 import {
   WIRE_UP_FILES,
-  SCOUT_WORKFLOWS,
-  SCOUT_WORKFLOW_KEYS,
-  type ScoutWorkflowKey,
+  INSTALLABLE_WORKFLOWS,
+  WORKFLOW_KEYS,
+  type WorkflowKey,
 } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
 import {
@@ -393,9 +393,9 @@ export async function wireUpRepo(
 }
 
 /**
- * Server Action: install a single scout workflow file on a repo that was
- * wired up before this scout existed. Backfills bug-scout / unfinished-work /
- * cleanup workflows without forcing a full re-wire (which would require
+ * Server Action: install a single workflow file on a repo that was wired up
+ * before the workflow existed. Backfills bug-scout / unfinished-work / cleanup
+ * / verification workflows without forcing a full re-wire (which would require
  * deleting `.dev-agent.yml` first to clear the already-wired guard).
  *
  * Returns `{ error }` instead of throwing so production's Server Components
@@ -404,9 +404,9 @@ export async function wireUpRepo(
  *
  * Form fields:
  *  - `repo`     — `owner/name`
- *  - `workflow` — one of `bug-scout | unfinished-work | cleanup`
+ *  - `workflow` — one of `bug-scout | unfinished-work | cleanup | verification`
  */
-export async function installScoutWorkflow(
+export async function installWorkflow(
   formData: FormData,
 ): Promise<{ error: string } | void> {
   try {
@@ -416,13 +416,13 @@ export async function installScoutWorkflow(
     const workflowRaw = ((formData.get('workflow') as string | null) ?? '').trim();
 
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    if (!SCOUT_WORKFLOW_KEYS.includes(workflowRaw as ScoutWorkflowKey)) {
+    if (!WORKFLOW_KEYS.includes(workflowRaw as WorkflowKey)) {
       throw new Error(
-        `unknown workflow: ${workflowRaw} (expected one of ${SCOUT_WORKFLOW_KEYS.join(', ')})`,
+        `unknown workflow: ${workflowRaw} (expected one of ${WORKFLOW_KEYS.join(', ')})`,
       );
     }
-    const workflow = workflowRaw as ScoutWorkflowKey;
-    const spec = SCOUT_WORKFLOWS[workflow];
+    const workflow = workflowRaw as WorkflowKey;
+    const spec = INSTALLABLE_WORKFLOWS[workflow];
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
@@ -463,7 +463,7 @@ export async function installScoutWorkflow(
     revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    console.error('[installScoutWorkflow] failed', {
+    console.error('[installWorkflow] failed', {
       message,
       raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
     });

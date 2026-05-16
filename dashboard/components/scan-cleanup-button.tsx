@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { triggerCleanupScan } from '@/lib/actions';
-import { InstallScoutWorkflowPanel } from '@/components/install-scout-workflow-panel';
+import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 
 type Props = {
   repo: string;
@@ -23,7 +23,7 @@ export function ScanCleanupButton({ repo, workflowPresent }: Props) {
 
   if (!workflowPresent) {
     return (
-      <InstallScoutWorkflowPanel
+      <InstallWorkflowPanel
         repo={repo}
         workflow="cleanup"
         title="Cleanup scan"
