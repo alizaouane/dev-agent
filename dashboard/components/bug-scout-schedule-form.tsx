@@ -11,7 +11,7 @@ import {
   type SchedulePreset,
 } from '@/lib/bug-scout-schedule';
 import { setBugScoutSchedule } from '@/lib/actions';
-import { InstallScoutWorkflowPanel } from '@/components/install-scout-workflow-panel';
+import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 
 type Props = {
   repo: string;
@@ -28,7 +28,7 @@ export function BugScoutScheduleForm({ repo, current, currentCron }: Props) {
   // that pre-date the bug-scout feature.
   if (current === null) {
     return (
-      <InstallScoutWorkflowPanel
+      <InstallWorkflowPanel
         repo={repo}
         workflow="bug-scout"
         title="Bug-scout workflow"

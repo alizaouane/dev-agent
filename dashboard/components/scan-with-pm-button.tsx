@@ -3,7 +3,7 @@
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { triggerUnfinishedWorkScan } from '@/lib/actions';
-import { InstallScoutWorkflowPanel } from '@/components/install-scout-workflow-panel';
+import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 
 type Props = {
   repo: string;
@@ -23,7 +23,7 @@ export function ScanWithPmButton({ repo, workflowPresent }: Props) {
 
   if (!workflowPresent) {
     return (
-      <InstallScoutWorkflowPanel
+      <InstallWorkflowPanel
         repo={repo}
         workflow="unfinished-work"
         title="PM scan"

@@ -428,6 +428,140 @@ jobs:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 `;
 
+export const TEMPLATE_VERIFICATION_WORKFLOW_YML = `name: dev-agent · verification gates
+run-name: \${{ github.event_name }} → verification
+
+# Auto-dispatches the verification gates (Pillar 1 / 2 / 5) on issue +
+# PR events. Sibling to \`dev-agent.yml\` (which stays workflow_dispatch
+# driven for the existing implement / staging-deploy / promote / rollback
+# phases). Drop this file into your repo's \`.github/workflows/\` to
+# activate the gates; the consumer's \`.dev-agent.yml\` does NOT need any
+# additional config to enable them — the gates are universal-by-default
+# from v1.5 onward.
+#
+# Triggers:
+#   - issue_comment containing \`/approve\` on an issue labeled
+#     state:spec-ready  →  phase-acm.yml (live mode)
+#   - pull_request opened|synchronize|reopened on a feat/dev-agent-issue-*
+#     branch              →  phase-evidence-collector.yml + phase-swarm-review.yml
+#
+# Forks: PRs from forked repos are excluded by an explicit same-repo guard
+# (\`head.repo.full_name == github.repository\`) on every job. Without that
+# guard, \`pull_request\` events from forks would enter the verification jobs
+# but then fail downstream — they run with read-only token contexts and
+# can't access repo secrets like ANTHROPIC_API_KEY, so claude-code-action
+# would crash and the gh-CLI write calls would 403. Skipping the jobs at
+# the wrapper level means fork PRs simply don't get verification (which
+# branch-protection rules can require for merge), rather than failing
+# loudly with a confusing token-permission error.
+#
+# SECURITY: untrusted GitHub event values (issue/PR titles, bodies,
+# comment text) are NEVER interpolated into run: blocks here. The only
+# run: step is in the \`verification-gate\` job, and it consumes solely
+# \`needs.*.result\` (a fixed success|failure|skipped|cancelled enum,
+# routed through env vars). The reusable workflows handle untrusted
+# content via the lib/untrusted-content.ts wrapper before prompt render.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+# Workflow-level permissions are the cap for the called reusable workflows
+# (a reusable can never elevate above what the caller grants).
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  # Pillar 1 — ACM (Acceptance-Criteria Manifest). Fires when the issue
+  # author comments \`/approve\` on a state:spec-ready issue. Generates
+  # failing test stubs from the spec's acceptance criteria + advances state.
+  acm:
+    if: |
+      github.event_name == 'issue_comment' &&
+      github.event.issue.pull_request == null &&
+      startsWith(github.event.comment.body, '/approve') &&
+      contains(github.event.issue.labels.*.name, 'state:spec-ready') &&
+      github.event.comment.user.login == github.event.issue.user.login
+    uses: alizaouane/dev-agent/.github/workflows/phase-acm.yml@v1
+    with:
+      issue_number: \${{ github.event.issue.number }}
+      config_path: .dev-agent.yml
+      invocation_mode: live
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  # Pillar 2a — EvidenceCollector. Runs deterministic scanners (gitleaks,
+  # Semgrep, npm audit) and packages the bundle. Fires on PR open /
+  # synchronize for any branch matching feat/dev-agent-issue-* AND
+  # originating from the same repo (not a fork). Fail-closed on
+  # HIGH-severity findings (PR blocked at this gate).
+  evidence:
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
+    uses: alizaouane/dev-agent/.github/workflows/phase-evidence-collector.yml@v1
+    with:
+      pr_number: \${{ github.event.pull_request.number }}
+      base_ref: \${{ github.event.pull_request.base.ref }}
+      head_ref: \${{ github.event.pull_request.head.ref }}
+
+  # Pillar 2b — SwarmReview. Three reviewers consume the same shared
+  # context (v1.5 = PR diff only, v1.6 adds the EvidenceBundle). Aggregator
+  # emits one PR comment + one label; on swarm-fail the workflow exits
+  # non-zero so branch protection can gate merge on it.
+  swarm-review:
+    needs: evidence
+    if: |
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
+    uses: alizaouane/dev-agent/.github/workflows/phase-swarm-review.yml@v1
+    with:
+      pr_number: \${{ github.event.pull_request.number }}
+      base_ref: \${{ github.event.pull_request.base.ref }}
+      head_ref: \${{ github.event.pull_request.head.ref }}
+      invocation_mode: live
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+
+  # Aggregate gate — require THIS check in branch protection, not the
+  # \`evidence\` / \`swarm-review\` jobs individually. \`swarm-review\` declares
+  # \`needs: evidence\` with an \`if:\` that has no status function, so GitHub
+  # applies an implicit \`success()\`: a failed \`evidence\` job SKIPS
+  # \`swarm-review\`, and a skipped required check counts as passing. This
+  # job runs with \`always()\` and fails unless BOTH upstream jobs succeeded,
+  # so a failed scan cannot slip through the skip. It carries the same
+  # applicability guard as the jobs above, so non-dev-agent and fork PRs
+  # skip it (a skipped required check is correctly treated as not gating
+  # those PRs).
+  verification-gate:
+    needs: [evidence, swarm-review]
+    if: |
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require evidence + swarm-review to have passed
+        env:
+          EVIDENCE_RESULT: \${{ needs.evidence.result }}
+          SWARM_RESULT: \${{ needs.swarm-review.result }}
+        run: |
+          echo "evidence=$EVIDENCE_RESULT swarm-review=$SWARM_RESULT"
+          if [ "$EVIDENCE_RESULT" != "success" ] || [ "$SWARM_RESULT" != "success" ]; then
+            echo "::error::verification gate failed — a required verification job did not succeed (evidence=$EVIDENCE_RESULT, swarm-review=$SWARM_RESULT)"
+            exit 1
+          fi
+          echo "verification gate passed"
+`;
+
 export const TEMPLATE_SESSION_LOG_MD = `# Session Log
 
 (no entries yet — the dev-agent and your dev sessions will append here)
@@ -443,6 +577,8 @@ export const TEMPLATE_SESSION_LOG_MD = `# Session Log
  * The bug-scout workflow ships with a daily cron pre-wired; the
  * unfinished-work-scout and cleanup-scout ship with workflow_dispatch
  * only (manual trigger).
+ * The verification workflow activates automatically on issue and PR events,
+ * running the swarm-review verification gates without requiring manual dispatch.
  * `SESSION_LOG.md` ships empty — every dev cycle and every user-approved
  * scope appends here, giving the PM agent durable activity context for
  * grounding (so empty `pm.md` stops mattering).
@@ -459,17 +595,23 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
     path: '.github/workflows/dev-agent-cleanup-scout.yml',
     content: TEMPLATE_CLEANUP_SCOUT_WORKFLOW_YML,
   },
+  {
+    path: '.github/workflows/dev-agent-verification.yml',
+    content: TEMPLATE_VERIFICATION_WORKFLOW_YML,
+  },
   { path: '.dev-agent/pm.md', content: TEMPLATE_PM_MD },
   { path: 'SESSION_LOG.md', content: TEMPLATE_SESSION_LOG_MD },
 ];
 
 /**
- * Scout workflows that older wire-ups (pre-{bug-scout,unfinished-work,cleanup})
- * are missing. Drives the one-click "Install" buttons on /repos/[name] so the
- * user can backfill them without re-running the full wire-up (which would
+ * Installable workflows that older wire-ups may be missing. Drives the
+ * one-click "Install" buttons on /repos/[name] so the user can backfill
+ * any missing workflow without re-running the full wire-up (which would
  * require deleting `.dev-agent.yml` first to pass the already-wired guard).
+ * Covers three scout workflows (bug-scout, unfinished-work, cleanup) plus the
+ * verification-gates workflow introduced in v1.5.
  */
-export const SCOUT_WORKFLOWS = {
+export const INSTALLABLE_WORKFLOWS = {
   'bug-scout': {
     path: '.github/workflows/dev-agent-bug-scout.yml',
     content: TEMPLATE_BUG_SCOUT_WORKFLOW_YML,
@@ -485,10 +627,15 @@ export const SCOUT_WORKFLOWS = {
     content: TEMPLATE_CLEANUP_SCOUT_WORKFLOW_YML,
     label: 'Cleanup scan',
   },
+  verification: {
+    path: '.github/workflows/dev-agent-verification.yml',
+    content: TEMPLATE_VERIFICATION_WORKFLOW_YML,
+    label: 'Verification gates (swarm-review)',
+  },
 } as const;
 
-export type ScoutWorkflowKey = keyof typeof SCOUT_WORKFLOWS;
+export type WorkflowKey = keyof typeof INSTALLABLE_WORKFLOWS;
 
-export const SCOUT_WORKFLOW_KEYS: ScoutWorkflowKey[] = Object.keys(
-  SCOUT_WORKFLOWS,
-) as ScoutWorkflowKey[];
+export const WORKFLOW_KEYS: WorkflowKey[] = Object.keys(
+  INSTALLABLE_WORKFLOWS,
+) as WorkflowKey[];

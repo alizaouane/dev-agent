@@ -358,7 +358,7 @@ describe('wireUpRepo', () => {
 
     // All template files committed without a `branch` param, so they
     // land on the repo's default branch.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(7);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
     for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
       expect(call[0].branch).toBeUndefined();
     }
@@ -387,7 +387,7 @@ describe('wireUpRepo', () => {
       expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(7);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
@@ -450,17 +450,17 @@ describe('wireUpRepo', () => {
   });
 });
 
-describe('installScoutWorkflow', () => {
+describe('installWorkflow', () => {
   it('commits the bug-scout workflow file when missing', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
-    const { installScoutWorkflow } = await import('@/lib/actions');
+    const { installWorkflow } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('workflow', 'bug-scout');
-    await expect(installScoutWorkflow(fd)).resolves.toBeUndefined();
+    await expect(installWorkflow(fd)).resolves.toBeUndefined();
 
     expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -479,8 +479,9 @@ describe('installScoutWorkflow', () => {
       ['bug-scout', '.github/workflows/dev-agent-bug-scout.yml'],
       ['unfinished-work', '.github/workflows/dev-agent-unfinished-work-scout.yml'],
       ['cleanup', '.github/workflows/dev-agent-cleanup-scout.yml'],
+      ['verification', '.github/workflows/dev-agent-verification.yml'],
     ];
-    const { installScoutWorkflow } = await import('@/lib/actions');
+    const { installWorkflow } = await import('@/lib/actions');
 
     for (const [key, expectedPath] of cases) {
       mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
@@ -491,7 +492,7 @@ describe('installScoutWorkflow', () => {
       const fd = new FormData();
       fd.append('repo', 'q/r');
       fd.append('workflow', key);
-      await installScoutWorkflow(fd);
+      await installWorkflow(fd);
 
       expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
         expect.objectContaining({ path: expectedPath }),
@@ -499,27 +500,45 @@ describe('installScoutWorkflow', () => {
     }
   });
 
+  it('commits the verification workflow file when missing', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { installWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'verification');
+    await expect(installWorkflow(fd)).resolves.toBeUndefined();
+
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '.github/workflows/dev-agent-verification.yml',
+      }),
+    );
+  });
+
   it('returns an error when the workflow is already installed (idempotency guard)', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     // File already exists.
     mockOctokit.repos.getContent.mockResolvedValueOnce({ data: { type: 'file' } });
 
-    const { installScoutWorkflow } = await import('@/lib/actions');
+    const { installWorkflow } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('workflow', 'bug-scout');
-    await expect(installScoutWorkflow(fd)).resolves.toEqual({
+    await expect(installWorkflow(fd)).resolves.toEqual({
       error: expect.stringMatching(/already installed/),
     });
     expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
 
   it('returns an error for an unknown workflow key (validates input)', async () => {
-    const { installScoutWorkflow } = await import('@/lib/actions');
+    const { installWorkflow } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('workflow', 'not-a-real-scout');
-    await expect(installScoutWorkflow(fd)).resolves.toEqual({
+    await expect(installWorkflow(fd)).resolves.toEqual({
       error: expect.stringMatching(/unknown workflow/),
     });
     expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
@@ -529,11 +548,11 @@ describe('installScoutWorkflow', () => {
     mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
       data: { permission: 'read' },
     });
-    const { installScoutWorkflow } = await import('@/lib/actions');
+    const { installWorkflow } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('workflow', 'bug-scout');
-    await expect(installScoutWorkflow(fd)).resolves.toEqual({
+    await expect(installWorkflow(fd)).resolves.toEqual({
       error: expect.stringMatching(/lacks write/),
     });
     expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
@@ -546,11 +565,11 @@ describe('installScoutWorkflow', () => {
     mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
-    const { installScoutWorkflow } = await import('@/lib/actions');
+    const { installWorkflow } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('workflow', 'cleanup');
-    await installScoutWorkflow(fd);
+    await installWorkflow(fd);
 
     expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(
       expect.objectContaining({ ref: 'develop' }),
@@ -925,7 +944,7 @@ describe('applyPmMdUpdate', () => {
       value: 'sk-ant-test',
     });
     // Files were committed directly to the default branch (no PR flow).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(7);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
@@ -950,7 +969,7 @@ describe('applyPmMdUpdate', () => {
 
     expect(pushRepoSecret).not.toHaveBeenCalled();
     // Files still committed even without the secret.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(7);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
   });
 
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
@@ -976,7 +995,7 @@ describe('applyPmMdUpdate', () => {
     }
 
     // The wire-up still landed all three files; only the secret push failed.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(7);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

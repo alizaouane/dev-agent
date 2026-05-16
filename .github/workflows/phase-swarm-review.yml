@@ -10,10 +10,10 @@ name: dev-agent · phase-swarm-review
 # write code; they emit structured findings that lib/swarm-review.ts
 # combines deterministically.
 #
-# v1 ships in stub mode by default. Live mode (real claude-code-action
-# invocations using prompts/swarm-{spec-compliance,regression-guard,
-# security-scout}.md) lands in step 12b once the per-reviewer prompt
-# rendering + verdict capture is wired through claude-code-action.
+# Live mode (the default) runs three real reviewer agents via
+# claude-code-action over prompts/swarm-{spec-compliance,regression-guard,
+# security-scout}.md. Stub mode (invocation_mode: stub) is retained for
+# wiring tests only.
 #
 # In v1, the swarm verdict surfaces as a PR comment + label. The
 # enforcing-merge-block via the swarm-review:fail label is up to the
@@ -63,7 +63,7 @@ on:
         required: true
         type: string
       invocation_mode:
-        description: 'live (real reviewers — TODO step 12b) or stub'
+        description: 'live (real reviewers, default) or stub (wiring tests only)'
         required: false
         type: string
         default: 'live'

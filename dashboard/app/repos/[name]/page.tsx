@@ -13,10 +13,12 @@ import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
 import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
+import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PILLAR_LABELS } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
 const CLEANUP_WORKFLOW_PATH = '.github/workflows/dev-agent-cleanup-scout.yml';
+const VERIFICATION_WORKFLOW_PATH = '.github/workflows/dev-agent-verification.yml';
 
 async function isWorkflowInstalled(
   octokit: Awaited<ReturnType<typeof getOctokit>>,
@@ -56,7 +58,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
   const repo = allRepos.find((r) => `${r.owner}/${r.name}` === name);
   if (!repo) return <p className="text-muted-foreground">Repo not found in allowlist.</p>;
 
-  const [workspace, proposals, scheduleSnapshot, unfinishedWorkInstalled, cleanupInstalled] =
+  const [workspace, proposals, scheduleSnapshot, unfinishedWorkInstalled, cleanupInstalled, verificationInstalled] =
     await Promise.all([
       loadRepoWorkspace(octokit, repo),
       runAllScouts(octokit, [repo]).catch(() => []),
@@ -68,6 +70,9 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
         : Promise.resolve(false),
       repo.wired_up
         ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, CLEANUP_WORKFLOW_PATH)
+        : Promise.resolve(false),
+      repo.wired_up
+        ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, VERIFICATION_WORKFLOW_PATH)
         : Promise.resolve(false),
     ]);
 
@@ -215,6 +220,24 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                 />
               </div>
             ) : null}
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">Verification gates (swarm-review)</h3>
+              {verificationInstalled ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. On every dev-agent PR, three reviewers (spec-compliance,
+                  regression-guard, security-scout) run over the evidence bundle and post a
+                  verdict. To make it block merges, mark the swarm-review status check as a
+                  required status check in branch protection (see the enforcement runbook).
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="verification"
+                  title="Verification gates"
+                  description="Installs dev-agent-verification.yml so swarm-review (3 adversarial reviewers + deterministic scanners) runs automatically on every dev-agent PR."
+                />
+              )}
+            </div>
             <div className="rounded-md border border-border bg-card p-5">
               <h3 className="mb-1 text-base font-semibold">Files</h3>
               <ul className="text-sm">
