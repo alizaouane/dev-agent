@@ -66,6 +66,8 @@ These are `user-invocable: false` — invoked by slash commands and reusable wor
 
 To use live mode: pass `invocation_mode: live` (now the default) to `phase-implement.yml`. Stub mode (`invocation_mode: stub`) skips the agent — useful for wiring tests.
 
+Swarm-review enforcement + canary rollout: see [docs/runbooks/2026-05-16-swarm-review-enforcement.md](docs/runbooks/2026-05-16-swarm-review-enforcement.md)
+
 ## Status: v0.2.0 (Dashboard v1)
 
 Adds the web dashboard at [`dev-agent.qualiency.com`](https://dev-agent.qualiency.com) — inbox-driven UI, GitHub OAuth + allowlist, server actions wrapping the engine. Source: [`docs/specs/2026-05-03-dev-agent-dashboard-design.md`](docs/specs/2026-05-03-dev-agent-dashboard-design.md). Build: [`docs/plans/2026-05-03-dashboard-v1-plan.md`](docs/plans/2026-05-03-dashboard-v1-plan.md). Code under [`dashboard/`](dashboard/).
