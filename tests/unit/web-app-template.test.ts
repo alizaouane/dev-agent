@@ -83,7 +83,12 @@ describe('examples/web-app-template', () => {
     const parsed = yaml.load(raw) as { jobs: Record<string, { uses?: string }> };
     const jobs = Object.values(parsed.jobs);
     expect(jobs.length).toBeGreaterThan(0);
-    for (const job of jobs) {
+    // Reusable-workflow jobs must pin to a published v-tag, never a branch.
+    // The aggregate `verification-gate` job is a plain runs-on/steps job
+    // (no `uses:`) — it has nothing to pin, so it's excluded here.
+    const reusableJobs = jobs.filter((job) => job.uses !== undefined);
+    expect(reusableJobs.length).toBeGreaterThan(0);
+    for (const job of reusableJobs) {
       expect(job.uses).toMatch(/^alizaouane\/dev-agent\/\.github\/workflows\/phase-[a-z-]+\.yml@v\d+/);
     }
   });
@@ -140,6 +145,34 @@ describe('examples/web-app-template', () => {
         cond,
         `${jobName}: pull_request-triggered job must include same-repo guard`,
       ).toMatch(/head\.repo\.full_name == github\.repository/);
+    }
+  });
+
+  it('scout workflows grant workflow-level permissions so reusable jobs can start', () => {
+    // The reusable phase-{bug,unfinished-work,cleanup}-scout workflows
+    // declare job-level `permissions: { contents: read, issues: write,
+    // id-token: write }`. A reusable workflow can never elevate above what
+    // the caller grants — so each scout wrapper MUST grant those at the
+    // workflow level. Without the block the caller inherits the repo's
+    // default GITHUB_TOKEN scopes, and on a repo whose default is read-only
+    // the called job fails at startup ("but is only allowed issues:
+    // none, ..."). That was the bug behind every scout run on consumer
+    // repos coming back as startup_failure.
+    const scouts = [
+      'dev-agent-bug-scout.yml',
+      'dev-agent-unfinished-work-scout.yml',
+      'dev-agent-cleanup-scout.yml',
+    ];
+    for (const file of scouts) {
+      const raw = readFileSync(
+        resolve(templateRoot, '.github/workflows', file),
+        'utf8',
+      );
+      const parsed = yaml.load(raw) as { permissions?: Record<string, string> };
+      expect(parsed.permissions, `${file}: missing workflow-level permissions block`).toBeDefined();
+      expect(parsed.permissions?.issues, `${file}: needs issues: write`).toBe('write');
+      expect(parsed.permissions?.['id-token'], `${file}: needs id-token: write`).toBe('write');
+      expect(parsed.permissions?.contents, `${file}: needs contents: read`).toBe('read');
     }
   });
 });

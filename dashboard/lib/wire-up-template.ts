@@ -331,6 +331,16 @@ on:
         type: string
         default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
 
+# Granted at the workflow level so the called reusable workflow can
+# request these for its own job. A reusable workflow can never elevate
+# above what the caller grants — without this block the caller inherits
+# the repo's default GITHUB_TOKEN scopes, and if those are read-only the
+# called job fails at startup ("but is only allowed issues: none, ...").
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+
 jobs:
   bug-scout:
     uses: alizaouane/dev-agent/.github/workflows/phase-bug-scout.yml@v1
@@ -372,6 +382,16 @@ on:
         required: false
         type: string
         default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
+
+# Granted at the workflow level so the called reusable workflow can
+# request these for its own job. A reusable workflow can never elevate
+# above what the caller grants — without this block the caller inherits
+# the repo's default GITHUB_TOKEN scopes, and if those are read-only the
+# called job fails at startup ("but is only allowed issues: none, ...").
+permissions:
+  contents: read
+  issues: write
+  id-token: write
 
 jobs:
   unfinished-work-scout:
@@ -415,6 +435,16 @@ on:
         required: false
         type: string
         default: 'node_modules/**,dist/**,build/**,.next/**,coverage/**'
+
+# Granted at the workflow level so the called reusable workflow can
+# request these for its own job. A reusable workflow can never elevate
+# above what the caller grants — without this block the caller inherits
+# the repo's default GITHUB_TOKEN scopes, and if those are read-only the
+# called job fails at startup ("but is only allowed issues: none, ...").
+permissions:
+  contents: read
+  issues: write
+  id-token: write
 
 jobs:
   cleanup-scout:
