@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { triggerUnfinishedWorkScan } from '@/lib/actions';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
+import { ScanRunStatus } from '@/components/scan-run-status';
 
 type Props = {
   repo: string;
@@ -62,10 +63,12 @@ export function ScanWithPmButton({ repo, workflowPresent }: Props) {
           {pending ? 'Dispatching…' : 'Scan with PM'}
         </Button>
         {dispatchedAt ? (
-          <span className="text-xs text-muted-foreground">
-            Scan dispatched. Watch the Actions tab on GitHub for live progress;
-            findings file as issues when it finishes (typically 2–5 min).
-          </span>
+          <ScanRunStatus
+            repo={repo}
+            workflow="dev-agent-unfinished-work-scout.yml"
+            since={dispatchedAt}
+            proposalsHref={`/proposals?repo=${encodeURIComponent(repo)}`}
+          />
         ) : null}
         {error ? <span className="text-xs text-destructive">{error}</span> : null}
       </div>

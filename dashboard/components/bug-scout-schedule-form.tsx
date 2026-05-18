@@ -11,8 +11,9 @@ import {
   cronToLocalLabel,
   type SchedulePreset,
 } from '@/lib/bug-scout-schedule';
-import { setBugScoutSchedule } from '@/lib/actions';
+import { setBugScoutSchedule, triggerBugScoutScan } from '@/lib/actions';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
+import { ScanRunStatus } from '@/components/scan-run-status';
 
 type Props = {
   repo: string;
@@ -52,6 +53,25 @@ export function BugScoutScheduleForm({ repo, current, currentCron }: Props) {
   const [savedAt, setSavedAt] = useState<number | null>(null);
 
   const dirty = preset !== current;
+
+  const [scanPending, startScanTransition] = useTransition();
+  const [scanDispatchedAt, setScanDispatchedAt] = useState<number | null>(null);
+  const [scanError, setScanError] = useState<string | null>(null);
+
+  const onRunNow = () => {
+    setScanError(null);
+    setScanDispatchedAt(null);
+    startScanTransition(async () => {
+      try {
+        const fd = new FormData();
+        fd.append('repo', repo);
+        await triggerBugScoutScan(fd);
+        setScanDispatchedAt(Date.now());
+      } catch (err) {
+        setScanError(err instanceof Error ? err.message : String(err));
+      }
+    });
+  };
 
   const onSave = () => {
     setError(null);
@@ -112,6 +132,24 @@ export function BugScoutScheduleForm({ repo, current, currentCron }: Props) {
           <span className="text-xs text-destructive">{error}</span>
         ) : null}
       </div>
+
+      <div className="flex items-center gap-3 border-t border-border pt-3">
+        <Button type="button" onClick={onRunNow} disabled={scanPending} size="sm" variant="outline">
+          {scanPending ? 'Dispatching…' : 'Run bug-scout now'}
+        </Button>
+        <span className="text-xs text-muted-foreground">
+          One-off scan, independent of the schedule. ~$0.30–1.00 per run.
+        </span>
+      </div>
+      {scanDispatchedAt ? (
+        <ScanRunStatus
+          repo={repo}
+          workflow="dev-agent-bug-scout.yml"
+          since={scanDispatchedAt}
+          proposalsHref={`/proposals?repo=${encodeURIComponent(repo)}`}
+        />
+      ) : null}
+      {scanError ? <span className="text-xs text-destructive">{scanError}</span> : null}
     </div>
   );
 }
