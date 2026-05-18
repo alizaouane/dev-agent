@@ -1130,7 +1130,7 @@ export async function getLatestScanRun(
     };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    console.error('[getLatestScanRun] failed', { message });
+    console.error('[getLatestScanRun] failed', { message, raw: e });
     return { error: message };
   }
 }
