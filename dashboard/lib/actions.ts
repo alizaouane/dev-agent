@@ -6,6 +6,7 @@ import type { Octokit } from '@octokit/rest';
 
 import { getOctokit, getCurrentUsername } from './gh';
 import { ForbiddenError } from './errors';
+import type { ScanRunStatus } from './scan-run';
 import {
   WIRE_UP_FILES,
   INSTALLABLE_WORKFLOWS,
@@ -1084,6 +1085,54 @@ export async function triggerBugScoutScan(formData: FormData): Promise<void> {
   void session_username;
 
   revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
+}
+
+/**
+ * Server Action (read-only): return the most recent workflow run for a
+ * scout workflow on a repo, so the dashboard can show scan status inline
+ * instead of sending the user to GitHub's Actions tab.
+ *
+ * No write-permission gate — listing runs is a read, and the user
+ * already has dashboard read access to the repo. Returns `{ error }`
+ * (does not throw) on failure so production's Server Components mask
+ * can't hide the cause — same contract as `redispatchPhase`.
+ *
+ * Form fields:
+ *  - `repo`     — `owner/name`
+ *  - `workflow` — workflow file name (e.g. `dev-agent-bug-scout.yml`)
+ */
+export async function getLatestScanRun(
+  formData: FormData,
+): Promise<ScanRunStatus | { error: string }> {
+  try {
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string | null) ?? '').trim();
+    const workflow = ((formData.get('workflow') as string | null) ?? '').trim();
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    if (!workflow) throw new Error('workflow is required');
+    const [owner, repo] = repoFull.split('/');
+
+    const resp = await octokit.actions.listWorkflowRuns({
+      owner,
+      repo,
+      workflow_id: workflow,
+      per_page: 1,
+    });
+    const run = resp.data.workflow_runs[0];
+    if (!run) {
+      return { status: null, conclusion: null, html_url: null, created_at: null };
+    }
+    return {
+      status: run.status ?? null,
+      conclusion: run.conclusion ?? null,
+      html_url: run.html_url ?? null,
+      created_at: run.created_at ?? null,
+    };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[getLatestScanRun] failed', { message });
+    return { error: message };
+  }
 }
 
 /**

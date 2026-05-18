@@ -19,6 +19,7 @@ const mockOctokit = {
     getRepoPublicKey: vi.fn(),
     createOrUpdateRepoSecret: vi.fn(),
     cancelWorkflowRun: vi.fn(),
+    listWorkflowRuns: vi.fn(),
   },
   git: {
     getRef: vi.fn(),
@@ -383,6 +384,73 @@ describe('triggerBugScoutScan', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
       expect.objectContaining({ ref: 'develop' }),
     );
+  });
+});
+
+describe('getLatestScanRun', () => {
+  it('returns the latest run fields for a workflow', async () => {
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
+      data: {
+        workflow_runs: [
+          {
+            status: 'in_progress',
+            conclusion: null,
+            html_url: 'https://github.com/q/r/actions/runs/1',
+            created_at: '2026-05-18T00:00:00Z',
+          },
+        ],
+      },
+    });
+
+    const { getLatestScanRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'dev-agent-bug-scout.yml');
+    const result = await getLatestScanRun(fd);
+
+    expect(result).toEqual({
+      status: 'in_progress',
+      conclusion: null,
+      html_url: 'https://github.com/q/r/actions/runs/1',
+      created_at: '2026-05-18T00:00:00Z',
+    });
+    expect(mockOctokit.actions.listWorkflowRuns).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        workflow_id: 'dev-agent-bug-scout.yml',
+        per_page: 1,
+      }),
+    );
+  });
+
+  it('returns all-null when the workflow has no runs', async () => {
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
+      data: { workflow_runs: [] },
+    });
+    const { getLatestScanRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'dev-agent-bug-scout.yml');
+    expect(await getLatestScanRun(fd)).toEqual({
+      status: null,
+      conclusion: null,
+      html_url: null,
+      created_at: null,
+    });
+  });
+
+  it('returns { error } instead of throwing when the API call fails', async () => {
+    mockOctokit.actions.listWorkflowRuns.mockRejectedValueOnce(
+      new Error('GitHub API 500'),
+    );
+    const { getLatestScanRun } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'dev-agent-bug-scout.yml');
+    expect(await getLatestScanRun(fd)).toEqual({
+      error: expect.stringContaining('GitHub API 500'),
+    });
   });
 });
 
