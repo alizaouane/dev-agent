@@ -67,6 +67,15 @@ export default async function ProposalsPage(props: {
   const scopedRepos = scopedRepo ? [scopedRepo] : repos;
   const repoParamUnmatched = Boolean(repoParam) && !scopedRepo;
 
+  // Preserve repo scoping across the snoozed toggle.
+  const repoQuery = scopedRepo
+    ? `repo=${encodeURIComponent(`${scopedRepo.owner}/${scopedRepo.name}`)}`
+    : '';
+  const showSnoozedHref = repoQuery
+    ? `/proposals?${repoQuery}&show_snoozed=1`
+    : '/proposals?show_snoozed=1';
+  const hideSnoozedHref = repoQuery ? `/proposals?${repoQuery}` : '/proposals';
+
   if (repos.length === 0) {
     return (
       <div>
@@ -161,7 +170,7 @@ export default async function ProposalsPage(props: {
               {snoozed.length} snoozed{' '}
               {snoozed.length === 1 ? 'proposal' : 'proposals'} —{' '}
               <Link
-                href="/proposals?show_snoozed=1"
+                href={showSnoozedHref}
                 className="underline"
               >
                 review them
@@ -230,7 +239,7 @@ export default async function ProposalsPage(props: {
               {snoozed.length === 1 ? 'proposal' : 'proposals'}.
             </p>
             <Link
-              href={showSnoozed ? '/proposals' : '/proposals?show_snoozed=1'}
+              href={showSnoozed ? hideSnoozedHref : showSnoozedHref}
               className="text-sm underline"
             >
               {showSnoozed ? 'Hide snoozed' : 'Show snoozed'}
