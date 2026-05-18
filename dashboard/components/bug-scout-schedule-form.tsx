@@ -8,6 +8,7 @@ import {
   PRESET_LABELS,
   PRESET_COSTS,
   SCHEDULE_PRESETS,
+  cronToLocalLabel,
   type SchedulePreset,
 } from '@/lib/bug-scout-schedule';
 import { setBugScoutSchedule } from '@/lib/actions';
@@ -36,6 +37,12 @@ export function BugScoutScheduleForm({ repo, current, currentCron }: Props) {
       />
     );
   }
+
+  // Browser timezone. `Intl` is always present in supported browsers;
+  // the `|| 'UTC'` is a defensive fallback that degrades to the existing
+  // UTC-only labels rather than throwing.
+  const timeZone =
+    Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
 
   const initial: SchedulePreset =
     current === 'unknown' ? 'off' : current;
@@ -84,7 +91,7 @@ export function BugScoutScheduleForm({ repo, current, currentCron }: Props) {
           <SelectContent>
             {SCHEDULE_PRESETS.map((p) => (
               <SelectItem key={p} value={p}>
-                {PRESET_LABELS[p]} — {PRESET_COSTS[p]}
+                {cronToLocalLabel(p, timeZone)} — {PRESET_COSTS[p]}
               </SelectItem>
             ))}
           </SelectContent>

@@ -37,6 +37,50 @@ export const PRESET_COSTS: Record<SchedulePreset, string> = {
   off: 'No scheduled cost',
 };
 
+/**
+ * Render a schedule preset's run time in `timeZone`, alongside the
+ * canonical UTC time. GitHub Actions crons are always UTC; this is a
+ * display-only conversion. `timeZone` is an IANA zone — pass the value of
+ * `Intl.DateTimeFormat().resolvedOptions().timeZone` from the browser.
+ * The `off` preset has no time, so its label is returned unchanged.
+ */
+export function cronToLocalLabel(preset: SchedulePreset, timeZone: string): string {
+  if (preset === 'off') return PRESET_LABELS.off;
+
+  const cron = PRESET_TO_CRON[preset]; // 'min hour dom mon dow'
+  const [minStr, hourStr] = cron.split(' ');
+
+  // Anchor on a known Monday (2024-01-01 is a Monday) at the cron's UTC
+  // hour. The weekly preset fires on Monday UTC; formatting this anchor's
+  // weekday in the target zone yields the correct local weekday, even
+  // when the conversion crosses midnight.
+  const anchor = new Date(Date.UTC(2024, 0, 1, Number(hourStr), Number(minStr)));
+
+  const time = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(anchor);
+
+  const tzAbbr =
+    new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' })
+      .formatToParts(anchor)
+      .find((p) => p.type === 'timeZoneName')?.value ?? timeZone;
+
+  const utc = `${hourStr.padStart(2, '0')}:${minStr.padStart(2, '0')} UTC`;
+
+  if (preset === 'weekly') {
+    const weekday = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+    }).format(anchor);
+    return `Weekly — ${weekday} ${time} ${tzAbbr} · Mon ${utc}`;
+  }
+  const kind = preset === 'daily' ? 'Daily' : 'Weekdays';
+  return `${kind} — ${time} ${tzAbbr} · ${utc}`;
+}
+
 export const BUG_SCOUT_WORKFLOW_PATH = '.github/workflows/dev-agent-bug-scout.yml';
 
 export type BugScoutSchedule = {
