@@ -334,6 +334,23 @@ describe('triggerCleanupScan', () => {
 });
 
 describe('triggerBugScoutScan', () => {
+  it('rejects a repo that is not in owner/name format', async () => {
+    const { triggerBugScoutScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'no-slash-here');
+    await expect(triggerBugScoutScan(fd)).rejects.toThrow(/owner\/name format/);
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { triggerBugScoutScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    await expect(triggerBugScoutScan(fd)).rejects.toThrow(/lacks write/);
+  });
+
   it("dispatches dev-agent-bug-scout.yml on the repo's default branch", async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
@@ -366,16 +383,6 @@ describe('triggerBugScoutScan', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
       expect.objectContaining({ ref: 'develop' }),
     );
-  });
-
-  it('refuses without write permission', async () => {
-    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
-      data: { permission: 'read' },
-    });
-    const { triggerBugScoutScan } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    await expect(triggerBugScoutScan(fd)).rejects.toThrow(/lacks write/);
   });
 });
 
