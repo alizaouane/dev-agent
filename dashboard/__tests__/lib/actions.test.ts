@@ -333,6 +333,52 @@ describe('triggerCleanupScan', () => {
   });
 });
 
+describe('triggerBugScoutScan', () => {
+  it("dispatches dev-agent-bug-scout.yml on the repo's default branch", async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { triggerBugScoutScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    await triggerBugScoutScan(fd);
+
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'q',
+        repo: 'r',
+        workflow_id: 'dev-agent-bug-scout.yml',
+        ref: 'main',
+        inputs: {},
+      }),
+    );
+  });
+
+  it('dispatches on the actual default branch, not a hardcoded main', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+
+    const { triggerBugScoutScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    await triggerBugScoutScan(fd);
+
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ ref: 'develop' }),
+    );
+  });
+
+  it('refuses without write permission', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    const { triggerBugScoutScan } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    await expect(triggerBugScoutScan(fd)).rejects.toThrow(/lacks write/);
+  });
+});
+
 function notFound() {
   return Object.assign(new Error('Not Found'), { status: 404 });
 }

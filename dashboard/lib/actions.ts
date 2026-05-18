@@ -1048,6 +1048,45 @@ export async function triggerCleanupScan(formData: FormData): Promise<void> {
 }
 
 /**
+ * Server Action: fire a one-shot bug-scout run — dispatches the bug-scout
+ * workflow on the consumer repo, independent of its cron schedule.
+ * Mirrors `triggerCleanupScan`; only the workflow file name differs.
+ *
+ * Cost ~$0.30–1.00 per scan.
+ *
+ * Form fields:
+ *  - `repo` — `owner/name`
+ *
+ * @throws Error on bad input
+ * @throws ForbiddenError if user lacks write perm on the target repo
+ */
+export async function triggerBugScoutScan(formData: FormData): Promise<void> {
+  const session_username = await getCurrentUsername();
+  const octokit = await getOctokit();
+  const repoFull = (formData.get('repo') as string)?.trim() ?? '';
+  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+  const [owner, repo] = repoFull.split('/');
+  await assertWritePermission(octokit, owner, repo, session_username);
+
+  // Read default branch from the repo rather than trusting form input —
+  // same as triggerCleanupScan / setBugScoutSchedule.
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
+  await octokit.actions.createWorkflowDispatch({
+    owner,
+    repo,
+    workflow_id: 'dev-agent-bug-scout.yml',
+    ref: default_branch,
+    inputs: {},
+  });
+
+  void session_username;
+
+  revalidatePath(`/repos/${encodeURIComponent(repoFull)}`);
+}
+
+/**
  * Server Action: re-dispatch a phase workflow on an existing issue.
  * Used by the feature page's "Re-run" button so the operator doesn't
  * have to drop into `gh workflow run` whenever a phase fails or needs
