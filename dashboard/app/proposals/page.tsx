@@ -50,12 +50,22 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
  *  - `?show_snoozed=1` — render the snoozed section (default hidden)
  */
 export default async function ProposalsPage(props: {
-  searchParams: Promise<{ show_snoozed?: string }>;
+  searchParams: Promise<{ show_snoozed?: string; repo?: string }>;
 }) {
   const octokit = await getOctokit();
   const repos = wiredRepos(await listAllowedRepos(octokit));
-  const { show_snoozed } = await props.searchParams;
+  const { show_snoozed, repo: repoParam } = await props.searchParams;
   const showSnoozed = show_snoozed === '1';
+
+  // When `?repo=owner/name` matches a wired repo, scope the whole page to
+  // it: scouts run for one repo (fast) and only its proposals show. A
+  // `repo` param that doesn't match a wired repo falls back to the
+  // all-repos view with a notice rather than erroring.
+  const scopedRepo = repoParam
+    ? repos.find((r) => `${r.owner}/${r.name}` === repoParam)
+    : undefined;
+  const scopedRepos = scopedRepo ? [scopedRepo] : repos;
+  const repoParamUnmatched = Boolean(repoParam) && !scopedRepo;
 
   if (repos.length === 0) {
     return (
@@ -80,8 +90,8 @@ export default async function ProposalsPage(props: {
   // Snoozes are read from each consumer repo's `.dev-agent/pm.md`
   // frontmatter so they survive Vercel cold starts.
   const [proposals, snoozeMap] = await Promise.all([
-    runAllScouts(octokit, repos),
-    loadSnoozeMap(octokit, repos),
+    runAllScouts(octokit, scopedRepos),
+    loadSnoozeMap(octokit, scopedRepos),
   ]);
   const { active, snoozed } = partitionBySnooze(proposals, snoozeMap);
   const carryOver = active.filter((p) => p.group === 'carry_over');
@@ -116,14 +126,30 @@ export default async function ProposalsPage(props: {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-semibold">Proposals</h1>
+      <h1 className="mb-2 text-2xl font-semibold">
+        {scopedRepo ? `Proposals · ${scopedRepo.owner}/${scopedRepo.name}` : 'Proposals'}
+      </h1>
+      {repoParamUnmatched ? (
+        <p className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
+          <code>{repoParam}</code> isn&apos;t a wired-up repo — showing all repos instead.
+        </p>
+      ) : null}
       <p className="mb-6 max-w-2xl text-sm text-muted-foreground">
-        What the PM agent thinks you should consider doing next, scanned across your{' '}
-        {repos.length} wired-up{' '}
-        {repos.length === 1 ? 'repo' : 'repos'}. Carry-over commitments rank above new ideas —
-        finishing what&apos;s already in motion is usually higher leverage than starting
-        something new. Snooze anything you&apos;ve decided &ldquo;not now&rdquo; on to keep
-        the list tight.
+        {scopedRepo ? (
+          <>
+            What the PM agent thinks you should consider doing next in{' '}
+            <code>{scopedRepo.owner}/{scopedRepo.name}</code>.{' '}
+            <Link href="/proposals" className="underline">View all repos</Link>.
+          </>
+        ) : (
+          <>
+            What the PM agent thinks you should consider doing next, scanned across your{' '}
+            {repos.length} wired-up {repos.length === 1 ? 'repo' : 'repos'}. Carry-over
+            commitments rank above new ideas — finishing what&apos;s already in motion is
+            usually higher leverage than starting something new. Snooze anything you&apos;ve
+            decided &ldquo;not now&rdquo; on to keep the list tight.
+          </>
+        )}
       </p>
 
       {active.length === 0 ? (

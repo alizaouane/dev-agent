@@ -126,7 +126,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       <section>
         <div className="mb-3 flex items-baseline justify-between">
           <h2 className="text-lg font-semibold">PM proposes</h2>
-          <Link href="/proposals" className="text-sm underline">
+          <Link href={`/proposals?repo=${encodeURIComponent(name)}`} className="text-sm underline">
             See all
           </Link>
         </div>
