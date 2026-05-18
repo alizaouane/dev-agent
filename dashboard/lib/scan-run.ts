@@ -37,7 +37,11 @@ export function interpretScanRun(
 ): ScanPhase {
   if ('error' in result) return { kind: 'error', message: result.error };
 
-  const created = result.created_at ? Date.parse(result.created_at) : 0;
+  // Date.parse yields NaN for a malformed timestamp; treat that (and a
+  // missing created_at) as epoch 0 so the run classifies as `queued`
+  // rather than silently falling through to `running`/`done`.
+  const parsed = result.created_at ? Date.parse(result.created_at) : 0;
+  const created = Number.isNaN(parsed) ? 0 : parsed;
   if (!result.status || created < since - SKEW_MS) {
     return { kind: 'queued' };
   }
