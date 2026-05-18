@@ -48,6 +48,7 @@ export function cronToLocalLabel(preset: SchedulePreset, timeZone: string): stri
   if (preset === 'off') return PRESET_LABELS.off;
 
   const cron = PRESET_TO_CRON[preset]; // 'min hour dom mon dow'
+  // Standard cron fields: [minute, hour, day-of-month, month, day-of-week].
   const [minStr, hourStr] = cron.split(' ');
 
   // Anchor on a known Monday (2024-01-01 is a Monday) at the cron's UTC
@@ -71,6 +72,8 @@ export function cronToLocalLabel(preset: SchedulePreset, timeZone: string): stri
   const utc = `${hourStr.padStart(2, '0')}:${minStr.padStart(2, '0')} UTC`;
 
   if (preset === 'weekly') {
+    // The weekly preset's cron fires on Monday UTC (day-of-week = 1), so
+    // `Mon` is literal here; it's not dependent on timeZone.
     const weekday = new Intl.DateTimeFormat('en-US', {
       timeZone,
       weekday: 'short',
