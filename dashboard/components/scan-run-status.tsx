@@ -38,9 +38,11 @@ export function ScanRunStatus({ repo, workflow, since, proposalsHref }: Props) {
       if (cancelled) return;
       const next = interpretScanRun(result, since);
       setPhase(next);
-      // Keep polling only while the run is not yet terminal and the
-      // lookup is healthy.
-      if (next.kind === 'queued' || next.kind === 'running') {
+      // Keep polling on queued/running, and also on a transient lookup
+      // error — a single network/API hiccup should self-heal on the next
+      // poll rather than stranding the user on an error forever. Only the
+      // terminal `done` state stops the loop.
+      if (next.kind !== 'done') {
         timer = setTimeout(poll, POLL_MS);
       }
     };
@@ -54,21 +56,21 @@ export function ScanRunStatus({ repo, workflow, since, proposalsHref }: Props) {
 
   if (phase.kind === 'error') {
     return (
-      <span className="text-xs text-destructive">
+      <span aria-live="polite" className="text-xs text-destructive">
         Couldn&apos;t read scan status: {phase.message}
       </span>
     );
   }
   if (phase.kind === 'queued') {
-    return <span className="text-xs text-muted-foreground">Scan queued…</span>;
+    return <span aria-live="polite" className="text-xs text-muted-foreground">Scan queued…</span>;
   }
   if (phase.kind === 'running') {
-    return <span className="text-xs text-muted-foreground">Scan running…</span>;
+    return <span aria-live="polite" className="text-xs text-muted-foreground">Scan running…</span>;
   }
   // done
   if (phase.ok) {
     return (
-      <span className="text-xs text-muted-foreground">
+      <span aria-live="polite" className="text-xs text-muted-foreground">
         Scan complete.{' '}
         <a href={proposalsHref} className="underline">
           View findings
@@ -77,7 +79,7 @@ export function ScanRunStatus({ repo, workflow, since, proposalsHref }: Props) {
     );
   }
   return (
-    <span className="text-xs text-destructive">
+    <span aria-live="polite" className="text-xs text-destructive">
       Scan run failed.{' '}
       {phase.runUrl ? (
         <a
