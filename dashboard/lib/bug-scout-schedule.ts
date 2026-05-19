@@ -37,6 +37,71 @@ export const PRESET_COSTS: Record<SchedulePreset, string> = {
   off: 'No scheduled cost',
 };
 
+/**
+ * Render a schedule preset's run time in `timeZone`, alongside the
+ * canonical UTC time. GitHub Actions crons are always UTC; this is a
+ * display-only conversion. `timeZone` is an IANA zone — pass the value of
+ * `Intl.DateTimeFormat().resolvedOptions().timeZone` from the browser.
+ * The `off` preset has no time, so its label is returned unchanged.
+ */
+export function cronToLocalLabel(preset: SchedulePreset, timeZone: string): string {
+  if (preset === 'off') return PRESET_LABELS.off;
+
+  const cron = PRESET_TO_CRON[preset]; // 'min hour dom mon dow'
+  // Standard cron fields: [minute, hour, day-of-month, month, day-of-week].
+  const [minStr, hourStr] = cron.split(' ');
+
+  // Anchor on the CURRENT UTC date at the cron's UTC hour. A fixed
+  // calendar anchor (e.g. Jan 1) would lock DST-observing zones to their
+  // winter offset, so the displayed local time would be an hour off for
+  // the rest of the year. For the `weekly` preset, advance the anchor to
+  // the next Monday UTC (the day the cron fires) so the local-weekday
+  // conversion is correct even when it crosses midnight.
+  const now = new Date();
+  const todayUtc = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      Number(hourStr),
+      Number(minStr),
+    ),
+  );
+  const anchor =
+    preset === 'weekly'
+      ? new Date(
+          todayUtc.getTime() +
+            ((1 - todayUtc.getUTCDay() + 7) % 7) * 86_400_000,
+        )
+      : todayUtc;
+
+  const time = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(anchor);
+
+  const tzAbbr =
+    new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'short' })
+      .formatToParts(anchor)
+      .find((p) => p.type === 'timeZoneName')?.value ?? timeZone;
+
+  const utc = `${hourStr.padStart(2, '0')}:${minStr.padStart(2, '0')} UTC`;
+
+  if (preset === 'weekly') {
+    // The weekly preset's cron fires on Monday UTC (day-of-week = 1), so
+    // `Mon` is literal here; it's not dependent on timeZone.
+    const weekday = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      weekday: 'short',
+    }).format(anchor);
+    return `Weekly — ${weekday} ${time} ${tzAbbr} · Mon ${utc}`;
+  }
+  const kind = preset === 'daily' ? 'Daily' : 'Weekdays';
+  return `${kind} — ${time} ${tzAbbr} · ${utc}`;
+}
+
 export const BUG_SCOUT_WORKFLOW_PATH = '.github/workflows/dev-agent-bug-scout.yml';
 
 export type BugScoutSchedule = {

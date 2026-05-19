@@ -158,10 +158,17 @@ describe('loadSnoozeMap (multi-repo)', () => {
     }));
     const octokit = { repos: { getContent } } as unknown as Octokit;
 
-    const map = await loadSnoozeMap(octokit, [
-      { owner: 'a', name: 'r', default_branch: 'main' },
-      { owner: 'b', name: 'r', default_branch: 'main' },
-    ]);
+    const map = await loadSnoozeMap(
+      octokit,
+      [
+        { owner: 'a', name: 'r', default_branch: 'main' },
+        { owner: 'b', name: 'r', default_branch: 'main' },
+      ],
+      // Fixed `now` before the entries' 2026-05-12 expiry. Without it the
+      // test uses the real clock, so pruneExpired drops the entries once
+      // the wall-clock date passes 2026-05-12 — a time-bomb failure.
+      new Date('2026-05-05T00:00:00Z'),
+    );
     expect(map.get('unfinished_plan:a/r:p1')).toBe('2026-05-12');
     expect(map.get('unfinished_plan:b/r:p1')).toBe('2026-05-12');
   });

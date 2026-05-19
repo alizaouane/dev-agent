@@ -6,6 +6,7 @@ import {
   readBugScoutSchedule,
   writeBugScoutSchedule,
   BUG_SCOUT_WORKFLOW_PATH,
+  cronToLocalLabel,
 } from '@/lib/bug-scout-schedule';
 
 const TEMPLATE_YAML = `name: dev-agent · bug-scout
@@ -277,5 +278,37 @@ describe('writeBugScoutSchedule', () => {
     await expect(
       writeBugScoutSchedule(octokit as never, 'o', 'r', 'main', 'daily'),
     ).rejects.toThrow(/Bug-scout workflow not found/);
+  });
+});
+
+describe('cronToLocalLabel', () => {
+  it('converts the daily 09:00 UTC preset to Singapore time (UTC+8)', () => {
+    const label = cronToLocalLabel('daily', 'Asia/Singapore');
+    expect(label).toContain('Daily');
+    expect(label).toContain('17:00');
+    expect(label).toContain('09:00 UTC');
+  });
+
+  it('converts the weekdays preset to local time', () => {
+    const label = cronToLocalLabel('weekdays', 'Asia/Singapore');
+    expect(label).toContain('Weekdays');
+    expect(label).toContain('17:00');
+    expect(label).toContain('09:00 UTC');
+  });
+
+  it('shows the local weekday for the weekly preset', () => {
+    const label = cronToLocalLabel('weekly', 'Asia/Singapore');
+    expect(label).toContain('Mon 17:00');
+    expect(label).toContain('Mon 09:00 UTC');
+  });
+
+  it('shifts the weekday when the UTC->local conversion crosses midnight', () => {
+    const label = cronToLocalLabel('weekly', 'Pacific/Honolulu');
+    expect(label).toContain('Sun 23:00');
+    expect(label).toContain('Mon 09:00 UTC');
+  });
+
+  it('returns the off label unchanged', () => {
+    expect(cronToLocalLabel('off', 'Asia/Singapore')).toBe('Off (manual only)');
   });
 });
