@@ -40,6 +40,16 @@ describe('interpretScanRun', () => {
     });
   });
 
+  it('reports queued for a pre-execution status (queued) created after dispatch', () => {
+    const result = {
+      status: 'queued',
+      conclusion: null,
+      html_url: 'https://run',
+      created_at: new Date(SINCE + 2_000).toISOString(),
+    };
+    expect(interpretScanRun(result, SINCE)).toEqual({ kind: 'queued' });
+  });
+
   it('reports done+ok for a completed successful run', () => {
     const result = {
       status: 'completed',

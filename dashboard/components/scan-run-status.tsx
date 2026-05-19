@@ -34,7 +34,17 @@ export function ScanRunStatus({ repo, workflow, since, proposalsHref }: Props) {
       const fd = new FormData();
       fd.append('repo', repo);
       fd.append('workflow', workflow);
-      const result = await getLatestScanRun(fd);
+      // `getLatestScanRun` catches its own errors and returns `{ error }`,
+      // but the server-action *invocation* (RPC/network/transport) can
+      // still reject. Catch that here too — otherwise the rejected promise
+      // kills the poll loop and the status freezes permanently. Treat it
+      // as a transient error result; the loop re-arms below and self-heals.
+      let result: Awaited<ReturnType<typeof getLatestScanRun>>;
+      try {
+        result = await getLatestScanRun(fd);
+      } catch (err) {
+        result = { error: err instanceof Error ? err.message : String(err) };
+      }
       if (cancelled) return;
       const next = interpretScanRun(result, since);
       setPhase(next);

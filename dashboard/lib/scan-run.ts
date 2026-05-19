@@ -45,6 +45,12 @@ export function interpretScanRun(
   if (!result.status || created < since - SKEW_MS) {
     return { kind: 'queued' };
   }
+  // `queued | waiting | requested | pending` are GitHub's pre-execution
+  // run statuses — the run exists but no job has started. Show "queued",
+  // not "running" (which is reserved for `in_progress`).
+  if (['queued', 'waiting', 'requested', 'pending'].includes(result.status)) {
+    return { kind: 'queued' };
+  }
   if (result.status !== 'completed') {
     return { kind: 'running', runUrl: result.html_url };
   }

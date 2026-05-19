@@ -51,11 +51,29 @@ export function cronToLocalLabel(preset: SchedulePreset, timeZone: string): stri
   // Standard cron fields: [minute, hour, day-of-month, month, day-of-week].
   const [minStr, hourStr] = cron.split(' ');
 
-  // Anchor on a known Monday (2024-01-01 is a Monday) at the cron's UTC
-  // hour. The weekly preset fires on Monday UTC; formatting this anchor's
-  // weekday in the target zone yields the correct local weekday, even
-  // when the conversion crosses midnight.
-  const anchor = new Date(Date.UTC(2024, 0, 1, Number(hourStr), Number(minStr)));
+  // Anchor on the CURRENT UTC date at the cron's UTC hour. A fixed
+  // calendar anchor (e.g. Jan 1) would lock DST-observing zones to their
+  // winter offset, so the displayed local time would be an hour off for
+  // the rest of the year. For the `weekly` preset, advance the anchor to
+  // the next Monday UTC (the day the cron fires) so the local-weekday
+  // conversion is correct even when it crosses midnight.
+  const now = new Date();
+  const todayUtc = new Date(
+    Date.UTC(
+      now.getUTCFullYear(),
+      now.getUTCMonth(),
+      now.getUTCDate(),
+      Number(hourStr),
+      Number(minStr),
+    ),
+  );
+  const anchor =
+    preset === 'weekly'
+      ? new Date(
+          todayUtc.getTime() +
+            ((1 - todayUtc.getUTCDay() + 7) % 7) * 86_400_000,
+        )
+      : todayUtc;
 
   const time = new Intl.DateTimeFormat('en-US', {
     timeZone,

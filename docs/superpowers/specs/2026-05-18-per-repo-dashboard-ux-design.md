@@ -32,7 +32,7 @@ The cron strings are **not** changed — GitHub Actions requires UTC crons. This
 
 **Design.**
 - `bug-scout-schedule-form.tsx` is a client component, so it reads the browser timezone via `Intl.DateTimeFormat().resolvedOptions().timeZone` and the abbreviation/offset via `Intl.DateTimeFormat`.
-- A pure helper `cronToLocalLabel(preset, cron, timeZone)` lives in `lib/bug-scout-schedule.ts` (so it is unit-testable without a DOM). It takes the UTC `cron` for a preset, computes the local hour:minute and — for `weekly` — the local weekday, and returns the display string. It handles the day-of-week shift when the UTC→local conversion crosses midnight (correct for any timezone, not just SGT).
+- A pure helper `cronToLocalLabel(preset, timeZone)` lives in `lib/bug-scout-schedule.ts` (so it is unit-testable without a DOM). It resolves the preset's UTC cron internally, computes the local hour:minute and — for `weekly` — the local weekday, and returns the display string. It handles the day-of-week shift when the UTC→local conversion crosses midnight (correct for any timezone, not just SGT).
 - `PRESET_LABELS` stays as the UTC-canonical fallback (used server-side / in tests where no browser timezone exists). The form computes the timezone-aware label client-side and falls back to `PRESET_LABELS` if `Intl` is unavailable.
 
 **Files:** `lib/bug-scout-schedule.ts` (add `cronToLocalLabel`), `components/bug-scout-schedule-form.tsx` (use it).
