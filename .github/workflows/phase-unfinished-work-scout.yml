@@ -89,17 +89,36 @@ jobs:
       - uses: actions/checkout@v4
         with: { fetch-depth: 1 }
 
+      # actions/checkout above clones the *consumer's* repo — which has no
+      # lib/cli tooling. The reusable-workflow YAML ships from dev-agent but
+      # its scripts don't, so check the engine out separately into a subdir
+      # (excluded from git state so it can't dirty the consumer's tree).
+      # Pinned to v1 to match how consumers pin this reusable workflow.
+      - name: Reserve engine checkout from git state
+        run: echo '.dev-agent-engine/' >> .git/info/exclude
+
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
+
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
 
       - run: npm ci
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
 
       - name: Convert .dev-agent.yml to JSON for jq
         env:
           CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           set -euo pipefail
-          npx tsx lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
           jq -e . /tmp/config.json > /dev/null
 
       - name: Render system prompt
@@ -109,6 +128,10 @@ jobs:
           IGNORE_PATHS: ${{ inputs.ignore_paths }}
         run: |
           set -euo pipefail
+          # The engine checkout lives in the workspace alongside the consumer
+          # repo — tell the scanning agent to skip it so it never files
+          # findings about dev-agent's own code.
+          IGNORE_PATHS=".dev-agent-engine/**${IGNORE_PATHS:+,$IGNORE_PATHS}"
           CONSUMER_ROOT=$(dirname "$CONFIG_PATH")
           [ "$CONSUMER_ROOT" = "." ] && CONSUMER_ROOT="."
           export PROMPT_VARS_JSON=$(jq -nc \
@@ -124,7 +147,7 @@ jobs:
             echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
             exit 1
           fi
-          npx tsx lib/cli/render-prompt.ts unfinished-work-scout > /tmp/system-prompt.md
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-prompt.ts unfinished-work-scout > /tmp/system-prompt.md
 
       - name: Build agent prompt
         id: build
