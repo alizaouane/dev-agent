@@ -6,7 +6,6 @@ import { isTerminalState, fetchPipeline } from '@/lib/pipeline';
 import { outcomesForFeatures, rollupFromOutcomes } from '@/lib/verification/aggregate';
 import type { VerificationOutcome, VerificationRollup, PillarId } from '@/lib/verification/types';
 
-const RISK_WORKFLOW = '.github/workflows/dev-agent-risk-audit.yml';
 const SMOKE_WORKFLOW = '.github/workflows/dev-agent-tier2-smoke.yml';
 
 export function partitionRepoPipeline(items: FeatureItem[]) {
@@ -22,7 +21,10 @@ export function configuredPillars(opts: { workflows: string[] }): Record<PillarI
     gate_b: true,
     audit_p4: true,
     evidence_p2: true,
-    risk_p5: opts.workflows.includes(RISK_WORKFLOW),
+    // risk-audit runs as a step inside phase-implement (architecturally
+    // identical to audit_p4) on every dev-agent run — it has no standalone
+    // workflow file, so it is universal, not opt-in.
+    risk_p5: true,
     smoke_p7: opts.workflows.includes(SMOKE_WORKFLOW),
   };
 }

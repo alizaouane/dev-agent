@@ -27,18 +27,15 @@ describe('partitionRepoPipeline', () => {
 });
 
 describe('configuredPillars', () => {
-  it('marks gate_b, audit_p4, evidence_p2 as universal', () => {
+  it('marks gate_b, audit_p4, evidence_p2, risk_p5 as universal', () => {
+    // All four run on every dev-agent feature with no per-repo opt-in:
+    // gate_b / evidence_p2 ship in the verification workflow, audit_p4 and
+    // risk_p5 are steps inside phase-implement.
     const pillars = configuredPillars({ workflows: [] });
     expect(pillars.gate_b).toBe(true);
     expect(pillars.audit_p4).toBe(true);
     expect(pillars.evidence_p2).toBe(true);
-  });
-
-  it('marks risk_p5 as opt-in based on workflow presence', () => {
-    expect(configuredPillars({ workflows: [] }).risk_p5).toBe(false);
-    expect(
-      configuredPillars({ workflows: ['.github/workflows/dev-agent-risk-audit.yml'] }).risk_p5,
-    ).toBe(true);
+    expect(pillars.risk_p5).toBe(true);
   });
 
   it('marks smoke_p7 as opt-in based on workflow presence', () => {
