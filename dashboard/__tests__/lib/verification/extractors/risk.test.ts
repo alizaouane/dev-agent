@@ -8,34 +8,24 @@ function mkOctokit(comments: Array<{ body: string; html_url: string; created_at?
   } as unknown as Parameters<typeof extractRiskOutcome>[0];
 }
 
+// Fixtures mirror the actual `report.md` emitted by lib/cli/risk-audit.ts
+// (renderMarkdown). risk-audit is a deterministic CLI — its comment has the
+// `🤖 Phase: risk-audit` anchor + `Verdict:` + risk-specific lines, but NO
+// Model/Tokens/Cost/Status telemetry block. Earlier fixtures wrongly added
+// that block, so these tests passed while the real extractor returned null.
 const cleanBody = `🤖 Phase: risk-audit
-Model: claude-haiku-4-5
-Tokens: 0.5k in / 0.1k out
-Cost: $0.005
-Mode: live
-Status: clean
 Verdict: clean
 Total Bash calls: 12
 Mismatches (agent rated < classifier): 0
 Classifier-HIGH calls: 0`;
 
 const mismatchBody = `🤖 Phase: risk-audit
-Model: claude-haiku-4-5
-Tokens: 0.5k in / 0.1k out
-Cost: $0.005
-Mode: live
-Status: mismatches
 Verdict: mismatches
 Total Bash calls: 12
 Mismatches (agent rated < classifier): 2
 Classifier-HIGH calls: 1`;
 
 const absentBody = `🤖 Phase: risk-audit
-Model: claude-haiku-4-5
-Tokens: 0.1k in / 0.05k out
-Cost: $0.001
-Mode: live
-Status: absent
 Verdict: absent
 
 No \`.dev-agent/bash-log.jsonl\` was authored by the implement-agent during this run.`;
