@@ -66,4 +66,13 @@ describe('orchestrator', () => {
       expect(STATE_LABELS).toContain(row.to);
     }
   });
+
+  it('routes state:staging-deployed -> state:tier2-smoke via workflow-tier2-fire', () => {
+    const result = validateTransition('state:staging-deployed', 'workflow-tier2-fire');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.next).toBe('state:tier2-smoke');
+      expect(result.fires).toBe('dev-agent-tier2-smoke.yml');
+    }
+  });
 });

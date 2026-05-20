@@ -29,6 +29,7 @@ export type TransitionTrigger =
   | '/develop-auto'
   | '/approve'
   | 'workflow-pr-open'
+  | 'workflow-tier2-fire'
   | 'smoke-pass-staging'
   | '/approve --promote'
   | 'smoke-pass-prod'
@@ -69,6 +70,7 @@ export const TRANSITION_TABLE: readonly TransitionRow[] = [
   { from: 'state:swarm-reviewing',   trigger: 'swarm-pass',         to: 'state:pr-review' },
   { from: 'state:swarm-reviewing',   trigger: 'swarm-fail',         to: 'state:blocked' },
   { from: 'state:swarm-reviewing',   trigger: 'human-override',     to: 'state:pr-review' },
+  { from: 'state:staging-deployed',  trigger: 'workflow-tier2-fire', to: 'state:tier2-smoke',      fires: 'dev-agent-tier2-smoke.yml' },
   { from: 'state:tier2-smoke',       trigger: 'tier2-pass',         to: 'state:ready-to-promote' },
   { from: 'state:tier2-smoke',       trigger: 'tier2-fail',         to: 'state:blocked' },
 ] as const;
