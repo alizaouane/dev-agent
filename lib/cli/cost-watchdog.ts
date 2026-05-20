@@ -114,7 +114,6 @@ async function collectIssuesWithComments(
     since: monthStart.toISOString(),
     per_page: 100,
   });
-  // Filter out PRs (listForRepo returns both).
   const realIssues = issues.filter((i) => !i.pull_request);
   return Promise.all(
     realIssues.map(async (issue) => {
