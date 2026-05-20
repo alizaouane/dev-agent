@@ -62,9 +62,29 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       - uses: actions/checkout@v4
+
+      # actions/checkout above clones the *consumer's* repo — which has no
+      # lib/cli tooling. The reusable-workflow YAML ships from dev-agent but
+      # its scripts don't, so check the engine out separately into a subdir
+      # (excluded from git state so it can't dirty the consumer's tree).
+      # Pinned to v1 to match how consumers pin this reusable workflow.
+      - name: Reserve engine checkout from git state
+        run: echo '.dev-agent-engine/' >> .git/info/exclude
+
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
+
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
       - run: npm ci
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
 
       - name: Classify smoke output (stub)
         env:
@@ -83,4 +103,4 @@ jobs:
             --argjson code "$SMOKE_EXIT_CODE" \
             --argjson issue "$ISSUE_NUMBER" \
             '{smoke_phase:$phase, smoke_output:$out, smoke_exit_code:$code, issue_number:$issue}')
-          npx tsx lib/cli/render-and-run.ts smoke-verify
+          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-and-run.ts smoke-verify
