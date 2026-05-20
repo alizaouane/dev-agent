@@ -66,7 +66,7 @@ export function renderAlertBody(args: {
   monthLabel: string;
 }): string {
   const { tier, breakdown, budget, threshold, monthLabel } = args;
-  const pct = (breakdown.total / budget) * 100;
+  const pct = budget > 0 ? (breakdown.total / budget) * 100 : 0;
   const heading = tier === 'exhausted'
     ? '## Monthly budget exhausted'
     : '## Monthly budget warning';
@@ -77,8 +77,7 @@ export function renderAlertBody(args: {
   const phaseRows = Object.entries(breakdown.byPhase)
     .sort(([, a], [, b]) => b - a)
     .map(([phase, cost]) => {
-      const runs = breakdown.topFeatures.reduce((n, f) => n + (f.phases[phase] ?? 0), 0)
-        || estimatePhaseRuns(breakdown, phase);
+      const runs = breakdown.topFeatures.reduce((n, f) => n + (f.phases[phase] ?? 0), 0);
       return `${phase} | ${runs} | $${cost.toFixed(2)}`;
     });
 
@@ -114,8 +113,4 @@ export function renderAlertBody(args: {
     '',
     'To adjust the budget, edit `.dev-agent.yml` → `cost_caps.monthly_budget_usd`.',
   ].join('\n');
-}
-
-function estimatePhaseRuns(breakdown: CostBreakdown, phase: string): number {
-  return breakdown.topFeatures.reduce((n, f) => n + (f.phases[phase] ?? 0), 0);
 }
