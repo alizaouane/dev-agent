@@ -160,6 +160,9 @@ describe('examples/web-app-template', () => {
     expect(parsed.permissions?.contents).toBe('read');
     expect(parsed.permissions?.issues).toBe('write');
     expect(parsed.permissions?.['id-token']).toBe('write');
+    // gh pr list / gh pr view inside the resolve step need pull-requests:read.
+    // Since `permissions:` is declared, any unlisted scope defaults to `none`.
+    expect(parsed.permissions?.['pull-requests']).toBe('read');
     expect(parsed.on?.issues?.types).toContain('labeled');
     expect(parsed.on?.workflow_dispatch).toBeDefined();
     const jobs = Object.values(parsed.jobs);

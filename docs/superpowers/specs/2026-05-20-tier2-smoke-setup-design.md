@@ -153,7 +153,7 @@ No `configuredPillars` change — it already checks the right file (`dev-agent-t
 
 When a smoke run fails and the issue lands in `state:blocked`, v1 escape hatches (matching the swarm-review runbook):
 
-- **Re-run.** Remove and re-add `state:tier2-smoke` (or `gh workflow run dev-agent-tier2-smoke.yml`). The label re-add (or manual dispatch) re-triggers the wrapper.
+- **Re-run.** Remove `state:tier2-smoke` and re-add `state:staging-deployed` — that's the label the wrapper's `issues.labeled` trigger fires on (re-adding `state:tier2-smoke` would *not* re-fire the wrapper). Or dispatch directly: `gh workflow run dev-agent-tier2-smoke.yml -f issue_number=<N>`.
 - **Admin-merge.** If the verdict is wrong and the operator accepts the risk, admin-merge the promote PR (provided branch protection allows admin bypass).
 - **Temporarily un-require the check.** Remove `dev-agent · phase-tier2-smoke` from the required checks list, merge, re-add.
 

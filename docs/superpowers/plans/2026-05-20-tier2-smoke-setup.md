@@ -326,7 +326,7 @@ Also extend the existing `'targets the correct path for each workflow key'` test
 - [ ] **Step 3: Run both tests to verify they fail**
 
 Run:
-```
+```bash
 cd "$(git rev-parse --show-toplevel)" && npx vitest run tests/unit/wire-up-template-drift.test.ts -t "tier2-smoke"
 cd "$(git rev-parse --show-toplevel)/dashboard" && npx vitest run __tests__/lib/actions.test.ts -t "tier2-smoke"
 ```
@@ -368,7 +368,7 @@ The `wireUpRepo` describe block in `dashboard/__tests__/lib/actions.test.ts` has
 - [ ] **Step 6: Run all the affected tests to verify pass**
 
 Run:
-```
+```bash
 cd "$(git rev-parse --show-toplevel)" && npx vitest run tests/unit/wire-up-template-drift.test.ts
 cd "$(git rev-parse --show-toplevel)/dashboard" && npx vitest run __tests__/lib/actions.test.ts
 cd "$(git rev-parse --show-toplevel)/dashboard" && npx tsc --noEmit

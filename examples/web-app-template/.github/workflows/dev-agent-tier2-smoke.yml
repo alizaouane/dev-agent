@@ -49,6 +49,11 @@ permissions:
   contents: read
   issues: write
   id-token: write
+  # Needed by the `gh pr list` / `gh pr view` calls below that resolve
+  # `pr_number` and read Vercel's preview-deploy comment. When `permissions:`
+  # is declared, any unlisted scope defaults to `none` — so without this
+  # line the wrapper always falls into the `ready=false` skip path.
+  pull-requests: read
 
 jobs:
   tier2-smoke:
@@ -62,6 +67,7 @@ jobs:
       contents: read
       issues: write
       id-token: write
+      pull-requests: read
     outputs:
       ready: ${{ steps.resolve.outputs.ready }}
       issue_number: ${{ steps.resolve.outputs.issue_number }}
