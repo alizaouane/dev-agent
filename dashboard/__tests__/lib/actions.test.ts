@@ -479,7 +479,7 @@ describe('wireUpRepo', () => {
 
     // All template files committed without a `branch` param, so they
     // land on the repo's default branch.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
     for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
       expect(call[0].branch).toBeUndefined();
     }
@@ -508,7 +508,7 @@ describe('wireUpRepo', () => {
       expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
@@ -595,12 +595,31 @@ describe('installWorkflow', () => {
     expect(callArgs.branch).toBeUndefined();
   });
 
+  it('commits the tier2-smoke workflow file when missing', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { installWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'tier2-smoke');
+    await expect(installWorkflow(fd)).resolves.toBeUndefined();
+
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '.github/workflows/dev-agent-tier2-smoke.yml',
+      }),
+    );
+  });
+
   it('targets the correct path for each workflow key', async () => {
     const cases: Array<[string, string]> = [
       ['bug-scout', '.github/workflows/dev-agent-bug-scout.yml'],
       ['unfinished-work', '.github/workflows/dev-agent-unfinished-work-scout.yml'],
       ['cleanup', '.github/workflows/dev-agent-cleanup-scout.yml'],
       ['verification', '.github/workflows/dev-agent-verification.yml'],
+      ['tier2-smoke', '.github/workflows/dev-agent-tier2-smoke.yml'],
     ];
     const { installWorkflow } = await import('@/lib/actions');
 
@@ -1065,7 +1084,7 @@ describe('applyPmMdUpdate', () => {
       value: 'sk-ant-test',
     });
     // Files were committed directly to the default branch (no PR flow).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
@@ -1090,7 +1109,7 @@ describe('applyPmMdUpdate', () => {
 
     expect(pushRepoSecret).not.toHaveBeenCalled();
     // Files still committed even without the secret.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
   });
 
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
@@ -1116,7 +1135,7 @@ describe('applyPmMdUpdate', () => {
     }
 
     // The wire-up still landed all three files; only the secret push failed.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(8);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });

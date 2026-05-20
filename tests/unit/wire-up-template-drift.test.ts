@@ -102,6 +102,18 @@ describe('wire-up-template embedded copy', () => {
     expect(normalized).toContain(onDisk);
   });
 
+  it('tier2-smoke workflow on disk matches the embedded TEMPLATE_TIER2_SMOKE_WORKFLOW_YML', () => {
+    const onDisk = readFileSync(
+      resolve(tplDir, '.github/workflows/dev-agent-tier2-smoke.yml'),
+      'utf8',
+    );
+    const normalized = embedded
+      .replace(/\\\$\{\{/g, '${{')
+      .replace(/\\`/g, '`')
+      .replace(/\\\$/g, '$');
+    expect(normalized).toContain(onDisk);
+  });
+
   it('SESSION_LOG.md on disk matches the embedded TEMPLATE_SESSION_LOG_MD', () => {
     const onDisk = readFileSync(resolve(tplDir, 'SESSION_LOG.md'), 'utf8');
     const normalized = embedded.replace(/\\`/g, '`');
