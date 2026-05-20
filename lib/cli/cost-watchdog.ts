@@ -144,10 +144,27 @@ async function main(): Promise<void> {
     'schema',
     'defaults.yml',
   );
-  const config = await parseConfig({ configPath, defaultsPath });
+  const runId = process.env.GITHUB_RUN_ID ?? `local-${Date.now()}`;
+
+  let config;
+  try {
+    config = await parseConfig({ configPath, defaultsPath });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    if (msg.startsWith('ENOENT: config not found')) {
+      emit({
+        run_id: runId,
+        issue: null,
+        phase: 'cost-watchdog',
+        event: 'cost.snapshot',
+        payload: { budget_unconfigured: true, reason: 'no .dev-agent.yml' },
+      });
+      return;
+    }
+    throw e;
+  }
   const budget = config.cost_caps?.monthly_budget_usd;
   const threshold = config.cost_caps?.alert_threshold_pct ?? 80;
-  const runId = process.env.GITHUB_RUN_ID ?? `local-${Date.now()}`;
 
   if (!budget || budget === 0) {
     emit({
