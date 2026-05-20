@@ -94,7 +94,7 @@ jobs:
           # --- pr_number ---
           PR=""
           PR_FROM_COMMENT=$(gh issue view "$ISSUE" --repo "$REPO" --json comments \
-            --jq '.comments | reverse | .[] | .body' 2>/dev/null \
+            --jq '.comments | reverse | .[] | select(.author.login == "github-actions[bot]") | .body' 2>/dev/null \
             | grep -oE 'PR: #[0-9]+' | head -1 | sed 's/PR: #//' || true)
           if [ -n "$PR_FROM_COMMENT" ]; then
             PR="$PR_FROM_COMMENT"
@@ -113,7 +113,7 @@ jobs:
           # --- staging_url ---
           STAGING_URL=$(gh pr view "$PR" --repo "$REPO" --json comments \
             --jq '.comments | reverse | .[] | select(.author.login == "vercel[bot]" or .author.login == "vercel") | .body' 2>/dev/null \
-            | grep -oE 'https://[a-z0-9-]+(\.[a-z0-9-]+)*\.vercel\.app' \
+            | grep -oE 'https://[a-z0-9]+(-[a-z0-9-]+)+\.vercel\.app' \
             | head -1 || true)
           if [ -z "$STAGING_URL" ]; then
             BODY=$'🤖 Phase: tier2-smoke\nVerdict: skipped\n\nCould not find a Vercel preview URL on PR #'"$PR"$' (no `vercel[bot]` comment matching `https://*.vercel.app`). dev-agent'\''s tier2-smoke wrapper currently assumes a Vercel staging deploy. If you use a different deploy stack, customize `dev-agent-tier2-smoke.yml` in your repo to derive the URL.'
