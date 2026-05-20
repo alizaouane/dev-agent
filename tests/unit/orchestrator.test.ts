@@ -75,4 +75,9 @@ describe('orchestrator', () => {
       expect(result.fires).toBe('dev-agent-tier2-smoke.yml');
     }
   });
+
+  it('rejects workflow-tier2-fire from the wrong source state', () => {
+    const result = validateTransition('state:implementing', 'workflow-tier2-fire');
+    expect(result.ok).toBe(false);
+  });
 });
