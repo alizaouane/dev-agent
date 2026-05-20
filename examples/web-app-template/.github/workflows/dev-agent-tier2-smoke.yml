@@ -80,6 +80,11 @@ jobs:
           set -euo pipefail
 
           ISSUE="${ISSUE_FROM_EVENT:-$ISSUE_FROM_DISPATCH}"
+          # `exit 1` here (not the advisory-skip pattern used for missing PR /
+          # staging URL / spec below): an issue number missing from BOTH the
+          # labeled event AND workflow_dispatch input is structurally impossible
+          # in normal operation, so a malformed event should fail the run
+          # loudly rather than disappear silently.
           if [ -z "$ISSUE" ]; then
             echo "::error::no issue number resolved (neither labeled event nor workflow_dispatch input)"
             exit 1
@@ -139,11 +144,7 @@ jobs:
 
   smoke-call:
     needs: tier2-smoke
-    if: |
-      needs.tier2-smoke.outputs.ready == 'true' &&
-      (github.event_name == 'workflow_dispatch' ||
-       (github.event.label.name == 'state:staging-deployed' &&
-        contains(github.event.issue.labels.*.name, 'kind:user-intent')))
+    if: needs.tier2-smoke.outputs.ready == 'true'
     uses: alizaouane/dev-agent/.github/workflows/phase-tier2-smoke.yml@v1
     with:
       issue_number: ${{ fromJSON(needs.tier2-smoke.outputs.issue_number) }}

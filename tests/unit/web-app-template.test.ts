@@ -168,9 +168,9 @@ describe('examples/web-app-template', () => {
     expect(reusableJobs[0].uses).toMatch(
       /^alizaouane\/dev-agent\/\.github\/workflows\/phase-tier2-smoke\.yml@v\d+/,
     );
-    const dispatchJob = jobs.find((j) => j.uses);
-    expect(dispatchJob?.if ?? '').toMatch(/state:staging-deployed/);
-    expect(dispatchJob?.if ?? '').toMatch(/kind:user-intent/);
+    const resolveJob = jobs.find((j) => j.uses === undefined);
+    expect(resolveJob?.if ?? '').toMatch(/state:staging-deployed/);
+    expect(resolveJob?.if ?? '').toMatch(/kind:user-intent/);
   });
 
   it('scout workflows grant workflow-level permissions so reusable jobs can start', () => {
