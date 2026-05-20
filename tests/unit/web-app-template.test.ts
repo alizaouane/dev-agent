@@ -148,6 +148,31 @@ describe('examples/web-app-template', () => {
     }
   });
 
+  it('tier2-smoke wrapper exists, pins reusable to v1, declares the right permissions', () => {
+    const path = resolve(templateRoot, '.github/workflows/dev-agent-tier2-smoke.yml');
+    expect(existsSync(path)).toBe(true);
+    const raw = readFileSync(path, 'utf8');
+    const parsed = yaml.load(raw) as {
+      permissions?: Record<string, string>;
+      on?: { issues?: { types: string[] }; workflow_dispatch?: unknown };
+      jobs: Record<string, { uses?: string; if?: string }>;
+    };
+    expect(parsed.permissions?.contents).toBe('read');
+    expect(parsed.permissions?.issues).toBe('write');
+    expect(parsed.permissions?.['id-token']).toBe('write');
+    expect(parsed.on?.issues?.types).toContain('labeled');
+    expect(parsed.on?.workflow_dispatch).toBeDefined();
+    const jobs = Object.values(parsed.jobs);
+    const reusableJobs = jobs.filter((j) => j.uses !== undefined);
+    expect(reusableJobs.length).toBe(1);
+    expect(reusableJobs[0].uses).toMatch(
+      /^alizaouane\/dev-agent\/\.github\/workflows\/phase-tier2-smoke\.yml@v\d+/,
+    );
+    const dispatchJob = jobs.find((j) => j.uses);
+    expect(dispatchJob?.if ?? '').toMatch(/state:staging-deployed/);
+    expect(dispatchJob?.if ?? '').toMatch(/kind:user-intent/);
+  });
+
   it('scout workflows grant workflow-level permissions so reusable jobs can start', () => {
     // The reusable phase-{bug,unfinished-work,cleanup}-scout workflows
     // declare job-level `permissions: { contents: read, issues: write,
