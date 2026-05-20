@@ -1,0 +1,162 @@
+name: dev-agent · tier2-smoke
+
+# Auto-runs Tier-2 smoke (Pillar 7) on a dev-agent feature once it has
+# reached state:staging-deployed. The reusable phase-tier2-smoke.yml has
+# a Claude sub-agent author a Playwright probe from the spec's acceptance
+# criteria, runs it against the staging URL, and emits the verdict +
+# state transition.
+#
+# Trigger: issues.labeled where the added label is exactly
+# state:staging-deployed AND the issue carries kind:user-intent. Also
+# allows manual re-run via workflow_dispatch with explicit inputs.
+#
+# Inputs are resolved from the issue context inside this wrapper:
+#  - pr_number    — from the implement-phase telemetry comment's `PR: #N`
+#                   line, with `gh pr list --head feat/dev-agent-issue-<N>`
+#                   as a fallback.
+#  - staging_url  — from Vercel's preview-deployment comment on the PR
+#                   (Vercel posts a `https://*.vercel.app` URL when the
+#                   preview is ready). Assumes the consumer uses Vercel
+#                   for staging (the default in .dev-agent.yml).
+#  - spec_path    — from the issue body's spec link if present; if absent
+#                   the wrapper posts a "no spec linked, skipping smoke"
+#                   comment and exits (rather than calling the reusable
+#                   with empty inputs, which would 422 on its required
+#                   spec_path input).
+#
+# Failure paths: missing PR, missing Vercel URL, or missing spec each
+# post a single explanatory issue comment + exit 0 (the gate is
+# advisory-skip on missing-input — see runbook). A failed probe routes
+# the issue to state:blocked via the reusable's exit transition.
+#
+# Granted at the workflow level so the called reusable workflow can
+# request these for its own job — same pattern as the scout workflows.
+# Without this block the caller inherits the repo's default GITHUB_TOKEN
+# scopes; if those are read-only the called job fails at startup ("but is
+# only allowed issues: none, ...").
+
+on:
+  issues:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to re-run smoke for'
+        required: true
+        type: number
+
+permissions:
+  contents: read
+  issues: write
+  id-token: write
+  # Needed by the `gh pr list` / `gh pr view` calls below that resolve
+  # `pr_number` and read Vercel's preview-deploy comment. When `permissions:`
+  # is declared, any unlisted scope defaults to `none` — so without this
+  # line the wrapper always falls into the `ready=false` skip path.
+  pull-requests: read
+
+jobs:
+  tier2-smoke:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.label.name == 'state:staging-deployed' &&
+       contains(github.event.issue.labels.*.name, 'kind:user-intent'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      issues: write
+      id-token: write
+      pull-requests: read
+    outputs:
+      ready: ${{ steps.resolve.outputs.ready }}
+      issue_number: ${{ steps.resolve.outputs.issue_number }}
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      staging_url: ${{ steps.resolve.outputs.staging_url }}
+      spec_path: ${{ steps.resolve.outputs.spec_path }}
+    steps:
+      - name: Resolve smoke inputs from issue context
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ISSUE_FROM_EVENT: ${{ github.event.issue.number }}
+          ISSUE_FROM_DISPATCH: ${{ github.event.inputs.issue_number }}
+        run: |
+          set -euo pipefail
+
+          ISSUE="${ISSUE_FROM_EVENT:-$ISSUE_FROM_DISPATCH}"
+          # `exit 1` here (not the advisory-skip pattern used for missing PR /
+          # staging URL / spec below): an issue number missing from BOTH the
+          # labeled event AND workflow_dispatch input is structurally impossible
+          # in normal operation, so a malformed event should fail the run
+          # loudly rather than disappear silently.
+          if [ -z "$ISSUE" ]; then
+            echo "::error::no issue number resolved (neither labeled event nor workflow_dispatch input)"
+            exit 1
+          fi
+          echo "issue_number=$ISSUE" >> "$GITHUB_OUTPUT"
+
+          # --- pr_number ---
+          PR=""
+          PR_FROM_COMMENT=$(gh issue view "$ISSUE" --repo "$REPO" --json comments \
+            --jq '.comments | reverse | .[] | select(.author.login == "github-actions[bot]") | .body' 2>/dev/null \
+            | grep -oE 'PR: #[0-9]+' | head -1 | sed 's/PR: #//' || true)
+          if [ -n "$PR_FROM_COMMENT" ]; then
+            PR="$PR_FROM_COMMENT"
+          else
+            PR=$(gh pr list --repo "$REPO" --head "feat/dev-agent-issue-${ISSUE}" \
+              --json number --jq '.[0].number // empty' 2>/dev/null || true)
+          fi
+          if [ -z "$PR" ]; then
+            BODY=$'🤖 Phase: tier2-smoke\nVerdict: skipped\n\nCould not resolve a PR number for this feature (no `PR: #N` line in implement telemetry and no `feat/dev-agent-issue-'"$ISSUE"$'` branch). Open the PR or re-run the implement phase before re-triggering smoke.'
+            gh issue comment "$ISSUE" --repo "$REPO" --body "$BODY" || true
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "pr_number=$PR" >> "$GITHUB_OUTPUT"
+
+          # --- staging_url ---
+          STAGING_URL=$(gh pr view "$PR" --repo "$REPO" --json comments \
+            --jq '.comments | reverse | .[] | select(.author.login == "vercel[bot]" or .author.login == "vercel") | .body' 2>/dev/null \
+            | grep -oE 'https://[a-z0-9]+(-[a-z0-9-]+)+\.vercel\.app' \
+            | head -1 || true)
+          if [ -z "$STAGING_URL" ]; then
+            BODY=$'🤖 Phase: tier2-smoke\nVerdict: skipped\n\nCould not find a Vercel preview URL on PR #'"$PR"$' (no `vercel[bot]` comment matching `https://*.vercel.app`). dev-agent'\''s tier2-smoke wrapper currently assumes a Vercel staging deploy. If you use a different deploy stack, customize `dev-agent-tier2-smoke.yml` in your repo to derive the URL.'
+            gh issue comment "$ISSUE" --repo "$REPO" --body "$BODY" || true
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "staging_url=$STAGING_URL" >> "$GITHUB_OUTPUT"
+
+          # --- spec_path ---
+          SPEC=$(gh issue view "$ISSUE" --repo "$REPO" --json body --jq '.body' 2>/dev/null \
+            | grep -oE 'docs/specs/[a-zA-Z0-9._/-]+\.md' | head -1 || true)
+          if [ -z "$SPEC" ]; then
+            BODY=$'🤖 Phase: tier2-smoke\nVerdict: skipped\n\nCould not find a `docs/specs/*.md` reference in the issue body. tier2-smoke needs the spec to author the Playwright probe. Add the spec link to the issue body and re-trigger by removing and re-adding the `state:staging-deployed` label.'
+            gh issue comment "$ISSUE" --repo "$REPO" --body "$BODY" || true
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "spec_path=$SPEC" >> "$GITHUB_OUTPUT"
+
+          # --- Flip state to `state:tier2-smoke`. The reusable workflow
+          # flips it again at its terminal state. ---
+          gh issue edit "$ISSUE" --repo "$REPO" \
+            --remove-label state:staging-deployed \
+            --add-label state:tier2-smoke || true
+
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+  smoke-call:
+    needs: tier2-smoke
+    if: needs.tier2-smoke.outputs.ready == 'true'
+    uses: alizaouane/dev-agent/.github/workflows/phase-tier2-smoke.yml@v1
+    with:
+      issue_number: ${{ fromJSON(needs.tier2-smoke.outputs.issue_number) }}
+      pr_number: ${{ fromJSON(needs.tier2-smoke.outputs.pr_number) }}
+      staging_url: ${{ needs.tier2-smoke.outputs.staging_url }}
+      spec_path: ${{ needs.tier2-smoke.outputs.spec_path }}
+      invocation_mode: live
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
