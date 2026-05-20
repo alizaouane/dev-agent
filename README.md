@@ -88,6 +88,10 @@ To run a workflow with live model invocation, configure `ANTHROPIC_API_KEY` as a
 
 Swarm-review enforcement + canary rollout: see [docs/runbooks/2026-05-16-swarm-review-enforcement.md](docs/runbooks/2026-05-16-swarm-review-enforcement.md)
 
+## Tier-2 smoke
+
+Tier-2 smoke enforcement + canary rollout: see [docs/runbooks/2026-05-20-tier2-smoke-rollout.md](docs/runbooks/2026-05-20-tier2-smoke-rollout.md)
+
 ## Phase 1c — workflows + test consumer
 
 The repo now ships 6 reusable GitHub workflows that consumer repos invoke via `uses:`:
