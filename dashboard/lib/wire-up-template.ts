@@ -800,8 +800,7 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
  * one-click "Install" buttons on /repos/[name] so the user can backfill
  * any missing workflow without re-running the full wire-up (which would
  * require deleting `.dev-agent.yml` first to pass the already-wired guard).
- * Covers three scout workflows (bug-scout, unfinished-work, cleanup) plus the
- * verification-gates workflow introduced in v1.5.
+ * Covers scout workflows, verification gates, and staged smoke testing.
  */
 export const INSTALLABLE_WORKFLOWS = {
   'bug-scout': {
@@ -827,7 +826,7 @@ export const INSTALLABLE_WORKFLOWS = {
   'tier2-smoke': {
     path: '.github/workflows/dev-agent-tier2-smoke.yml',
     content: TEMPLATE_TIER2_SMOKE_WORKFLOW_YML,
-    label: 'Tier-2 smoke (Pillar 7)',
+    label: 'Tier-2 smoke (staging probe)',
   },
 } as const;
 
