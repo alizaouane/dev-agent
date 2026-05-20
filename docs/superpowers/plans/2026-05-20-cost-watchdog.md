@@ -43,7 +43,7 @@ import {
 } from '../../lib/cost-watchdog';
 
 const tg = (phase: string, cost: number) =>
-  `🤖 Phase: ${phase}\nModel: claude-opus-4-7\nTokens: 100 in / 50 out\nCost USD: $${cost.toFixed(2)}\nStatus: completed`;
+  `🤖 Phase: ${phase}\nModel: claude-opus-4-7\nTokens: 100 in / 50 out\nCost: $${cost.toFixed(2)}\nStatus: completed`;
 
 describe('aggregateCostFromComments', () => {
   it('sums cost_usd across telemetry comments, ignores non-telemetry', () => {
@@ -297,7 +297,7 @@ cd "$(git rev-parse --show-toplevel)" && npx vitest run tests/unit/cost-watchdog
 
 Expected: PASS — all assertions green.
 
-Note: the warning test asserts `phase-implement | 18 | $28.40` against the rendered output. The "18" comes from `estimatePhaseRuns` summing across `topFeatures[*].phases['phase-implement']`. The fixture's two features have `phase-implement: 3 + 2 = 5`. The expected row in the test fixture should be updated to match what the helper actually produces — or extend the fixture to make 18 the right total. **Adjust the test fixture in Step 1 to produce 18 by adding three more features with `phase-implement` counts of 4 + 4 + 5, OR change the assertion to `phase-implement | 5 |`**. Pick the simpler one (the latter) and update both Step-1 fixture and assertion accordingly before committing Step 1.
+Note: the warning test's `phase-implement | <runs> | $28.40` assertion uses `topFeatures[*].phases['phase-implement']` summed across the fixture, which is 3+2 = 5. The Step-1 fixture and assertion should use `5` (not `18` as one earlier draft showed). Also: `parseTelemetry` recognizes `Cost:` not `Cost USD:` — the `tg()` helper must emit `Cost: $X.XX` to be parsed, otherwise the aggregation tests will silently pass against `total: 0`.
 
 - [ ] **Step 5: Commit**
 

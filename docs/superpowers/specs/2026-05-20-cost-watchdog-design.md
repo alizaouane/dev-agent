@@ -39,7 +39,7 @@ Surface budget overruns the same business day they happen, without blocking work
 🤖 Phase: phase-implement
 Model: claude-opus-4-7
 Tokens: 12500 in / 4200 out
-Cost USD: $0.84
+Cost: $0.84
 Status: completed
 ```
 
