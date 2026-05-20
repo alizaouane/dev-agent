@@ -38,9 +38,10 @@ Flow:
 3. The wrapper runs a small `run:` step to:
    - Flip the issue state: remove `state:staging-deployed`, add `state:tier2-smoke` (so the dashboard reflects "smoke in flight" rather than "staging deployed, idle").
    - Resolve three inputs from the issue context:
-     - `staging_url`: regex-match `^Staging URL:\s*(https?://\S+)` against the most recent staging-deploy telemetry comment.
-     - `pr_number`: resolved from the implement-phase telemetry comment that records the PR number, or via `gh pr list --search "#${issue}"`.
+     - `pr_number`: resolved from the implement-phase telemetry comment, which already carries a `PR: #N` line (verified in `phase-implement.yml`); fallback `gh pr list --head "feat/dev-agent-issue-${issue}" --json number --jq '.[0].number'`.
+     - `staging_url`: derived from Vercel's preview-deployment PR comment. The wrapper runs `gh pr view "$PR" --json comments --jq '.comments[] | select(.author.login == "vercel[bot]") | .body'` and extracts the first `https://*.vercel.app` URL it finds (most recent comment wins). This matches dev-agent's default deploy stack (`.dev-agent.yml`'s `deploy_skills.staging` defaults to `vercel-deploy-preview`). If a consumer customizes their deploy skill off Vercel, they must customize this lookup too — documented in the runbook.
      - `spec_path`: the spec link from the issue body; if absent, `spec_path` is left empty and the reusable emits `verdict: skipped`.
+   - If any required input is missing (no Vercel comment, no PR found), the wrapper posts a single issue comment explaining what was missing and exits — does NOT fall through to the reusable with empty inputs, which would 422 on the typed `required: true` `staging_url`.
 4. The wrapper calls `alizaouane/dev-agent/.github/workflows/phase-tier2-smoke.yml@v1` with those inputs + `invocation_mode: live` and forwards the `ANTHROPIC_API_KEY` secret.
 5. The reusable workflow handles the rest (probe authoring, run, verdict comment, exit transition to `state:ready-to-promote` on pass or `state:blocked` on fail).
 
@@ -188,6 +189,5 @@ This bounds the blast radius — a flaky Playwright probe pattern, if it exists,
 
 ## Out of scope (call-outs for the implementation plan)
 
-- The `Staging URL:` line format in the staging-deploy telemetry comment: the spec assumes this line exists with that exact prefix. The plan must verify by reading `phase-staging-deploy.yml` and either confirm or adjust the wrapper's regex.
-- The implement-phase telemetry comment's PR-number line format: same verification.
 - The exact `if:` guard against fork PRs: if staging deploy can fire for fork PRs (unlikely given the existing same-repo guard pattern), the smoke wrapper inherits that guard via the issue context — verify during implementation.
+- Vercel comment format may change. The wrapper's URL regex (`https://[a-z0-9.-]+\.vercel\.app`) is tolerant of trailing path/query/anchors but assumes the URL appears on its own or is bounded by non-URL whitespace. If Vercel changes their comment format, the wrapper logs a clear "couldn't find Vercel URL" and skips — easier to spot than silently smoke-testing the wrong URL.
