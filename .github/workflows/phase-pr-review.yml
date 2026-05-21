@@ -101,15 +101,16 @@ jobs:
   # decides to advance the PR anyway (false positive, urgent fix, etc.),
   # they comment `/swarm-override <one-line reason>` on the PR. This
   # job clears the swarm-review:fail label, applies swarm-overridden +
-  # the original verdict-pass label, and records who/when/why in an
-  # audit comment. The comment IS the audit trail — GitHub's comment
-  # history is the canonical record (events.jsonl mirroring lands in
-  # v1.1 alongside cost-watchdog wiring).
+  # swarm-review:pass, and posts an audit comment with a hidden machine-
+  # parseable `<!-- dev-agent:event ... -->` anchor that mirrors the
+  # `override.applied` event from `lib/events.ts`. Future tooling can
+  # scrape these anchors to reconstruct `.dev-agent/events/<pr>.jsonl`
+  # without needing a commit-back step from the workflow.
   #
-  # The action is privileged but advisory: in v1 swarm-review labels
-  # are advisory anyway (PR not blocked). Once step 16 flips swarm-fail
-  # to a hard PR-merge gate, this override becomes the sole path
-  # forward when a reviewer dissents.
+  # The action is privileged but advisory until step 16 finishes the
+  # canary→enforce rollout. Once branch protection requires the
+  # `verification-gate` check (per `docs/runbooks/2026-05-16-swarm-review-enforcement.md`),
+  # this override becomes the sole path forward when a reviewer dissents.
   swarm-override:
     if: |
       github.event_name == 'issue_comment' &&
@@ -160,19 +161,33 @@ jobs:
             echo "EOF_REASON"
           } >> "$GITHUB_OUTPUT"
 
-      - name: Apply override + post audit comment
+      - name: Apply override + post audit comment with event anchor
         if: steps.ctx.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           ACTOR: ${{ github.event.comment.user.login }}
           REASON: ${{ steps.ctx.outputs.reason }}
+          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
-          # Idempotent label flip: remove fail/concern, add overridden + pass.
           gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:fail' || true
           gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:concern' || true
           gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden' || true
           gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass' || true
-          BODY=$(printf '🛟 swarm-override applied\n\n**Actor:** @%s\n**Reason:** %s\n**Timestamp:** %s\n\nThe swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.\n' "$ACTOR" "$REASON" "$(date -u -Iseconds)")
+          TS=$(date -u -Iseconds)
+          # Build the audit event JSON with jq for safe escaping of REASON
+          # (user-supplied — may contain quotes, backslashes, newlines). The
+          # anchor `<!-- dev-agent:event {json} -->` lets future tooling
+          # reconstruct .dev-agent/events/<pr>.jsonl by scraping PR comments —
+          # PR comments are durable in a way the runner filesystem and 90-day
+          # artifacts are not.
+          EVENT_JSON=$(jq -nc \
+            --arg ts "$TS" \
+            --arg run_id "$RUN_ID" \
+            --argjson issue "$PR_NUMBER" \
+            --arg actor "$ACTOR" \
+            --arg reason "$REASON" \
+            '{ts:$ts, run_id:$run_id, issue:$issue, phase:"phase-pr-review", event:"override.applied", payload:{override_type:"swarm-override", actor:$actor, reason:$reason}}')
+          BODY=$(printf '🛟 swarm-override applied\n\n**Actor:** @%s\n**Reason:** %s\n**Timestamp:** %s\n\nThe swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.\n\n<!-- dev-agent:event %s -->\n' "$ACTOR" "$REASON" "$TS" "$EVENT_JSON")
           gh pr comment "$PR_NUMBER" --body "$BODY"

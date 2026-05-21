@@ -65,6 +65,10 @@ Neither path clears a `swarm-review:outage` or `swarm-review:error` label. Those
 
 Override authority is already scoped: only repo admins can admin-merge or edit branch protection. No additional actor-allowlist configuration is needed for the v1 consumer override paths.
 
+### Audit trail for `/swarm-override` in the engine repo
+
+When `/swarm-override` is used inside the dev-agent engine repo's own PRs (the `phase-pr-review.yml` handler), the audit comment now embeds a hidden machine-parseable event anchor of the form `<!-- dev-agent:event {json} -->`. The JSON matches `lib/events.ts`'s `override.applied` shape — `ts`, `run_id`, `issue` (PR number), `phase: 'phase-pr-review'`, and a `payload` carrying `override_type`, `actor`, and `reason`. Future tooling can reconstruct `.dev-agent/events/<pr>.jsonl` by scraping these anchors from PR comments, without needing a commit-back step from the workflow. Admin-merge and un-require bypasses are recorded in the PR timeline (not the anchor) since they happen outside the override handler.
+
 ---
 
 ## Kill switch
