@@ -35,7 +35,7 @@ Surface budget overruns the same business day they happen, without blocking work
 
 **Where the cost data comes from.** GitHub issue comments. Every dev-agent phase posts one telemetry comment of the form:
 
-```
+```text
 🤖 Phase: phase-implement
 Model: claude-opus-4-7
 Tokens: 12500 in / 4200 out
@@ -43,7 +43,7 @@ Cost: $0.84
 Status: completed
 ```
 
-The watchdog paginates `octokit.issues.listForRepo` for issues `updated >= <start-of-month>`, then for each issue paginates `listComments`, runs `parseTelemetry()` on each body, and sums `cost_usd` from any comment whose `created_at` is also `>= start-of-month`. (The issue may have been opened months ago but had a phase run this month — filter by **comment date**, not issue date.)
+The watchdog paginates `octokit.issues.listForRepo` for issues `updated >= <start-of-month>`, then for each issue paginates `listComments` **sequentially** (to avoid the secondary-rate-limit bursts that concurrent fan-out would trigger on busy repos), filters comments to those authored by `github-actions[bot]` only (so a forged user comment matching the telemetry shape cannot inflate MTD totals), runs `parseTelemetry()` on each body, and sums `cost_usd` from any trusted comment whose `created_at` is also `>= start-of-month`. (The issue may have been opened months ago but had a phase run this month — filter by **comment date**, not issue date.) Non-finite or negative `cost_usd` values are skipped so a malformed telemetry post can't corrupt the sum.
 
 **What it does with the sum.**
 

@@ -35,6 +35,8 @@ describe('aggregateCostFromComments', () => {
     expect(breakdown.total).toBeCloseTo(19.60, 2);
     expect(breakdown.byPhase['phase-implement']).toBeCloseTo(13.40, 2);
     expect(breakdown.byPhase['phase-staging-deploy']).toBeCloseTo(6.20, 2);
+    expect(breakdown.byPhaseRuns['phase-implement']).toBe(2);
+    expect(breakdown.byPhaseRuns['phase-staging-deploy']).toBe(1);
     expect(breakdown.topFeatures[0].issue).toBe(128);
     expect(breakdown.topFeatures[0].cost).toBeCloseTo(11.40, 2);
   });
@@ -58,6 +60,22 @@ describe('aggregateCostFromComments', () => {
     }];
     const breakdown = aggregateCostFromComments(issues, new Date('2026-05-01T00:00:00Z'));
     expect(breakdown.total).toBe(0);
+  });
+
+  it('skips comments with non-finite or negative cost_usd', () => {
+    const issues = [{
+      number: 1, title: 'x', comments: [
+        // parseTelemetry accepts numeric strings; cap-evasion attempts with
+        // NaN/Infinity/negative values must not be summed into totals.
+        { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $NaN\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
+        { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $Infinity\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
+        { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $-50\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
+        { body: tg('phase-implement', 1.50), created_at: '2026-05-10T10:00:00Z' },
+      ],
+    }];
+    const breakdown = aggregateCostFromComments(issues, new Date('2026-05-01T00:00:00Z'));
+    expect(breakdown.total).toBeCloseTo(1.50, 2);
+    expect(breakdown.byPhaseRuns['phase-implement']).toBe(1);
   });
 });
 
@@ -83,6 +101,9 @@ describe('renderAlertBody', () => {
   const breakdown: CostBreakdown = {
     total: 42.30,
     byPhase: { 'phase-implement': 28.40, 'phase-swarm-review': 9.80, 'phase-acm': 2.60, 'phase-evidence-collector': 1.50 },
+    // Run counts reflect ALL issues, not just topFeatures — the alert table
+    // and topFeatures are computed independently so they can diverge here.
+    byPhaseRuns: { 'phase-implement': 18, 'phase-swarm-review': 11, 'phase-acm': 14, 'phase-evidence-collector': 9 },
     topFeatures: [
       { issue: 128, title: 'user-profile-redesign', cost: 11.40, phases: { 'phase-implement': 3, 'phase-staging-deploy': 1 } },
       { issue: 131, title: 'invoice-pdf-export', cost: 8.20, phases: { 'phase-implement': 2, 'phase-swarm-review': 1 } },
@@ -96,7 +117,7 @@ describe('renderAlertBody', () => {
     expect(body).toMatch(/Monthly budget warning/);
     expect(body).toMatch(/\$42\.30 \(84\.6% of \$50\.00 budget\)/);
     expect(body).toMatch(/#128 user-profile-redesign/);
-    expect(body).toMatch(/phase-implement \| 5 \| \$28\.40/);
+    expect(body).toMatch(/phase-implement \| 18 \| \$28\.40/);
     expect(body).not.toMatch(/exhausted/i);
   });
 

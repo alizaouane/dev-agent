@@ -15,6 +15,7 @@ export interface FeatureCost {
 export interface CostBreakdown {
   total: number;
   byPhase: Record<string, number>;
+  byPhaseRuns: Record<string, number>;
   topFeatures: FeatureCost[];
 }
 
@@ -25,14 +26,16 @@ export function aggregateCostFromComments(
   monthStart: Date,
 ): CostBreakdown {
   const byPhase: Record<string, number> = {};
+  const byPhaseRuns: Record<string, number> = {};
   const perIssue = new Map<number, FeatureCost>();
 
   for (const issue of issues) {
     for (const c of issue.comments) {
       if (new Date(c.created_at) < monthStart) continue;
       const t = parseTelemetry(c.body);
-      if (!t || typeof t.cost_usd !== 'number') continue;
+      if (!t || !Number.isFinite(t.cost_usd) || t.cost_usd < 0) continue;
       byPhase[t.phase] = (byPhase[t.phase] ?? 0) + t.cost_usd;
+      byPhaseRuns[t.phase] = (byPhaseRuns[t.phase] ?? 0) + 1;
       let fc = perIssue.get(issue.number);
       if (!fc) {
         fc = { issue: issue.number, title: issue.title, cost: 0, phases: {} };
@@ -45,7 +48,7 @@ export function aggregateCostFromComments(
 
   const total = Object.values(byPhase).reduce((a, b) => a + b, 0);
   const topFeatures = [...perIssue.values()].sort((a, b) => b.cost - a.cost).slice(0, 5);
-  return { total, byPhase, topFeatures };
+  return { total, byPhase, byPhaseRuns, topFeatures };
 }
 
 export function tierFor(input: { pct: number; threshold: number }): Tier {
@@ -77,7 +80,7 @@ export function renderAlertBody(args: {
   const phaseRows = Object.entries(breakdown.byPhase)
     .sort(([, a], [, b]) => b - a)
     .map(([phase, cost]) => {
-      const runs = breakdown.topFeatures.reduce((n, f) => n + (f.phases[phase] ?? 0), 0);
+      const runs = breakdown.byPhaseRuns[phase] ?? 0;
       return `${phase} | ${runs} | $${cost.toFixed(2)}`;
     });
 

@@ -115,24 +115,30 @@ async function collectIssuesWithComments(
     per_page: 100,
   });
   const realIssues = issues.filter((i) => !i.pull_request);
-  return Promise.all(
-    realIssues.map(async (issue) => {
-      const comments = await octokit.paginate(octokit.issues.listComments, {
-        owner,
-        repo,
-        issue_number: issue.number,
-        per_page: 100,
-      });
-      return {
-        number: issue.number,
-        title: issue.title,
-        comments: comments.map((c) => ({
-          body: c.body ?? '',
-          created_at: c.created_at,
-        })),
-      };
-    }),
-  );
+  // Sequential pagination avoids secondary-rate-limit bursts on busy repos
+  // (N issues × paginated listComments would otherwise fan out concurrently).
+  // Author filter restricts spend aggregation to trusted telemetry posters —
+  // dev-agent's phase workflows post under `github-actions[bot]`, so a forged
+  // user comment matching the telemetry shape cannot inflate MTD totals.
+  const results: Array<{ number: number; title: string; comments: { body: string; created_at: string }[] }> = [];
+  for (const issue of realIssues) {
+    const comments = await octokit.paginate(octokit.issues.listComments, {
+      owner,
+      repo,
+      issue_number: issue.number,
+      per_page: 100,
+    });
+    const trusted = comments.filter((c) => c.user?.login === 'github-actions[bot]');
+    results.push({
+      number: issue.number,
+      title: issue.title,
+      comments: trusted.map((c) => ({
+        body: c.body ?? '',
+        created_at: c.created_at,
+      })),
+    });
+  }
+  return results;
 }
 
 async function main(): Promise<void> {
@@ -150,8 +156,9 @@ async function main(): Promise<void> {
   try {
     config = await parseConfig({ configPath, defaultsPath });
   } catch (e) {
+    const err = e as NodeJS.ErrnoException;
     const msg = e instanceof Error ? e.message : String(e);
-    if (msg.startsWith('ENOENT: config not found')) {
+    if (err?.code === 'ENOENT' || msg.includes('config not found')) {
       emit({
         run_id: runId,
         issue: null,
