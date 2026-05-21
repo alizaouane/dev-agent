@@ -92,6 +92,10 @@ Swarm-review enforcement + canary rollout: see [docs/runbooks/2026-05-16-swarm-r
 
 Tier-2 smoke enforcement + canary rollout: see [docs/runbooks/2026-05-20-tier2-smoke-rollout.md](docs/runbooks/2026-05-20-tier2-smoke-rollout.md)
 
+## Cost-watchdog
+
+A nightly per-repo monthly-budget watchdog runs via `orch-sweep.yml`. Set `cost_caps.monthly_budget_usd` and `cost_caps.alert_threshold_pct` in `.dev-agent.yml` to enable. See [docs/runbooks/2026-05-20-cost-watchdog.md](docs/runbooks/2026-05-20-cost-watchdog.md).
+
 ## Phase 1c — workflows + test consumer
 
 The repo now ships 6 reusable GitHub workflows that consumer repos invoke via `uses:`:

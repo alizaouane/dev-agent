@@ -1,0 +1,12 @@
+schema_version: 1
+
+# dev-agent is the plugin itself, not a consumer app, so most fields fall
+# through to schema/defaults.yml. We define only what's specific to running
+# the verification gates on dev-agent's own development issues.
+
+cost_caps:
+  # Monthly-budget watchdog (Pillar 10). Runs daily via orch-sweep.yml.
+  # 80% crosses → warning issue; 100% → exhausted issue. Alert-only — operator
+  # decides whether to bump the budget, pause, or override.
+  monthly_budget_usd: 75
+  alert_threshold_pct: 80

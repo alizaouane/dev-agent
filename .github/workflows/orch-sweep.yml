@@ -2,7 +2,8 @@ name: dev-agent · orch-sweep
 
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/10 * * * *'   # stuck-issue detection
+    - cron: '0 9 * * *'      # cost-watchdog daily 09:00 UTC (17:00 SGT)
   workflow_dispatch:
 
 jobs:
@@ -10,7 +11,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      issues: read
+      issues: write
+      pull-requests: read
     steps:
       # Pillar 5 — Harden runner against unexpected egress + sudo. See
       # phase-bug-scout.yml for the v1 audit-mode rationale.
@@ -25,6 +27,7 @@ jobs:
       - run: npm ci
 
       - name: Detect stuck issues
+        if: github.event_name != 'schedule' || github.event.schedule == '*/10 * * * *'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -36,3 +39,10 @@ jobs:
                 NUM=$(echo "$issue" | jq -r .number)
                 echo "::warning::dev-agent issue #${NUM} stuck in state:implementing"
               done
+
+      - name: Cost watchdog (daily)
+        if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 9 * * *'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: npm run cost-watchdog
