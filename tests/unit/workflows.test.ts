@@ -188,6 +188,19 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/Timestamp/);
     });
 
+    it('swarm-override embeds a machine-parseable event anchor (step 16)', () => {
+      // The audit comment carries a `<!-- dev-agent:event {json} -->` anchor
+      // mirroring lib/events.ts's `override.applied` shape. Future tooling
+      // reconstructs .dev-agent/events/<pr>.jsonl by scraping PR comments —
+      // PR comments are durable in a way the runner FS and 90-day artifacts
+      // are not. Verify the step builds the JSON via jq (safe REASON
+      // escaping) and embeds the anchor in the body.
+      expect(raw).toMatch(/jq -nc/);
+      expect(raw).toMatch(/event:"override\.applied"/);
+      expect(raw).toMatch(/override_type:"swarm-override"/);
+      expect(raw).toMatch(/<!-- dev-agent:event /);
+    });
+
     it('swarm-override is idempotent on label flips', () => {
       // Flips should use `|| true` so re-applying when a label is already
       // present (or absent) doesn't error. Otherwise a re-trigger would
