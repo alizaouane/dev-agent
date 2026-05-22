@@ -58,13 +58,16 @@ describe('loadOverrideEvents', () => {
     const octokit = makeMockOctokit([
       { number: 1, updated_at: '2026-05-22T10:00:00Z', comments: [{ body: wrapAnchor(buildEvent()), html_url: 'x' }] },
     ]);
+    const paginate = (octokit as never as { paginate: { mock: { calls: unknown[] } } }).paginate;
     const first = await loadOverrideEvents(octokit, { owner: 'o', name: 'r' }, { limit: 5 });
+    // Snapshot call count after the (presumed cold) first load — second call
+    // MUST hit the cache and add zero paginate invocations. The earlier
+    // `toBeLessThanOrEqual(2)` form let a cache-miss regression slip when
+    // N=1 (the 1+N pagination still totals 2).
+    const callsAfterFirst = paginate.mock.calls.length;
     const second = await loadOverrideEvents(octokit, { owner: 'o', name: 'r' }, { limit: 5 });
     expect(second).toEqual(first);
-    // Second call hit the cache — paginate should not have been called again
-    // for the same key. Expectation: paginate called for PRs+comments on the
-    // first run, no additional calls on the second.
-    expect((octokit as never as { paginate: { mock: { calls: unknown[] } } }).paginate.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(paginate.mock.calls.length).toBe(callsAfterFirst);
   });
 
   it('returns [] on octokit errors instead of crashing', async () => {
