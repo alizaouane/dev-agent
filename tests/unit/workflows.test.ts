@@ -188,6 +188,24 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/Timestamp/);
     });
 
+    it('swarm-override embeds a machine-parseable event anchor (step 16)', () => {
+      // The audit comment carries a `<!-- dev-agent:event:b64 <base64> -->`
+      // anchor mirroring lib/events.ts's `override.applied` shape. The JSON
+      // is base64-encoded before insertion because REASON is user-supplied
+      // and could contain `-->` (which would close the HTML comment early
+      // and truncate the anchor); base64's alphabet-only output makes that
+      // impossible. Future tooling reconstructs .dev-agent/events/<pr>.jsonl
+      // by scraping PR comments and `base64 -d`-ing the payload — PR
+      // comments are durable in a way the runner FS and 90-day artifacts
+      // are not. Verify jq builds the JSON (safe REASON escaping), base64
+      // encodes it, and the `:b64` anchor is embedded in the body.
+      expect(raw).toMatch(/jq -nc/);
+      expect(raw).toMatch(/event:"override\.applied"/);
+      expect(raw).toMatch(/override_type:"swarm-override"/);
+      expect(raw).toMatch(/base64 -w0/);
+      expect(raw).toMatch(/<!-- dev-agent:event:b64 /);
+    });
+
     it('swarm-override is idempotent on label flips', () => {
       // Flips should use `|| true` so re-applying when a label is already
       // present (or absent) doesn't error. Otherwise a re-trigger would
