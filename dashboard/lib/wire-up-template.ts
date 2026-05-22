@@ -857,7 +857,19 @@ jobs:
             --arg reason "$REASON" \
             '{ts:$ts, run_id:$run_id, issue:$issue, phase:"dev-agent-swarm-override", event:"override.applied", payload:{override_type:"swarm-override", actor:$actor, reason:$reason}}')
           EVENT_B64=$(printf '%s' "$EVENT_JSON" | base64 -w0)
-          BODY=$(printf '🛟 swarm-override applied\n\n**Actor:** @%s\n**Reason:** %s\n**Timestamp:** %s\n\nThe swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.\n\n<!-- dev-agent:event:b64 %s -->\n' "$ACTOR" "$REASON" "$TS" "$EVENT_B64")
+          # Double-quoted multi-line string. printf %s would misformat any
+          # reason containing a literal \`%\` (e.g. "fixed 100% of issues");
+          # this form does variable interpolation without parsing format
+          # specifiers and survives any byte sequence in REASON.
+          BODY="🛟 swarm-override applied
+
+          **Actor:** @\${ACTOR}
+          **Reason:** \${REASON}
+          **Timestamp:** \${TS}
+
+          The swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.
+
+          <!-- dev-agent:event:b64 \${EVENT_B64} -->"
           gh pr comment "$PR_NUMBER" --body "$BODY"
 `;
 
