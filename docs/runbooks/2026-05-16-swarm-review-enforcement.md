@@ -3,6 +3,7 @@
 **Date:** 2026-05-16
 **Applies to:** Consumer repos using `dev-agent-verification.yml` (Pillar 2)
 **Status:** Canary phase — advisory, not yet a blocking check
+**Consumer override:** Available since 2026-05-22 via wire-up.
 
 ---
 
@@ -54,16 +55,55 @@ After enabling the required check, a PR with a failed `evidence` scan or a `swar
 
 ## Override
 
-**In v1, consumer repos do not have a `/swarm-override` comment command.** The `/swarm-override` handler lives in `phase-pr-review.yml`, which runs only inside the dev-agent engine repository — it is not part of the workflow set that wire-up installs into consumer repos. A consumer-side override command is a planned follow-up.
+Consumer repos receive a `/swarm-override` comment handler via wire-up. To advance a consumer-repo PR past a failed verification check — a genuine false positive, or an accepted risk — a reviewer comments on the PR:
 
-Until it ships, to advance a consumer-repo PR past a failed verification check — a genuine false positive, or an accepted risk — a repository administrator has two options:
+```
+/swarm-override <one-line reason>
+```
 
-1. **Admin merge (preferred for a single PR).** If the branch protection rule does not have **"Do not allow bypassing the above settings"** enabled, a repo admin can merge the PR through GitHub's admin-merge path despite the red check. The merge is recorded in the PR timeline, which is the auditable record of the bypass. Leave a PR comment stating the reason before merging so the rationale is captured alongside it.
-2. **Temporarily un-require the check.** Remove the check from the required list (Settings → Branches → edit the rule), merge, then re-add it. This has a wider blast radius — it lifts the gate for *every* open PR while the check is un-required — so prefer admin merge for a one-off.
+The override workflow (`.github/workflows/dev-agent-swarm-override.yml`) validates that the PR's head branch matches `feat/dev-agent-issue-*` and the comment author isn't a bot, then:
 
-Neither path clears a `swarm-review:outage` or `swarm-review:error` label. Those mean the gate produced no verdict at all (an infrastructure failure, not a code judgment) — re-run `dev-agent-verification.yml` once the underlying issue is resolved rather than overriding.
+1. Removes `swarm-review:fail` and `swarm-review:concern` labels.
+2. Adds `swarm-overridden` and `swarm-review:pass`.
+3. Posts an audit comment with a hidden `<!-- dev-agent:event:b64 <base64> -->` anchor that records the actor, reason, timestamp, and run id in the same JSON shape the engine-repo handler uses (see "Audit trail for /swarm-override (engine + consumer)" below).
 
-Override authority is already scoped: only repo admins can admin-merge or edit branch protection. No additional actor-allowlist configuration is needed for the v1 consumer override paths.
+**v1 behavior — what the override does and does not do.** It flips labels and records the audit anchor. It does *not* mechanically produce a passing `verification-gate` check; the v1 verification gate runs on `pull_request` events, not `issue_comment`, so its check status reflects the swarm-review verdict at the last code push. Treat the override as the audited rationale; the actual unblock path is one of:
+
+1. **Admin merge (preferred for a single PR).** If the branch-protection rule does not have **"Do not allow bypassing the above settings"** enabled, a repo admin can merge the PR through GitHub's admin-merge path. The PR timeline and the `/swarm-override` audit anchor together form the bypass record.
+2. **Temporarily un-require the check.** Remove the check from the required list (Settings → Branches → edit the rule), merge, then re-add it. Wider blast radius — use only for outage scenarios.
+
+**Authorization.** Override authority is whoever can comment on the PR and is not a bot (`claude[bot]`, `dev-agent[bot]`, `github-actions[bot]` are excluded). This matches the engine-repo handler. Per-repo actor allowlists are v1.1 work — for now, code-owners-on-this-repo is the de-facto authority and the audit anchor records who actually invoked the override.
+
+**Outage labels.** `swarm-review:outage` and `swarm-review:error` are not cleared by `/swarm-override` — they mean the gate produced no verdict at all (infrastructure failure, not a code judgment). Re-run `dev-agent-verification.yml` once the underlying issue is resolved, rather than overriding.
+
+### Audit trail for /swarm-override (engine + consumer)
+
+Both the engine-repo handler (`.github/workflows/phase-pr-review.yml`, swarm-override sibling job) and the consumer-repo handler (`.github/workflows/dev-agent-swarm-override.yml`, installed via wire-up) emit the same hidden machine-parseable anchor in their audit comment:
+
+```
+<!-- dev-agent:event:b64 <base64> -->
+```
+
+The `<base64>` payload decodes to a single-line JSON object mirroring `lib/events.ts`'s `override.applied` event shape:
+
+```json
+{
+  "ts": "<ISO-8601 UTC timestamp>",
+  "run_id": "<github.run_id>",
+  "issue": <PR number>,
+  "phase": "phase-pr-review" | "dev-agent-swarm-override",
+  "event": "override.applied",
+  "payload": {
+    "override_type": "swarm-override",
+    "actor": "<github login of the commenter>",
+    "reason": "<free-form tail of the /swarm-override comment, truncated to 500 chars>"
+  }
+}
+```
+
+The payload is base64-encoded because `reason` is user-supplied — a reason containing the literal string `-->` would otherwise close the HTML comment early and break the anchor.
+
+The only difference between the engine-repo and consumer-repo anchors is the `phase` field: engine emits `"phase-pr-review"` (the engine workflow filename), consumer emits `"dev-agent-swarm-override"` (the consumer workflow filename). A future scraper that walks both repos can distinguish them by that field while parsing the rest of the payload identically.
 
 ---
 
@@ -89,4 +129,4 @@ A `DEV_AGENT_GATE_KILL_SWITCH` Actions secret with comma-separated gate names (e
 | `swarm-review:outage` | All three reviewers produced no output; gate treats as hard fail | Yes (when check is required) |
 | `swarm-review:error` | The aggregator crashed before producing a verdict | Yes (when check is required) |
 
-The `swarm-overridden` label is applied by the `/swarm-override` command, which runs only in the dev-agent engine repo — it does not appear in consumer repos in v1 (see Override).
+The `swarm-overridden` label is applied by the `/swarm-override` command. It is available in both the dev-agent engine repo (`phase-pr-review.yml`) and in consumer repos that have received the wire-up workflow set (`dev-agent-swarm-override.yml`). See Override above.
