@@ -80,7 +80,7 @@ A server component that takes the loaded `OverrideEvent[]` and renders:
   - **Timestamp** (relative — "2 hours ago", "3 days ago"; absolute on hover via `<time title="...">`)
   - **PR #** (linked to the PR on GitHub)
   - **Actor** (linked to their GitHub profile)
-  - **Reason** (truncated to 80 chars with `...`; full text on hover)
+  - **Reason** (truncated to 80 chars with `…` ellipsis; full text on hover)
   - **Source link** (small "view audit comment" link to the `html_url`)
 
 No client-side state; the panel re-loads on page refresh. The cache handles redundant fetches.

@@ -84,7 +84,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, VERIFICATION_WORKFLOW_PATH)
       : Promise.resolve(false),
     repo.wired_up
-      ? loadOverrideEvents(octokit, { owner: repo.owner, name: repo.name })
+      ? loadOverrideEvents(octokit, { owner: repo.owner, name: repo.name }).catch(() => [])
       : Promise.resolve([]),
   ]);
 
