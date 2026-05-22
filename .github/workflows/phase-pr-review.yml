@@ -119,7 +119,9 @@ jobs:
       github.event.issue.pull_request != null &&
       startsWith(github.event.comment.body, '/swarm-override') &&
       github.event.comment.user.login != 'claude[bot]' &&
-      github.event.comment.user.login != 'dev-agent[bot]'
+      github.event.comment.user.login != 'dev-agent[bot]' &&
+      github.event.comment.user.login != 'github-actions[bot]' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -136,6 +138,7 @@ jobs:
         id: ctx
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           ACTOR: ${{ github.event.comment.user.login }}
           COMMENT_BODY: ${{ github.event.comment.body }}
@@ -167,16 +170,20 @@ jobs:
         if: steps.ctx.outputs.skip != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.issue.number }}
           ACTOR: ${{ github.event.comment.user.login }}
           REASON: ${{ steps.ctx.outputs.reason }}
           RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Remove-label is fail-open (idempotent on a missing label).
+          # Add-label is fail-closed — if the override can't actually apply
+          # the marker labels, surfacing the audit comment would be a lie.
           gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:fail' || true
           gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:concern' || true
-          gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden' || true
-          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass' || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden'
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass'
           TS=$(date -u -Iseconds)
           # Build the audit event JSON with jq for safe escaping of REASON
           # (user-supplied — may contain quotes, backslashes, newlines), then
@@ -196,5 +203,17 @@ jobs:
             --arg reason "$REASON" \
             '{ts:$ts, run_id:$run_id, issue:$issue, phase:"phase-pr-review", event:"override.applied", payload:{override_type:"swarm-override", actor:$actor, reason:$reason}}')
           EVENT_B64=$(printf '%s' "$EVENT_JSON" | base64 -w0)
-          BODY=$(printf '🛟 swarm-override applied\n\n**Actor:** @%s\n**Reason:** %s\n**Timestamp:** %s\n\nThe swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.\n\n<!-- dev-agent:event:b64 %s -->\n' "$ACTOR" "$REASON" "$TS" "$EVENT_B64")
+          # Double-quoted multi-line string. printf %s would misformat any
+          # reason containing a literal `%` (e.g. "fixed 100% of issues");
+          # this form does variable interpolation without parsing format
+          # specifiers and survives any byte sequence in REASON.
+          BODY="🛟 swarm-override applied
+
+          **Actor:** @${ACTOR}
+          **Reason:** ${REASON}
+          **Timestamp:** ${TS}
+
+          The swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.
+
+          <!-- dev-agent:event:b64 ${EVENT_B64} -->"
           gh pr comment "$PR_NUMBER" --body "$BODY"

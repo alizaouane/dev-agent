@@ -168,7 +168,9 @@ describe('.github/workflows/', () => {
       //   - filter to issue_comment events only (no review-comment / review)
       //   - require body STARTS WITH /swarm-override (prefix-match, not just
       //     contains, so a casual mention in a longer comment doesn't trigger)
-      //   - exclude bot actors (claude[bot], dev-agent[bot])
+      //   - exclude bot actors (claude[bot], dev-agent[bot], github-actions[bot])
+      //   - require OWNER/MEMBER/COLLABORATOR association (no drive-by overrides
+      //     from random commenters; mirrors the consumer override semantics).
       const parsedRaw = yaml.load(raw) as { jobs?: Record<string, { if?: string }> };
       expect(parsedRaw.jobs).toHaveProperty('swarm-override');
       const jobIf = parsedRaw.jobs!['swarm-override'].if!;
@@ -177,6 +179,11 @@ describe('.github/workflows/', () => {
       expect(jobIf).toMatch(/startsWith.*swarm-override/);
       expect(jobIf).toMatch(/claude\[bot\]/);
       expect(jobIf).toMatch(/dev-agent\[bot\]/);
+      expect(jobIf).toMatch(/github-actions\[bot\]/);
+      expect(jobIf).toMatch(/author_association/);
+      expect(jobIf).toMatch(/OWNER/);
+      expect(jobIf).toMatch(/MEMBER/);
+      expect(jobIf).toMatch(/COLLABORATOR/);
     });
 
     it('swarm-override step records actor + reason + timestamp', () => {
@@ -206,13 +213,25 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/<!-- dev-agent:event:b64 /);
     });
 
-    it('swarm-override is idempotent on label flips', () => {
-      // Flips should use `|| true` so re-applying when a label is already
-      // present (or absent) doesn't error. Otherwise a re-trigger would
-      // 422 and the operator wouldn't know whether the override actually
-      // landed.
+    it('swarm-override is idempotent on remove-label but fail-closed on add-label', () => {
+      // Remove-label uses `|| true` so re-applying when a label is already
+      // absent doesn't error (idempotent — the override might be retried).
+      // Add-label is fail-closed: if the marker labels can't actually be
+      // applied, the audit comment posted later would be a lie ("override
+      // applied" when nothing changed). Let it fail loudly instead.
       expect(raw).toMatch(/--remove-label 'swarm-review:fail' \|\| true/);
-      expect(raw).toMatch(/--add-label 'swarm-overridden' \|\| true/);
+      expect(raw).toMatch(/--remove-label 'swarm-review:concern' \|\| true/);
+      expect(raw).toMatch(/--add-label 'swarm-overridden'\n/);
+      expect(raw).toMatch(/--add-label 'swarm-review:pass'\n/);
+    });
+
+    it('swarm-override step passes GH_REPO so gh commands have repo context', () => {
+      // The swarm-override sibling job has no `actions/checkout` step, so
+      // `gh pr view/edit/comment` cannot infer the repo from a local git
+      // directory. `GH_REPO: ${{ github.repository }}` is the explicit
+      // context — without it, the very first `gh pr view` fails with "no
+      // such repository" and the override never runs.
+      expect(raw).toMatch(/GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}/);
     });
 
     it('validates head ref shape with a regex before checkout', () => {
