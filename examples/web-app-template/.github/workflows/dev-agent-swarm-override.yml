@@ -1,0 +1,103 @@
+name: dev-agent · swarm-override
+
+# Consumer-side /swarm-override comment handler. Mirrors the engine-repo
+# handler at dev-agent's own .github/workflows/phase-pr-review.yml (the
+# swarm-override sibling job) so consumer-repo PRs can apply the same
+# manual override to a failed swarm-review verdict.
+#
+# Trigger: a PR comment that starts with `/swarm-override` on a PR whose
+# head branch matches `feat/dev-agent-issue-*` (dev-agent-authored only).
+# The comment body's free-form tail is captured as the operator's reason
+# and recorded both in the human-readable audit comment AND in a hidden
+# machine-parseable `<!-- dev-agent:event:b64 <base64> -->` anchor that
+# mirrors lib/events.ts's `override.applied` event shape. The payload is
+# base64-encoded because reason is user-supplied — a reason containing
+# `-->` would otherwise truncate the HTML anchor.
+#
+# v1 behavior: the override flips swarm-review labels (fail/concern → pass)
+# and adds `swarm-overridden`. It does NOT mechanically unblock a required
+# `verification-gate` branch-protection check; that wiring is v1.1 work
+# (same status as the engine handler today).
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  swarm-override:
+    if: |
+      github.event.issue.pull_request != null &&
+      startsWith(github.event.comment.body, '/swarm-override') &&
+      github.event.comment.user.login != 'claude[bot]' &&
+      github.event.comment.user.login != 'dev-agent[bot]' &&
+      github.event.comment.user.login != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      - name: Resolve PR head branch + extract reason
+        id: ctx
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
+          if ! [[ "$HEAD" =~ ^feat/dev-agent-issue-[0-9]+$ ]]; then
+            echo "Not a dev-agent PR; exiting."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          REASON=$(printf '%s' "$COMMENT_BODY" | sed -E 's|^/swarm-override[[:space:]]*||' | head -c 500)
+          if [ -z "$REASON" ]; then
+            REASON="(no reason given)"
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "reason<<EOF_REASON"
+            printf '%s\n' "$REASON"
+            echo "EOF_REASON"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Apply override + post audit comment with event anchor
+        if: steps.ctx.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          REASON: ${{ steps.ctx.outputs.reason }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:fail' || true
+          gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:concern' || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden' || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass' || true
+          TS=$(date -u -Iseconds)
+          # phase field is the consumer workflow filename (not phase-pr-review)
+          # so anchor scrapers can distinguish engine-repo overrides from
+          # consumer-repo overrides when walking both.
+          EVENT_JSON=$(jq -nc \
+            --arg ts "$TS" \
+            --arg run_id "$RUN_ID" \
+            --argjson issue "$PR_NUMBER" \
+            --arg actor "$ACTOR" \
+            --arg reason "$REASON" \
+            '{ts:$ts, run_id:$run_id, issue:$issue, phase:"dev-agent-swarm-override", event:"override.applied", payload:{override_type:"swarm-override", actor:$actor, reason:$reason}}')
+          EVENT_B64=$(printf '%s' "$EVENT_JSON" | base64 -w0)
+          BODY=$(printf '🛟 swarm-override applied\n\n**Actor:** @%s\n**Reason:** %s\n**Timestamp:** %s\n\nThe swarm-review verdict has been manually overridden. The PR may now advance to human review. The original verdict comment remains visible above for context.\n\n<!-- dev-agent:event:b64 %s -->\n' "$ACTOR" "$REASON" "$TS" "$EVENT_B64")
+          gh pr comment "$PR_NUMBER" --body "$BODY"
