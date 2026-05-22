@@ -326,7 +326,7 @@ Replace the entire `## Override` section with the following (preserving the surr
 
 Consumer repos receive a `/swarm-override` comment handler via wire-up. To advance a consumer-repo PR past a failed verification check — a genuine false positive, or an accepted risk — a reviewer comments on the PR:
 
-```
+```text
 /swarm-override <one-line reason>
 ```
 

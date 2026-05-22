@@ -57,7 +57,7 @@ After enabling the required check, a PR with a failed `evidence` scan or a `swar
 
 Consumer repos receive a `/swarm-override` comment handler via wire-up. To advance a consumer-repo PR past a failed verification check — a genuine false positive, or an accepted risk — a reviewer comments on the PR:
 
-```
+```text
 /swarm-override <one-line reason>
 ```
 
@@ -72,7 +72,7 @@ The override workflow (`.github/workflows/dev-agent-swarm-override.yml`) validat
 1. **Admin merge (preferred for a single PR).** If the branch-protection rule does not have **"Do not allow bypassing the above settings"** enabled, a repo admin can merge the PR through GitHub's admin-merge path. The PR timeline and the `/swarm-override` audit anchor together form the bypass record.
 2. **Temporarily un-require the check.** Remove the check from the required list (Settings → Branches → edit the rule), merge, then re-add it. Wider blast radius — use only for outage scenarios.
 
-**Authorization.** Override authority is whoever can comment on the PR and is not a bot (`claude[bot]`, `dev-agent[bot]`, `github-actions[bot]` are excluded). This matches the engine-repo handler. Per-repo actor allowlists are v1.1 work — for now, code-owners-on-this-repo is the de-facto authority and the audit anchor records who actually invoked the override.
+**Authorization.** Override authority is restricted to repo `OWNER`, `MEMBER`, or `COLLABORATOR` (via GitHub's `author_association` on the comment). Drive-by commenters on public repos cannot trigger an override. Bot accounts are also excluded (`claude[bot]`, `dev-agent[bot]`, `github-actions[bot]`). Per-repo fine-grained actor allowlists are v1.1 work — the built-in association check is the v1 floor and the audit anchor records the exact login that invoked the override.
 
 **Outage labels.** `swarm-review:outage` and `swarm-review:error` are not cleared by `/swarm-override` — they mean the gate produced no verdict at all (infrastructure failure, not a code judgment). Re-run `dev-agent-verification.yml` once the underlying issue is resolved, rather than overriding.
 
@@ -80,7 +80,7 @@ The override workflow (`.github/workflows/dev-agent-swarm-override.yml`) validat
 
 Both the engine-repo handler (`.github/workflows/phase-pr-review.yml`, swarm-override sibling job) and the consumer-repo handler (`.github/workflows/dev-agent-swarm-override.yml`, installed via wire-up) emit the same hidden machine-parseable anchor in their audit comment:
 
-```
+```html
 <!-- dev-agent:event:b64 <base64> -->
 ```
 

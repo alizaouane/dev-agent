@@ -198,13 +198,19 @@ describe('examples/web-app-template', () => {
     expect(perms['issues']).toBe('write');
     expect(perms['pull-requests']).toBe('write');
 
-    // Job gate: PR-only, prefix-match on /swarm-override, bot exclusion.
+    // Job gate: PR-only, prefix-match on /swarm-override, bot exclusion,
+    // AND trusted-author check (OWNER/MEMBER/COLLABORATOR only — drive-by
+    // commenters on public repos cannot trigger overrides).
     const ifExpr = overrideJob.if ?? '';
     expect(ifExpr).toMatch(/issue\.pull_request/);
     expect(ifExpr).toMatch(/startsWith.*swarm-override/);
     expect(ifExpr).toMatch(/claude\[bot\]/);
     expect(ifExpr).toMatch(/dev-agent\[bot\]/);
     expect(ifExpr).toMatch(/github-actions\[bot\]/);
+    expect(ifExpr).toMatch(/author_association/);
+    expect(ifExpr).toMatch(/OWNER/);
+    expect(ifExpr).toMatch(/MEMBER/);
+    expect(ifExpr).toMatch(/COLLABORATOR/);
 
     // Audit pattern: jq builds JSON, base64 encodes, :b64 anchor in body.
     expect(raw).toMatch(/jq -nc/);
@@ -212,6 +218,14 @@ describe('examples/web-app-template', () => {
     expect(raw).toMatch(/override_type:"swarm-override"/);
     expect(raw).toMatch(/base64 -w0/);
     expect(raw).toMatch(/<!-- dev-agent:event:b64 /);
+
+    // gh needs repo context (no checkout step in this workflow).
+    expect(raw).toMatch(/GH_REPO:\s*\$\{\{\s*github\.repository\s*\}\}/);
+
+    // Add-label is fail-closed — if labels can't be applied, the audit
+    // comment must NOT be posted (otherwise it would lie about the state).
+    expect(raw).toMatch(/--add-label 'swarm-overridden'\n/);
+    expect(raw).toMatch(/--add-label 'swarm-review:pass'\n/);
   });
 
   it('scout workflows grant workflow-level permissions so reusable jobs can start', () => {

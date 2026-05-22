@@ -792,7 +792,8 @@ jobs:
       startsWith(github.event.comment.body, '/swarm-override') &&
       github.event.comment.user.login != 'claude[bot]' &&
       github.event.comment.user.login != 'dev-agent[bot]' &&
-      github.event.comment.user.login != 'github-actions[bot]'
+      github.event.comment.user.login != 'github-actions[bot]' &&
+      contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -809,6 +810,7 @@ jobs:
         id: ctx
         env:
           GH_TOKEN: \${{ github.token }}
+          GH_REPO: \${{ github.repository }}
           PR_NUMBER: \${{ github.event.issue.number }}
           ACTOR: \${{ github.event.comment.user.login }}
           COMMENT_BODY: \${{ github.event.comment.body }}
@@ -835,16 +837,20 @@ jobs:
         if: steps.ctx.outputs.skip != 'true'
         env:
           GH_TOKEN: \${{ github.token }}
+          GH_REPO: \${{ github.repository }}
           PR_NUMBER: \${{ github.event.issue.number }}
           ACTOR: \${{ github.event.comment.user.login }}
           REASON: \${{ steps.ctx.outputs.reason }}
           RUN_ID: \${{ github.run_id }}
         run: |
           set -euo pipefail
+          # Remove-label is fail-open (idempotent on a missing label).
+          # Add-label is fail-closed — if the override can't actually apply
+          # the marker labels, surfacing the audit comment would be a lie.
           gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:fail' || true
           gh pr edit "$PR_NUMBER" --remove-label 'swarm-review:concern' || true
-          gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden' || true
-          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass' || true
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-overridden'
+          gh pr edit "$PR_NUMBER" --add-label 'swarm-review:pass'
           TS=$(date -u -Iseconds)
           # phase field is the consumer workflow filename (not phase-pr-review)
           # so anchor scrapers can distinguish engine-repo overrides from

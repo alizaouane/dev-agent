@@ -63,11 +63,10 @@ The `phase` field in the JSON is `dev-agent-swarm-override` (the consumer workfl
 ```yaml
 permissions:
   issues: write          # label edits + comment posting
-  pull-requests: write   # label edits via gh pr edit
-  pull-requests: read    # gh pr view to resolve head ref
+  pull-requests: write   # label edits via gh pr edit + read via gh pr view
 ```
 
-(Single `pull-requests: write` covers both reads and writes.)
+(`pull-requests: write` implies read, so a single entry covers both `gh pr view` and `gh pr edit`.)
 
 ### Harden-runner
 
