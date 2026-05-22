@@ -479,7 +479,7 @@ describe('wireUpRepo', () => {
 
     // All template files committed without a `branch` param, so they
     // land on the repo's default branch.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
     for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
       expect(call[0].branch).toBeUndefined();
     }
@@ -508,7 +508,7 @@ describe('wireUpRepo', () => {
       expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
@@ -613,6 +613,32 @@ describe('installWorkflow', () => {
     );
   });
 
+  it('commits the swarm-override workflow file when missing', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { installWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'swarm-override');
+    await expect(installWorkflow(fd)).resolves.toBeUndefined();
+
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '.github/workflows/dev-agent-swarm-override.yml',
+      }),
+    );
+    // Direct commit to default branch — no explicit branch arg.
+    const callArgs = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
+    expect(callArgs.branch).toBeUndefined();
+    // Embedded content makes it onto the wire — the audit-anchor token
+    // is the load-bearing part of the override workflow.
+    const decoded = Buffer.from(callArgs.content, 'base64').toString('utf8');
+    expect(decoded).toContain('<!-- dev-agent:event:b64 ');
+    expect(decoded).toContain('override_type:"swarm-override"');
+  });
+
   it('targets the correct path for each workflow key', async () => {
     const cases: Array<[string, string]> = [
       ['bug-scout', '.github/workflows/dev-agent-bug-scout.yml'],
@@ -620,6 +646,7 @@ describe('installWorkflow', () => {
       ['cleanup', '.github/workflows/dev-agent-cleanup-scout.yml'],
       ['verification', '.github/workflows/dev-agent-verification.yml'],
       ['tier2-smoke', '.github/workflows/dev-agent-tier2-smoke.yml'],
+      ['swarm-override', '.github/workflows/dev-agent-swarm-override.yml'],
     ];
     const { installWorkflow } = await import('@/lib/actions');
 
@@ -1084,7 +1111,7 @@ describe('applyPmMdUpdate', () => {
       value: 'sk-ant-test',
     });
     // Files were committed directly to the default branch (no PR flow).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
@@ -1109,7 +1136,7 @@ describe('applyPmMdUpdate', () => {
 
     expect(pushRepoSecret).not.toHaveBeenCalled();
     // Files still committed even without the secret.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
   });
 
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
@@ -1135,7 +1162,7 @@ describe('applyPmMdUpdate', () => {
     }
 
     // The wire-up still landed all three files; only the secret push failed.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(9);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
