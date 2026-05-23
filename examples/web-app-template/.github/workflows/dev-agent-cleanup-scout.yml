@@ -41,7 +41,7 @@ permissions:
 
 jobs:
   cleanup-scout:
-    uses: alizaouane/dev-agent/.github/workflows/phase-cleanup-scout.yml@main
+    uses: alizaouane/dev-agent/.github/workflows/phase-cleanup-scout.yml@v1
     with:
       config_path: .dev-agent.yml
       focus_paths: ${{ inputs.focus_paths || '' }}
