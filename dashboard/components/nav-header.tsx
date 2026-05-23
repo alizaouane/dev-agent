@@ -1,7 +1,12 @@
+'use client';
+
 import Link from 'next/link';
+import { usePathname } from 'next/navigation';
 import { Button } from '@/components/ui/button';
 import { HelpPanel } from '@/components/help-panel';
-import { auth, signOut } from '@/lib/auth';
+import { AutoBreadcrumbs } from '@/components/ui/breadcrumbs';
+import { cn } from '@/lib/utils';
+import { Suspense, type ReactNode } from 'react';
 
 const PRIMARY = [
   { href: '/', label: 'Home' },
@@ -9,61 +14,101 @@ const PRIMARY = [
   { href: '/intent', label: 'Brainstorm' },
 ];
 
-const SECONDARY = [
-  { href: '/proposals', label: 'Proposals' },
+const WORK = [
   { href: '/pipeline', label: 'Pipeline' },
+  { href: '/proposals', label: 'Proposals' },
+];
+
+const INSIGHTS = [
   { href: '/activity', label: 'Activity' },
   { href: '/cost', label: 'Cost' },
 ];
 
-export function NavLinks() {
+function isActive(pathname: string, href: string): boolean {
+  if (href === '/') return pathname === '/';
+  return pathname === href || pathname.startsWith(href + '/');
+}
+
+function NavLink({
+  href,
+  label,
+  pathname,
+  emphasis = 'primary',
+}: {
+  href: string;
+  label: string;
+  pathname: string;
+  emphasis?: 'primary' | 'secondary';
+}) {
+  const active = isActive(pathname, href);
   return (
-    <nav className="flex flex-wrap items-center gap-4 text-sm">
+    <Link
+      href={href}
+      data-no-style
+      aria-current={active ? 'page' : undefined}
+      className={cn(
+        'inline-block border-b-2 pb-1 transition-colors',
+        active
+          ? 'border-accent font-medium text-foreground'
+          : 'border-transparent hover:text-foreground',
+        emphasis === 'primary' ? 'text-foreground' : 'text-muted-foreground',
+      )}
+    >
+      {label}
+    </Link>
+  );
+}
+
+export function NavLinks() {
+  const pathname = usePathname() ?? '/';
+  return (
+    <nav className="flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
       {PRIMARY.map((l) => (
-        <Link key={l.href} href={l.href} className="font-medium hover:text-foreground">
-          {l.label}
-        </Link>
+        <NavLink key={l.href} {...l} pathname={pathname} emphasis="primary" />
       ))}
       <span aria-hidden className="hidden text-border sm:inline">|</span>
-      {SECONDARY.map((l) => (
-        <Link key={l.href} href={l.href} className="text-muted-foreground hover:text-foreground">
-          {l.label}
-        </Link>
+      <span className="text-xs font-medium uppercase tracking-wider text-muted-foreground">WORK</span>
+      {WORK.map((l) => (
+        <NavLink key={l.href} {...l} pathname={pathname} emphasis="secondary" />
+      ))}
+      <span className="ml-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">INSIGHTS</span>
+      {INSIGHTS.map((l) => (
+        <NavLink key={l.href} {...l} pathname={pathname} emphasis="secondary" />
       ))}
     </nav>
   );
 }
 
-export async function NavHeader() {
-  const session = await auth();
+/** Client wrapper for nav body — server wrapper passes the auth bits in. */
+export function NavHeaderShell({
+  username,
+  signOutForm,
+}: {
+  username: string | null;
+  signOutForm: ReactNode;
+}) {
   return (
-    <header className="border-b">
+    <header className="border-b border-border bg-background">
       <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-4 py-3">
-        <Link href="/" className="font-semibold">
+        <Link href="/" data-no-style className="font-semibold text-foreground">
           dev-agent
         </Link>
         <div className="hidden sm:block">
           <NavLinks />
         </div>
         <div className="flex items-center gap-3">
-          <Button asChild size="sm">
-            <Link href="/intent">Brainstorm new work</Link>
+          <Button asChild variant="accent" size="sm">
+            <Link href="/intent" data-no-style>
+              Brainstorm new work
+            </Link>
           </Button>
           <HelpPanel />
-          {session?.user && (
-            <form
-              action={async () => {
-                'use server';
-                await signOut({ redirectTo: '/auth/signin' });
-              }}
-            >
-              <Button type="submit" variant="ghost" size="sm">
-                @{session.user.username}
-              </Button>
-            </form>
-          )}
+          {username && signOutForm}
         </div>
       </div>
+      <Suspense fallback={null}>
+        <AutoBreadcrumbs />
+      </Suspense>
     </header>
   );
 }

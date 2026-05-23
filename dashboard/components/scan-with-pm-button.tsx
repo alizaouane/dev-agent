@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { triggerUnfinishedWorkScan } from '@/lib/actions';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { ScanRunStatus } from '@/components/scan-run-status';
+import { Term } from '@/components/ui/term';
 
 type Props = {
   repo: string;
@@ -53,7 +54,7 @@ export function ScanWithPmButton({ repo, workflowPresent }: Props) {
       <p className="text-sm text-muted-foreground">
         Fires an LLM scan over this repo&apos;s code looking for stubs,
         half-shipped features, abandoned migrations, untracked specs, and
-        skipped tests — the things the heuristic scout on{' '}
+        skipped tests — the things the heuristic <Term k="scout" /> on{' '}
         <code>/proposals</code> can&apos;t see. Each click costs ~$0.10–0.30
         in Anthropic tokens. Findings appear as <code>kind:unfinished-work</code>{' '}
         issues + on <code>/proposals</code> within a few minutes.

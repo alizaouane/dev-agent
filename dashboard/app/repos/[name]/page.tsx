@@ -1,12 +1,14 @@
 // dashboard/app/repos/[name]/page.tsx
 import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
+import { PageHeader } from '@/components/ui/page-header';
+import { Term } from '@/components/ui/term';
+import { Button } from '@/components/ui/button';
 import { listAllowedRepos } from '@/lib/repos';
 import { loadOverrideEvents } from '@/lib/dashboard/override-events';
 import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
 import { runAllScouts } from '@/lib/scout';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
-import { Button } from '@/components/ui/button';
 import { FeatureCard } from '@/components/feature-card';
 import { OverrideEventsPanel } from '@/components/override-events-panel';
 import { VerificationPostureStrip } from '@/components/verification-posture-strip';
@@ -115,24 +117,32 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     <div className="flex flex-col gap-10">
       <SetupChecklist repoName={name} steps={setupSteps} />
       {/* Band 1 — Repo header */}
-      <section className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{name}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {repo.wired_up ? 'Wired ✓' : 'Not wired'} · default branch {repo.default_branch} ·{' '}
-            <a href={repo.html_url} target="_blank" rel="noreferrer noopener" className="underline">
-              GitHub
-            </a>
-          </p>
-        </div>
-        <Button asChild size="lg">
-          <Link href={`/intent?repo=${encodeURIComponent(name)}`}>Brainstorm new work on {name}</Link>
-        </Button>
-      </section>
+      <div>
+        <PageHeader
+          title={name}
+          descriptor="Everything about this repo on one page."
+          actions={
+            <Button asChild size="lg" variant="accent">
+              <Link href={`/intent?repo=${encodeURIComponent(name)}`} data-no-style>
+                Brainstorm new work on {name}
+              </Link>
+            </Button>
+          }
+        />
+        <p className="-mt-4 mb-2 text-xs text-muted-foreground">
+          {repo.wired_up ? 'Wired ✓' : 'Not wired'} · default branch {repo.default_branch} ·{' '}
+          <a href={repo.html_url} target="_blank" rel="noreferrer noopener" data-no-style className="underline hover:text-foreground">
+            GitHub
+          </a>
+        </p>
+      </div>
 
       {/* Band 2 — In flight */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">In flight</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          In flight
+          <Term k="in-motion" variant="icon" />
+        </h2>
         {workspace.inFlight.length === 0 ? (
           <EmptyState title="Nothing in flight on this repo." body="" />
         ) : (
@@ -147,8 +157,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       {/* Band 3 — PM proposes */}
       <section>
         <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">PM proposes</h2>
-          <Link href={`/proposals?repo=${encodeURIComponent(name)}`} className="text-sm underline">
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            PM proposes
+            <Term k="pm-proposes" variant="icon" />
+          </h2>
+          <Link href={`/proposals?repo=${encodeURIComponent(name)}`} className="text-sm hover:underline">
             See all
           </Link>
         </div>
@@ -166,7 +179,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                 </div>
                 <Link
                   href={`/intent?repo=${encodeURIComponent(name)}&prefill=${encodeURIComponent(p.title)}`}
-                  className="text-sm underline"
+                  className="text-sm hover:underline"
                 >
                   Discuss with PM
                 </Link>
@@ -178,7 +191,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
 
       {/* Band 4 — Recently shipped */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Recently shipped (last 14d)</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Recently shipped (last 14d)
+          <Term k="recently-shipped" variant="icon" />
+        </h2>
         {workspace.recentlyShipped.length === 0 ? (
           <EmptyState title="No features shipped in the last 14 days." body="" />
         ) : (
@@ -192,7 +208,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
 
       {/* Band 5 — Verification posture for this repo */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Verification posture (this repo)</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Verification posture (this repo)
+          <Term k="verification-posture" variant="icon" />
+        </h2>
         <div className="flex flex-col gap-3">
           <VerificationPostureStrip rollup={workspace.posture} />
           <div className="rounded-md border border-border bg-card p-4 text-sm">
@@ -220,7 +239,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       {/* Band 6 — Cost (placeholder for v1) */}
       <section>
         <h2 className="mb-3 text-lg font-semibold">Cost (this repo, last 30d)</h2>
-        <Link href={`/cost?repo=${encodeURIComponent(name)}`} className="text-sm underline">
+        <Link href={`/cost?repo=${encodeURIComponent(name)}`} className="text-sm hover:underline">
           Open full cost view →
         </Link>
       </section>

@@ -3,6 +3,7 @@ import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { fetchPipeline } from '@/lib/pipeline';
 import { CostChart, type DailyCost } from '@/components/cost-chart';
 import { parseTelemetry } from '@/lib/telemetry';
+import { PageHeader } from '@/components/ui/page-header';
 
 const PHASES = ['implement', 'staging_deploy', 'promote_to_prod', 'smoke_verify', 'rollback'] as const;
 type PhaseKey = (typeof PHASES)[number];
@@ -58,7 +59,11 @@ export default async function CostPage() {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-semibold">Cost</h1>
+      <PageHeader
+        title="Cost"
+        descriptor="Token and workflow spend, with watchdog status."
+        helpTerm="cost-page"
+      />
       <p className="mb-6 text-sm text-muted-foreground">
         Anthropic spend across all repos, last 30 days. Total: <strong>${total.toFixed(2)}</strong>.
       </p>

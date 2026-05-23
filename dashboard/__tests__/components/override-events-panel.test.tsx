@@ -13,8 +13,11 @@ const sample = (n = 1) =>
 
 describe('<OverrideEventsPanel>', () => {
   it('renders the empty state when no events exist', () => {
-    render(<OverrideEventsPanel events={[]} repo="owner/name" />);
-    expect(screen.getByText(/no .* override activity/i)).toBeInTheDocument();
+    const { container } = render(<OverrideEventsPanel events={[]} repo="owner/name" />);
+    // The "swarm-review override" jargon is wrapped in a <Term>, splitting the
+    // empty-state copy across multiple elements — assert on the container's
+    // combined textContent instead of a single text node.
+    expect(container.textContent ?? '').toMatch(/no .* override activity/i);
   });
 
   it('renders one row per event with actor, PR, and source link', () => {

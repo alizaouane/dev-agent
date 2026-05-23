@@ -1,4 +1,5 @@
 import { getOctokit } from '@/lib/gh';
+import { PageHeader } from '@/components/ui/page-header';
 import { FeatureDetail } from '@/components/feature-detail';
 import { FeatureTimeline } from '@/components/feature-timeline';
 import { ActiveRunsPanel } from '@/components/active-runs-panel';
@@ -100,6 +101,18 @@ export default async function FeaturePage(props: {
 
   return (
     <div className="flex flex-col gap-4">
+      <PageHeader
+        title={issueData.title || `#${issue_number}`}
+        descriptor={
+          issueData.state === 'closed'
+            ? issueData.state_reason === 'not_planned'
+              ? 'Closed without shipping (not planned, duplicate, or won’t fix).'
+              : 'Shipped — verification chips below show what was green at merge.'
+            : stateLabel?.includes('gate-b')
+              ? 'Awaiting your review at Gate B.'
+              : 'In progress — current step shown below.'
+        }
+      />
       <FeatureDetail
         repo={`${owner}/${name}`}
         issue={{

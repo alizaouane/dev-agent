@@ -1,5 +1,6 @@
 import Link from 'next/link';
 import { PILLAR_LABELS, type VerificationOutcome, type PillarStatus } from '@/lib/verification/types';
+import { Term } from '@/components/ui/term';
 
 const STATUS_CLASSES: Record<PillarStatus, string> = {
   passed: 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400',
@@ -39,7 +40,17 @@ export function VerificationBadges({
         const content = (
           <>
             <span aria-hidden>{STATUS_ICON[o.status]}</span>
-            <span>{PILLAR_LABELS[o.pillar]}</span>
+            <span>
+              {o.pillar === 'audit_p4' ? (
+                <Term k="pillar-4" label={PILLAR_LABELS[o.pillar]} />
+              ) : o.pillar === 'risk_p5' ? (
+                <Term k="pillar-5" label={PILLAR_LABELS[o.pillar]} />
+              ) : o.pillar === 'smoke_p7' ? (
+                <Term k="tier2-smoke" label={PILLAR_LABELS[o.pillar]} />
+              ) : (
+                PILLAR_LABELS[o.pillar]
+              )}
+            </span>
             {o.summary ? <span className="opacity-80">— {o.summary}</span> : null}
           </>
         );

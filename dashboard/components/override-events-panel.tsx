@@ -1,5 +1,6 @@
 // dashboard/components/override-events-panel.tsx
 import type { OverrideEvent } from '@/lib/dashboard/override-events';
+import { Term } from '@/components/ui/term';
 
 const TRUNCATE = 80;
 
@@ -26,7 +27,7 @@ export function OverrideEventsPanel({
   if (events.length === 0) {
     return (
       <div className="rounded-md border border-dashed border-border bg-card p-4 text-sm text-muted-foreground">
-        No swarm-review override activity on this repo in the last 90 days.
+        No <Term k="swarm-override" label="swarm-review override" /> activity on this repo in the last 90 days.
       </div>
     );
   }

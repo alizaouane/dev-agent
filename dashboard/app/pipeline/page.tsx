@@ -2,6 +2,7 @@ import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { fetchPipeline } from '@/lib/pipeline';
 import { PipelineBoard } from '@/components/pipeline-board';
+import { PageHeader } from '@/components/ui/page-header';
 
 export default async function PipelinePage() {
   const octokit = await getOctokit();
@@ -11,7 +12,11 @@ export default async function PipelinePage() {
   const all = await fetchPipeline(octokit, wiredRepos(repos));
   return (
     <div>
-      <h1 className="mb-4 text-2xl font-semibold">Pipeline</h1>
+      <PageHeader
+        title="Pipeline"
+        descriptor="Every in-flight feature, grouped by gate."
+        helpTerm="pipeline-page"
+      />
       <PipelineBoard items={all} />
     </div>
   );

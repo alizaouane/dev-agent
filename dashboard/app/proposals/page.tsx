@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
+import { PageHeader } from '@/components/ui/page-header';
 import { enrichProposalsWithFreshness, type FreshnessHint } from '@/lib/scout/freshness';
 import { loadSnoozeMap, partitionBySnooze } from '@/lib/scout/snooze';
 import { resolveProposalAction, snoozeProposal, unsnoozeProposal } from '@/lib/actions';
@@ -79,10 +80,11 @@ export default async function ProposalsPage(props: {
   if (repos.length === 0) {
     return (
       <div>
-        <h1 className="mb-2 text-2xl font-semibold">Proposals</h1>
-        <p className="mb-4 text-sm text-muted-foreground">
-          The PM agent watches your wired-up repos for unfinished work and untriaged issues.
-        </p>
+        <PageHeader
+          title="Proposals"
+          descriptor="Ranked list of scout suggestions."
+          helpTerm="proposals-page"
+        />
         <p className="text-sm">
           Wire up at least one repo on{' '}
           <Link href="/repos" className="underline">
@@ -135,31 +137,27 @@ export default async function ProposalsPage(props: {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-semibold">
-        {scopedRepo ? `Proposals · ${scopedRepo.owner}/${scopedRepo.name}` : 'Proposals'}
-      </h1>
+      <PageHeader
+        title={scopedRepo ? `Proposals · ${scopedRepo.owner}/${scopedRepo.name}` : 'Proposals'}
+        descriptor={
+          scopedRepo
+            ? `What the PM agent thinks you should consider doing next in ${scopedRepo.owner}/${scopedRepo.name}.`
+            : 'Ranked list of scout suggestions across your wired repos. Carry-over commitments rank above new ideas.'
+        }
+        helpTerm="proposals-page"
+        actions={
+          scopedRepo ? (
+            <Link href="/proposals" data-no-style className="text-sm hover:underline">
+              View all repos
+            </Link>
+          ) : undefined
+        }
+      />
       {repoParamUnmatched ? (
         <p className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
           <code>{repoParam}</code> isn&apos;t a wired-up repo — showing all repos instead.
         </p>
       ) : null}
-      <p className="mb-6 max-w-2xl text-sm text-muted-foreground">
-        {scopedRepo ? (
-          <>
-            What the PM agent thinks you should consider doing next in{' '}
-            <code>{scopedRepo.owner}/{scopedRepo.name}</code>.{' '}
-            <Link href="/proposals" className="underline">View all repos</Link>.
-          </>
-        ) : (
-          <>
-            What the PM agent thinks you should consider doing next, scanned across your{' '}
-            {repos.length} wired-up {repos.length === 1 ? 'repo' : 'repos'}. Carry-over
-            commitments rank above new ideas — finishing what&apos;s already in motion is
-            usually higher leverage than starting something new. Snooze anything you&apos;ve
-            decided &ldquo;not now&rdquo; on to keep the list tight.
-          </>
-        )}
-      </p>
 
       {active.length === 0 ? (
         <div className="rounded-md border border-border bg-card p-6 text-center text-sm text-muted-foreground">
@@ -240,7 +238,7 @@ export default async function ProposalsPage(props: {
             </p>
             <Link
               href={showSnoozed ? hideSnoozedHref : showSnoozedHref}
-              className="text-sm underline"
+              className="text-sm hover:underline"
             >
               {showSnoozed ? 'Hide snoozed' : 'Show snoozed'}
             </Link>
