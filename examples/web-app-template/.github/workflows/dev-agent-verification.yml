@@ -57,7 +57,7 @@ jobs:
       startsWith(github.event.comment.body, '/approve') &&
       contains(github.event.issue.labels.*.name, 'state:spec-ready') &&
       github.event.comment.user.login == github.event.issue.user.login
-    uses: alizaouane/dev-agent/.github/workflows/phase-acm.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-acm.yml@main
     with:
       issue_number: ${{ github.event.issue.number }}
       config_path: .dev-agent.yml
@@ -75,7 +75,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
-    uses: alizaouane/dev-agent/.github/workflows/phase-evidence-collector.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-evidence-collector.yml@main
     with:
       pr_number: ${{ github.event.pull_request.number }}
       base_ref: ${{ github.event.pull_request.base.ref }}
@@ -91,7 +91,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
-    uses: alizaouane/dev-agent/.github/workflows/phase-swarm-review.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-swarm-review.yml@main
     with:
       pr_number: ${{ github.event.pull_request.number }}
       base_ref: ${{ github.event.pull_request.base.ref }}

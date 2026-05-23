@@ -180,7 +180,7 @@ permissions:
 jobs:
   implement:
     if: inputs.phase == 'implement'
-    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@main
     with:
       # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
       # serialized as a string when forwarded to a typed reusable
@@ -193,7 +193,7 @@ jobs:
 
   staging-deploy:
     if: inputs.phase == 'staging-deploy'
-    uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@main
     with:
       # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
       # serialized as a string when forwarded to a typed reusable
@@ -213,7 +213,7 @@ jobs:
 
   promote-to-prod:
     if: inputs.phase == 'promote-to-prod'
-    uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@main
     with:
       # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
       # serialized as a string when forwarded to a typed reusable
@@ -226,7 +226,7 @@ jobs:
 
   rollback:
     if: inputs.phase == 'rollback'
-    uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@main
     with:
       # fromJSON forces a number — \`\${{ inputs.issue_number }}\` is
       # serialized as a string when forwarded to a typed reusable
@@ -343,7 +343,7 @@ permissions:
 
 jobs:
   bug-scout:
-    uses: alizaouane/dev-agent/.github/workflows/phase-bug-scout.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-bug-scout.yml@main
     with:
       config_path: .dev-agent.yml
       focus_paths: \${{ inputs.focus_paths || '' }}
@@ -395,7 +395,7 @@ permissions:
 
 jobs:
   unfinished-work-scout:
-    uses: alizaouane/dev-agent/.github/workflows/phase-unfinished-work-scout.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-unfinished-work-scout.yml@main
     with:
       config_path: .dev-agent.yml
       focus_paths: \${{ inputs.focus_paths || '' }}
@@ -448,7 +448,7 @@ permissions:
 
 jobs:
   cleanup-scout:
-    uses: alizaouane/dev-agent/.github/workflows/phase-cleanup-scout.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-cleanup-scout.yml@main
     with:
       config_path: .dev-agent.yml
       focus_paths: \${{ inputs.focus_paths || '' }}
@@ -517,7 +517,7 @@ jobs:
       startsWith(github.event.comment.body, '/approve') &&
       contains(github.event.issue.labels.*.name, 'state:spec-ready') &&
       github.event.comment.user.login == github.event.issue.user.login
-    uses: alizaouane/dev-agent/.github/workflows/phase-acm.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-acm.yml@main
     with:
       issue_number: \${{ github.event.issue.number }}
       config_path: .dev-agent.yml
@@ -535,7 +535,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
-    uses: alizaouane/dev-agent/.github/workflows/phase-evidence-collector.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-evidence-collector.yml@main
     with:
       pr_number: \${{ github.event.pull_request.number }}
       base_ref: \${{ github.event.pull_request.base.ref }}
@@ -551,7 +551,7 @@ jobs:
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       startsWith(github.event.pull_request.head.ref, 'feat/dev-agent-issue-')
-    uses: alizaouane/dev-agent/.github/workflows/phase-swarm-review.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-swarm-review.yml@main
     with:
       pr_number: \${{ github.event.pull_request.number }}
       base_ref: \${{ github.event.pull_request.base.ref }}
@@ -752,7 +752,7 @@ jobs:
   smoke-call:
     needs: tier2-smoke
     if: needs.tier2-smoke.outputs.ready == 'true'
-    uses: alizaouane/dev-agent/.github/workflows/phase-tier2-smoke.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-tier2-smoke.yml@main
     with:
       issue_number: \${{ fromJSON(needs.tier2-smoke.outputs.issue_number) }}
       pr_number: \${{ fromJSON(needs.tier2-smoke.outputs.pr_number) }}
