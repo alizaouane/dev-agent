@@ -1,6 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
-import { NavHeader } from '@/components/nav-header';
+import { NavHeader } from '@/components/nav-header.server';
 
 export const metadata: Metadata = {
   title: 'dev-agent',
