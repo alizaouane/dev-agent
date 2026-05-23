@@ -1,6 +1,7 @@
 import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { PmChat } from '@/components/pm-chat';
+import { PageHeader } from '@/components/ui/page-header';
 
 /**
  * Drop-intent flow. Replaces the old terminal `/develop` slash-command
@@ -24,15 +25,11 @@ export default async function IntentPage(props: {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-semibold">Brainstorm with the PM</h1>
-      <p className="mb-6 max-w-2xl text-sm text-muted-foreground">
-        Chat with the PM agent to bring a new idea, sharpen scope, or argue
-        through a tradeoff. It reads your repo&apos;s
-        <code className="mx-1">.dev-agent/pm.md</code>
-        for context (goals, things to avoid, recent decisions) and pushes back
-        before scope creep can take root. When you&apos;re aligned, approve and
-        the implement workflow runs automatically.
-      </p>
+      <PageHeader
+        title="Brainstorm"
+        descriptor="Talk to the PM agent to start new work."
+        helpTerm="intent-page"
+      />
 
       {!dashboardKeySet ? (
         <div className="mb-6 max-w-2xl rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">

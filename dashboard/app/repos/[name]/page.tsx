@@ -1,12 +1,12 @@
 // dashboard/app/repos/[name]/page.tsx
 import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
+import { PageHeader } from '@/components/ui/page-header';
 import { listAllowedRepos } from '@/lib/repos';
 import { loadOverrideEvents } from '@/lib/dashboard/override-events';
 import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
 import { runAllScouts } from '@/lib/scout';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
-import { Button } from '@/components/ui/button';
 import { FeatureCard } from '@/components/feature-card';
 import { OverrideEventsPanel } from '@/components/override-events-panel';
 import { VerificationPostureStrip } from '@/components/verification-posture-strip';
@@ -115,20 +115,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     <div className="flex flex-col gap-10">
       <SetupChecklist repoName={name} steps={setupSteps} />
       {/* Band 1 — Repo header */}
-      <section className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-semibold">{name}</h1>
-          <p className="mt-1 text-xs text-muted-foreground">
-            {repo.wired_up ? 'Wired ✓' : 'Not wired'} · default branch {repo.default_branch} ·{' '}
-            <a href={repo.html_url} target="_blank" rel="noreferrer noopener" className="underline">
-              GitHub
-            </a>
-          </p>
-        </div>
-        <Button asChild size="lg">
-          <Link href={`/intent?repo=${encodeURIComponent(name)}`}>Brainstorm new work on {name}</Link>
-        </Button>
-      </section>
+      <PageHeader
+        title={name}
+        descriptor="Everything about this repo on one page."
+      />
 
       {/* Band 2 — In flight */}
       <section>

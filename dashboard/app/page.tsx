@@ -8,6 +8,7 @@ import { FeatureCard } from '@/components/feature-card';
 import { RepoCard } from '@/components/repo-card';
 import { VerificationPostureStrip } from '@/components/verification-posture-strip';
 import { EmptyState } from '@/components/empty-state';
+import { PageHeader } from '@/components/ui/page-header';
 
 export default async function HomePage() {
   const octokit = await getOctokit();
@@ -42,17 +43,20 @@ export default async function HomePage() {
   return (
     <div className="flex flex-col gap-10">
       {/* Band 1 — Hero */}
-      <section className="flex flex-wrap items-start justify-between gap-4">
-        <div className="max-w-2xl">
-          <h1 className="text-2xl font-semibold">Home</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            {bands.hero.state === 'wired' ? bands.hero.message : ''}
-          </p>
-        </div>
-        <Link href="/intent">
-          <Button size="lg">Brainstorm new work</Button>
-        </Link>
-      </section>
+      <PageHeader
+        title="Home"
+        descriptor={
+          bands.hero.state === 'wired'
+            ? bands.hero.message
+            : 'Everything that needs you across your wired repos.'
+        }
+        helpTerm="home-page"
+        actions={
+          <Link href="/intent" data-no-style>
+            <Button variant="accent" size="lg">Brainstorm new work</Button>
+          </Link>
+        }
+      />
 
       {/* Band 2 — Needs you */}
       <section>

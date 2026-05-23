@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, type RepoInfo } from '@/lib/repos';
 import { WireUpButton } from '@/components/wire-up-button';
+import { PageHeader } from '@/components/ui/page-header';
 
 /**
  * Repos index. The on-ramp for new consumers: shows every repo the user can
@@ -24,11 +25,11 @@ export default async function ReposPage() {
 
   return (
     <div>
-      <h1 className="mb-2 text-2xl font-semibold">Repositories</h1>
-      <p className="mb-6 text-sm text-muted-foreground">
-        Every GitHub repo you can access. Wire up dev-agent on a repo to start filing
-        issues that the agent picks up automatically.
-      </p>
+      <PageHeader
+        title="Repos"
+        descriptor="Wire up repos and open a workspace for any one of them."
+        helpTerm="repos-page"
+      />
 
       {!dashboardKeySet && repos.length > 0 ? (
         <div className="mb-6 rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
