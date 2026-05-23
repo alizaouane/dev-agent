@@ -13,7 +13,7 @@ name: dev-agent · phase-cleanup-scout
 #     the dashboard's "Run cleanup scan" button).
 #   - workflow_dispatch: manual run from the Actions tab.
 #
-# Cost: each scan is one claude-sonnet-4-6 agent run, typically 15-25
+# Cost: each scan is one claude-sonnet-4-6 agent run, typically 15-30
 # turns. ~$0.10-0.30 per scan. Manual trigger only — cleanup is bulk
 # triage, not a continuous safety net like bug-scout.
 #
@@ -179,7 +179,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: ${{ steps.build.outputs.prompt_path }}
-          claude_args: '--max-turns 25 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite'
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite'
           show_full_output: 'true'
 
       - name: Parse findings + file issues

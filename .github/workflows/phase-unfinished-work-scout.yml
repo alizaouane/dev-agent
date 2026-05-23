@@ -12,7 +12,7 @@ name: dev-agent · phase-unfinished-work-scout
 #     the dashboard's "Scan with PM" button).
 #   - workflow_dispatch: manual run from the Actions tab.
 #
-# Cost: each scan is one claude-sonnet-4-6 agent run, typically 15-25
+# Cost: each scan is one claude-sonnet-4-6 agent run, typically 15-30
 # turns. ~$0.10-0.30 per scan. Manual trigger only — no schedule by
 # default, since the heuristic scout in the dashboard already runs on
 # every /proposals page load.
@@ -179,7 +179,7 @@ jobs:
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: ${{ steps.build.outputs.prompt_path }}
-          claude_args: '--max-turns 25 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite'
+          claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite'
           show_full_output: 'true'
 
       - name: Parse findings + file issues
