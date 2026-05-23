@@ -40,7 +40,7 @@ permissions:
 
 jobs:
   unfinished-work-scout:
-    uses: alizaouane/dev-agent/.github/workflows/phase-unfinished-work-scout.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-unfinished-work-scout.yml@main
     with:
       config_path: .dev-agent.yml
       focus_paths: ${{ inputs.focus_paths || '' }}

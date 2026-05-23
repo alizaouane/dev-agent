@@ -54,7 +54,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: alizaouane/dev-agent
-          ref: v1
+          ref: main
           path: .dev-agent-engine
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: 'npm' }
