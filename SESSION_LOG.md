@@ -1,5 +1,25 @@
 # Session Log
 
+## 2026-05-23 16:31 UTC — interactive — drop v1 pin from templates + tests (PR #104)
+
+**Trigger:** After force-moving `v1` twice in one session (to ship the bug-scout engine-checkout fix from PR #102, then the turn-cap fix from PR #103), the user asked: "can we get rid of this label for good? I don't see a need for this." Stale-tag was a chronic cost without offsetting protection for a single-org tool.
+
+**What changed:**
+
+- [PR #104](https://github.com/alizaouane/dev-agent/pull/104) → merged as [2db4a9c](https://github.com/alizaouane/dev-agent/commit/2db4a9c): consumer templates in [examples/web-app-template/.github/workflows/](examples/web-app-template/.github/workflows/) now reference `@main` instead of `@v1` (6 wrapper files); embedded copy in [dashboard/lib/wire-up-template.ts](dashboard/lib/wire-up-template.ts) regenerated to match; [tests/unit/web-app-template.test.ts](tests/unit/web-app-template.test.ts) policy switched from `@v\d+` to `@main$`. Comments in the test point to PR #102 / #103 for the incidents that motivated the switch.
+- The internal `ref: ${{ github.workflow_sha }}` engine checkout from PR #102 stays — binds engine scripts to the exact same SHA as the calling YAML, strictly better than any tag/branch ref.
+- The third-party `anthropics/claude-code-action@v1` pins stay — real external project with real release cadence.
+
+**Deferred / Next:**
+
+- **Consumer rollout:** every wired consumer (`social-media-content` confirmed; others to enumerate via GH code search) still has `@v1` in their deployed `.github/workflows/dev-agent-*.yml`. One PR per consumer to bump `@v1` → `@main`. Needs explicit user authorization to operate cross-repo (classifier blocked the attempt during the bug-scout work).
+- **Delete v1 tag** from origin once no consumer references it: `git push --force origin :refs/tags/v1`.
+- **Convention going forward:** every fix that ships to main reaches every consumer on next scheduled run with no manual step. Tracks main; no more "I forgot to move the tag" incidents.
+
+**Next session should start with:** decision on the consumer rollout. Two paths to choose from — (a) authorize the agent to PR each wired consumer, or (b) drive the rollout via the dashboard's wire-up flow if it overwrites existing workflow files. Until either path completes, consumers stay on the (still-rolling, but now manual) `@v1`.
+
+---
+
 ## 2026-05-23 15:57 UTC — interactive — bump scout turn cap 25 → 30 (PR #103)
 
 **Trigger:** User showed `unfinished-work-scout` failing on `social-media-content` with `error_max_turns` at 26 turns (capped at 25). An earlier run from the same session succeeded — confirmed that PR #102's v1 force-move did unstick the original `ERR_MODULE_NOT_FOUND` bug; this is a separate, intermittent issue.
