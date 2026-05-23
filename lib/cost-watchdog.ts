@@ -21,6 +21,13 @@ export interface CostBreakdown {
 
 export type Tier = 'snapshot' | 'warning' | 'exhausted';
 
+// Defense against forged telemetry: any single comment claiming more than
+// $1000 is implausible for any v1 phase (the highest configured per-phase
+// cap is $5) and would inflate MTD totals into false-positive alerts.
+// Real outliers above the cap signal an upstream bug to investigate;
+// dropping them is the safer default for the alert path.
+export const MAX_COST_PER_COMMENT_USD = 1000;
+
 export function aggregateCostFromComments(
   issues: { number: number; title: string; comments: CommentLike[] }[],
   monthStart: Date,
@@ -33,7 +40,7 @@ export function aggregateCostFromComments(
     for (const c of issue.comments) {
       if (new Date(c.created_at) < monthStart) continue;
       const t = parseTelemetry(c.body);
-      if (!t || !Number.isFinite(t.cost_usd) || t.cost_usd < 0) continue;
+      if (!t || !Number.isFinite(t.cost_usd) || t.cost_usd < 0 || t.cost_usd > MAX_COST_PER_COMMENT_USD) continue;
       byPhase[t.phase] = (byPhase[t.phase] ?? 0) + t.cost_usd;
       byPhaseRuns[t.phase] = (byPhaseRuns[t.phase] ?? 0) + 1;
       let fc = perIssue.get(issue.number);

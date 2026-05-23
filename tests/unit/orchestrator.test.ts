@@ -25,7 +25,10 @@ describe('orchestrator', () => {
     expect(validateTransition('state:swarm-reviewing', 'swarm-fail').ok).toBe(true);
     expect(validateTransition('state:swarm-reviewing', 'human-override').ok).toBe(true);
     expect(validateTransition('state:tier2-smoke', 'tier2-pass').ok).toBe(true);
-    expect(validateTransition('state:tier2-smoke', 'tier2-fail').ok).toBe(true);
+    // No `tier2-fail` transition exists — the engine workflow applies a
+    // `tier2-failed` label without flipping state (recovery is documented
+    // in the runbook). Asserting it stays unmapped catches accidental
+    // re-introduction of the fictional row that used to live here.
   });
 
   it('routes acm-pass back into the existing implement phase', () => {

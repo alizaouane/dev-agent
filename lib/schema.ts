@@ -62,8 +62,10 @@ export const devAgentConfigSchema = z.object({
         reviewers: z.array(z.string()),
         reviewer_weights: z.record(z.number()).optional(),
         timeout_minutes: z.number().int().positive(),
-        fail_open: z.boolean(),
-        kill_switch_env: z.string().optional(),
+        // `fail_open` and `kill_switch_env` were declared in the v1 schema
+        // but never consumed by any workflow — removed as dead code. Zod's
+        // default behaviour strips unknown keys, so any existing config
+        // that still sets them stays valid; the fields are silently ignored.
       })
       .optional(),
     evidence_collector: z

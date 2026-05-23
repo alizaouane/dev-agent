@@ -21,6 +21,8 @@ import { PILLAR_LABELS } from '@/lib/verification/types';
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
 const CLEANUP_WORKFLOW_PATH = '.github/workflows/dev-agent-cleanup-scout.yml';
 const VERIFICATION_WORKFLOW_PATH = '.github/workflows/dev-agent-verification.yml';
+const TIER2_SMOKE_WORKFLOW_PATH = '.github/workflows/dev-agent-tier2-smoke.yml';
+const SWARM_OVERRIDE_WORKFLOW_PATH = '.github/workflows/dev-agent-swarm-override.yml';
 
 async function isWorkflowInstalled(
   octokit: Awaited<ReturnType<typeof getOctokit>>,
@@ -67,6 +69,8 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     unfinishedWorkInstalled,
     cleanupInstalled,
     verificationInstalled,
+    tier2SmokeInstalled,
+    swarmOverrideInstalled,
     overrideEvents,
   ] = await Promise.all([
     loadRepoWorkspace(octokit, repo),
@@ -82,6 +86,12 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       : Promise.resolve(false),
     repo.wired_up
       ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, VERIFICATION_WORKFLOW_PATH)
+      : Promise.resolve(false),
+    repo.wired_up
+      ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, TIER2_SMOKE_WORKFLOW_PATH)
+      : Promise.resolve(false),
+    repo.wired_up
+      ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, SWARM_OVERRIDE_WORKFLOW_PATH)
       : Promise.resolve(false),
     repo.wired_up
       ? loadOverrideEvents(octokit, { owner: repo.owner, name: repo.name }).catch(() => [])
@@ -253,6 +263,36 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                   workflow="verification"
                   title="Verification gates"
                   description="Installs dev-agent-verification.yml so swarm-review (3 adversarial reviewers + deterministic scanners) runs automatically on every dev-agent PR."
+                />
+              )}
+            </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">Tier-2 smoke (Pillar 7)</h3>
+              {tier2SmokeInstalled ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. After a feature reaches <code>state:staging-deployed</code>, a Claude sub-agent authors a Playwright probe from the spec&apos;s acceptance criteria and runs it against the Vercel preview URL. Verdict + state transition appear on the issue. Branch protection can require the <code>dev-agent · tier2-smoke / smoke-call</code> check to make it block promotion. See the rollout runbook for the canary plan.
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="tier2-smoke"
+                  title="Tier-2 smoke (staging probe)"
+                  description="Installs dev-agent-tier2-smoke.yml so a Playwright probe runs automatically against the Vercel preview after every successful staging deploy. Flips the Smoke pillar from dim to a check."
+                />
+              )}
+            </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">/swarm-override handler</h3>
+              {swarmOverrideInstalled ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. Commenting <code>/swarm-override &lt;reason&gt;</code> on a dev-agent PR clears <code>swarm-review:fail</code>/<code>:concern</code>, adds <code>swarm-overridden</code> + <code>swarm-review:pass</code>, and posts an audit comment with a hidden event anchor. Restricted to OWNER/MEMBER/COLLABORATOR by author_association.
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="swarm-override"
+                  title="/swarm-override handler"
+                  description="Installs dev-agent-swarm-override.yml so reviewers can advance a failed swarm-review verdict with a single PR comment. The audit anchor it emits is what powers the Recent overrides card on this page."
                 />
               )}
             </div>
