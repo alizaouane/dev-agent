@@ -14,6 +14,7 @@
     "typecheck": "tsc --noEmit",
     "build": "tsc",
     "cost-watchdog": "tsx lib/cli/cost-watchdog.ts",
+    "events-scrape": "tsx lib/cli/events-scrape.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

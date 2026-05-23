@@ -2,11 +2,13 @@
 import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos } from '@/lib/repos';
+import { loadOverrideEvents } from '@/lib/dashboard/override-events';
 import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
 import { runAllScouts } from '@/lib/scout';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
 import { Button } from '@/components/ui/button';
 import { FeatureCard } from '@/components/feature-card';
+import { OverrideEventsPanel } from '@/components/override-events-panel';
 import { VerificationPostureStrip } from '@/components/verification-posture-strip';
 import { EmptyState } from '@/components/empty-state';
 import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
@@ -58,23 +60,33 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
   const repo = allRepos.find((r) => `${r.owner}/${r.name}` === name);
   if (!repo) return <p className="text-muted-foreground">Repo not found in allowlist.</p>;
 
-  const [workspace, proposals, scheduleSnapshot, unfinishedWorkInstalled, cleanupInstalled, verificationInstalled] =
-    await Promise.all([
-      loadRepoWorkspace(octokit, repo),
-      runAllScouts(octokit, [repo]).catch(() => []),
-      repo.wired_up
-        ? readBugScoutSchedule(octokit, repo.owner, repo.name, repo.default_branch).catch(() => null)
-        : Promise.resolve(null),
-      repo.wired_up
-        ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, UNFINISHED_WORK_WORKFLOW_PATH)
-        : Promise.resolve(false),
-      repo.wired_up
-        ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, CLEANUP_WORKFLOW_PATH)
-        : Promise.resolve(false),
-      repo.wired_up
-        ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, VERIFICATION_WORKFLOW_PATH)
-        : Promise.resolve(false),
-    ]);
+  const [
+    workspace,
+    proposals,
+    scheduleSnapshot,
+    unfinishedWorkInstalled,
+    cleanupInstalled,
+    verificationInstalled,
+    overrideEvents,
+  ] = await Promise.all([
+    loadRepoWorkspace(octokit, repo),
+    runAllScouts(octokit, [repo]).catch(() => []),
+    repo.wired_up
+      ? readBugScoutSchedule(octokit, repo.owner, repo.name, repo.default_branch).catch(() => null)
+      : Promise.resolve(null),
+    repo.wired_up
+      ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, UNFINISHED_WORK_WORKFLOW_PATH)
+      : Promise.resolve(false),
+    repo.wired_up
+      ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, CLEANUP_WORKFLOW_PATH)
+      : Promise.resolve(false),
+    repo.wired_up
+      ? isWorkflowInstalled(octokit, repo.owner, repo.name, repo.default_branch, VERIFICATION_WORKFLOW_PATH)
+      : Promise.resolve(false),
+    repo.wired_up
+      ? loadOverrideEvents(octokit, { owner: repo.owner, name: repo.name }).catch(() => [])
+      : Promise.resolve([]),
+  ]);
 
   const [pmMdPresent] = await Promise.all([
     repo.wired_up
@@ -187,6 +199,12 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             </ul>
           </div>
         </div>
+      </section>
+
+      {/* Band 5.5 — Recent overrides */}
+      <section>
+        <h2 className="mb-3 text-lg font-semibold">Recent overrides</h2>
+        <OverrideEventsPanel events={overrideEvents} repo={`${repo.owner}/${repo.name}`} />
       </section>
 
       {/* Band 6 — Cost (placeholder for v1) */}

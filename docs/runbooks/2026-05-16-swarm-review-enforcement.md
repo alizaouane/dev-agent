@@ -105,6 +105,16 @@ The payload is base64-encoded because `reason` is user-supplied — a reason con
 
 The only difference between the engine-repo and consumer-repo anchors is the `phase` field: engine emits `"phase-pr-review"` (the engine workflow filename), consumer emits `"dev-agent-swarm-override"` (the consumer workflow filename). A future scraper that walks both repos can distinguish them by that field while parsing the rest of the payload identically.
 
+### Offline export — `lib/cli/events-scrape.ts`
+
+For ad-hoc audit-trail export (offline analysis, eval pipelines, etc.), the engine repo's `events-scrape` CLI walks PR comments by anchor and writes one JSONL line per event:
+
+```bash
+GH_TOKEN=... GITHUB_REPOSITORY=owner/name npm run events-scrape -- --out .dev-agent/events
+```
+
+Output is `.dev-agent/events/<pr-number>.jsonl` per PR with at least one override event. Default scan window is the last 90 days; override with `--window-days N`. The CLI is opt-in (manual invocation) — operators who want persisted history can run it on a cadence of their choice. The dashboard's Overrides panel reads the same anchors directly and does not require the CLI to be run.
+
 ### Audit trail for `/swarm-override` in the engine repo
 
 When `/swarm-override` is used inside the dev-agent engine repo's own PRs (the `phase-pr-review.yml` handler), the audit comment now embeds a hidden machine-parseable event anchor of the form `<!-- dev-agent:event:b64 <base64> -->`. The payload is base64-encoded JSON because `reason` is user-supplied and could otherwise contain `-->`, which would close the HTML comment early and truncate the anchor — base64 output is alphabet-only so a comment terminator can never appear inside it. The decoded JSON matches `lib/events.ts`'s `override.applied` shape — `ts`, `run_id`, `issue` (PR number), `phase: 'phase-pr-review'`, and a `payload` carrying `override_type`, `actor`, and `reason`. Future tooling reconstructs `.dev-agent/events/<pr>.jsonl` by scraping these anchors, `base64 -d`-ing the payload, and JSON-parsing the result — no commit-back step needed from the workflow. Admin-merge and un-require bypasses are recorded in the PR timeline (not the anchor) since they happen outside the override handler.
