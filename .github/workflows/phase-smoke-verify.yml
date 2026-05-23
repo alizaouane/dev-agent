@@ -67,8 +67,10 @@ jobs:
       # lib/cli tooling. The reusable-workflow YAML ships from dev-agent but
       # its scripts don't, so check the engine out separately into a subdir
       # (excluded from git state so it can't dirty the consumer's tree).
-      # Pinned to the same SHA as the caller's YAML via github.workflow_sha, so the
-      # engine scripts always match the YAML revision (no tag-vs-main drift).
+      # Tracks main. Earlier attempt with github.workflow_sha was wrong: in a
+      # reusable workflow, that context resolves to the CALLER's SHA (the
+      # consumer's repo), not this workflow's SHA. Since every consumer
+      # now tracks @main directly (v1 tag deleted), main-vs-main is consistent.
       - name: Reserve engine checkout from git state
         run: echo '.dev-agent-engine/' >> .git/info/exclude
 
@@ -76,7 +78,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: alizaouane/dev-agent
-          ref: ${{ github.workflow_sha }}
+          ref: main
           path: .dev-agent-engine
 
       - uses: actions/setup-node@v4
