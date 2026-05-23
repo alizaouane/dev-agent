@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { PageHeader } from '@/components/ui/page-header';
+import { Term } from '@/components/ui/term';
 import { Button } from '@/components/ui/button';
 import { listAllowedRepos } from '@/lib/repos';
 import { loadOverrideEvents } from '@/lib/dashboard/override-events';
@@ -138,7 +139,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
 
       {/* Band 2 — In flight */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">In flight</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          In flight
+          <Term k="in-motion" variant="icon" />
+        </h2>
         {workspace.inFlight.length === 0 ? (
           <EmptyState title="Nothing in flight on this repo." body="" />
         ) : (
@@ -153,7 +157,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       {/* Band 3 — PM proposes */}
       <section>
         <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">PM proposes</h2>
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            PM proposes
+            <Term k="pm-proposes" variant="icon" />
+          </h2>
           <Link href={`/proposals?repo=${encodeURIComponent(name)}`} className="text-sm underline">
             See all
           </Link>
@@ -184,7 +191,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
 
       {/* Band 4 — Recently shipped */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Recently shipped (last 14d)</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Recently shipped (last 14d)
+          <Term k="recently-shipped" variant="icon" />
+        </h2>
         {workspace.recentlyShipped.length === 0 ? (
           <EmptyState title="No features shipped in the last 14 days." body="" />
         ) : (
@@ -198,7 +208,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
 
       {/* Band 5 — Verification posture for this repo */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Verification posture (this repo)</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Verification posture (this repo)
+          <Term k="verification-posture" variant="icon" />
+        </h2>
         <div className="flex flex-col gap-3">
           <VerificationPostureStrip rollup={workspace.posture} />
           <div className="rounded-md border border-border bg-card p-4 text-sm">

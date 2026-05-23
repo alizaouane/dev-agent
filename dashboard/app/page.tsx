@@ -9,6 +9,7 @@ import { RepoCard } from '@/components/repo-card';
 import { VerificationPostureStrip } from '@/components/verification-posture-strip';
 import { EmptyState } from '@/components/empty-state';
 import { PageHeader } from '@/components/ui/page-header';
+import { Term } from '@/components/ui/term';
 
 export default async function HomePage() {
   const octokit = await getOctokit();
@@ -60,7 +61,10 @@ export default async function HomePage() {
 
       {/* Band 2 — Needs you */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Needs you now</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Needs you now
+          <Term k="needs-you-now" variant="icon" />
+        </h2>
         {bands.needsAction.length === 0 ? (
           <EmptyState title="Nothing waiting on you — nice." body="" />
         ) : (
@@ -74,7 +78,10 @@ export default async function HomePage() {
 
       {/* Band 3 — In motion */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">In motion</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          In motion
+          <Term k="in-motion" variant="icon" />
+        </h2>
         {bands.inMotion.length === 0 ? (
           <EmptyState
             title="No active runs."
@@ -92,7 +99,10 @@ export default async function HomePage() {
 
       {/* Band 4 — Recently shipped */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Recently shipped (last 7d)</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Recently shipped (last 7d)
+          <Term k="recently-shipped" variant="icon" />
+        </h2>
         {bands.recentlyShipped.length === 0 ? (
           <EmptyState
             title="No features shipped in the last 7 days."
@@ -110,7 +120,10 @@ export default async function HomePage() {
       {/* Band 5 — PM proposes */}
       <section>
         <div className="mb-3 flex items-baseline justify-between">
-          <h2 className="text-lg font-semibold">PM proposes</h2>
+          <h2 className="flex items-center gap-2 text-lg font-semibold">
+            PM proposes
+            <Term k="pm-proposes" variant="icon" />
+          </h2>
           <Link href="/proposals" className="text-sm underline">
             See all ({proposals.length})
           </Link>
@@ -145,7 +158,10 @@ export default async function HomePage() {
 
       {/* Band 6 — Verification posture */}
       <section>
-        <h2 className="mb-3 text-lg font-semibold">Verification posture</h2>
+        <h2 className="mb-3 flex items-center gap-2 text-lg font-semibold">
+          Verification posture
+          <Term k="verification-posture" variant="icon" />
+        </h2>
         <VerificationPostureStrip rollup={bands.posture} />
       </section>
 
