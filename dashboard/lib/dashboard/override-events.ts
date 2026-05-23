@@ -17,7 +17,12 @@ interface CacheEntry {
   expires_at: number;
 }
 
-const TTL_MS = 30 * 60 * 1000;
+const SUCCESS_TTL_MS = 30 * 60 * 1000;
+// Errors cache too — without this, a transient outage would hammer the
+// GitHub API on every page load. But we use a shorter TTL than success
+// so a retry within the half-hour window can actually succeed once the
+// outage clears.
+const ERROR_TTL_MS = 60 * 1000;
 const MAX_ENTRIES = 256;
 const cache = new Map<string, CacheEntry>();
 
@@ -32,19 +37,22 @@ function getCached(key: string, now = Date.now()): OverrideEvent[] | undefined {
   return e.value;
 }
 
-function setCached(key: string, value: OverrideEvent[], now = Date.now()): void {
+function setCached(key: string, value: OverrideEvent[], ttlMs: number, now = Date.now()): void {
   if (!cache.has(key) && cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
     if (oldest !== undefined) cache.delete(oldest);
   }
-  cache.set(key, { value, expires_at: now + TTL_MS });
+  cache.set(key, { value, expires_at: now + ttlMs });
 }
 
 export function __resetCacheForTests(): void { cache.clear(); }
 
 export interface LoadOpts {
   limit?: number;        // default 10
-  windowDays?: number;   // default 90
+  windowDays?: number;   // default 30 (was 90 in v1 — operators can pass
+                         // larger via the CLI; the dashboard surface is
+                         // "recent overrides", so 30 days is the right
+                         // default and saves API volume on large repos.)
 }
 
 export async function loadOverrideEvents(
@@ -53,12 +61,13 @@ export async function loadOverrideEvents(
   opts: LoadOpts = {},
 ): Promise<OverrideEvent[]> {
   const limit = opts.limit ?? 10;
-  const windowDays = opts.windowDays ?? 90;
+  const windowDays = opts.windowDays ?? 30;
   const key = cacheKey(repo.owner, repo.name, limit, windowDays);
   const cached = getCached(key);
   if (cached) return cached;
 
   let events: OverrideEvent[] = [];
+  let hadError = false;
   try {
     const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
     // Use paginate.iterator + sort:updated/direction:desc so we can stop
@@ -116,10 +125,13 @@ export async function loadOverrideEvents(
   } catch {
     // Failures (rate limit, 404, network) yield an empty list — the UI
     // shows the empty state, which is the right read of "we don't have
-    // data right now" without making the operator chase a 500 page.
+    // data right now" without making the operator chase a 500 page. Cache
+    // the empty result on a SHORT TTL so a retry within the half-hour
+    // success window can actually succeed once the outage clears.
     events = [];
+    hadError = true;
   }
 
-  setCached(key, events);
+  setCached(key, events, hadError ? ERROR_TTL_MS : SUCCESS_TTL_MS);
   return events;
 }
