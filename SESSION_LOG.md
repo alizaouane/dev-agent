@@ -1,5 +1,23 @@
 # Session Log
 
+## 2026-05-23 15:57 UTC — interactive — bump scout turn cap 25 → 30 (PR #103)
+
+**Trigger:** User showed `unfinished-work-scout` failing on `social-media-content` with `error_max_turns` at 26 turns (capped at 25). An earlier run from the same session succeeded — confirmed that PR #102's v1 force-move did unstick the original `ERR_MODULE_NOT_FOUND` bug; this is a separate, intermittent issue.
+
+**What changed:**
+
+- [PR #103](https://github.com/alizaouane/dev-agent/pull/103) → merged as [a7c8f5b](https://github.com/alizaouane/dev-agent/commit/a7c8f5b): bumped `--max-turns` from 25 to 30 in `phase-unfinished-work-scout.yml` and `phase-cleanup-scout.yml`, matching the prior bump for `phase-bug-scout.yml`. Cost comments updated from "typically 15-25 turns" to "typically 15-30 turns".
+- Cost impact: ~$0.02 per scan worst case.
+
+**Deferred / Next:**
+
+- The 25-cap was the outlier among scout phases (bug-scout at 30, acm at 80, implement/staging-deploy at 500). All scouts now consistent at 30.
+- User to confirm next scheduled or manual `unfinished-work-scout` run on `social-media-content` is green. If it fails again at a higher turn count (e.g., 31), the agent prompt may be looping rather than working — worth reading the trace before bumping further.
+
+**Next session should start with:** if the user reports the scout finally passes, this thread is closed. If still failing, inspect the agent's tool-call trace from the failing run to see whether it's working efficiently or thrashing.
+
+---
+
 ## 2026-05-23 15:44 UTC — interactive — unstick consumer bug-scout: v1 force-move + workflow_sha binding (PR #102)
 
 **Trigger:** User showed a screenshot of `dev-agent · bug-scout #10` failing on `alizaouane/social-media-content` with "still having this bug" — the same `ERR_MODULE_NOT_FOUND` for `lib/cli/config-to-json.ts` that the May 20 SESSION_LOG entry said was fixed.
