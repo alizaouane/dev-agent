@@ -61,15 +61,25 @@ export async function loadOverrideEvents(
   let events: OverrideEvent[] = [];
   try {
     const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
-    const prs = await octokit.paginate(octokit.pulls.list, {
+    // Use paginate.iterator + sort:updated/direction:desc so we can stop
+    // fetching PR pages as soon as we cross the lookback boundary. The full
+    // `paginate(...)` API would walk every page before our filter runs.
+    const recent: Array<{ number: number; updated_at: string }> = [];
+    for await (const page of octokit.paginate.iterator(octokit.pulls.list, {
       owner: repo.owner,
       repo: repo.name,
       state: 'all',
       sort: 'updated',
       direction: 'desc',
       per_page: 100,
-    });
-    const recent = (prs as { number: number; updated_at: string }[]).filter((p) => p.updated_at >= since);
+    })) {
+      let stop = false;
+      for (const pr of page.data as Array<{ number: number; updated_at: string }>) {
+        if (pr.updated_at < since) { stop = true; break; }
+        recent.push(pr);
+      }
+      if (stop) break;
+    }
 
     for (const pr of recent) {
       const comments = await octokit.paginate(octokit.issues.listComments, {
@@ -78,7 +88,14 @@ export async function loadOverrideEvents(
         issue_number: pr.number,
         per_page: 100,
       });
-      for (const c of comments as { body?: string; html_url: string }[]) {
+      // Only treat comments authored by `github-actions[bot]` as trusted
+      // audit sources. The override workflows always post under that
+      // identity; if any other commenter types the anchor format into a
+      // comment, the dashboard would otherwise surface their forged event
+      // as a real override. This is the audit-integrity gate.
+      const trusted = (comments as { body?: string; html_url: string; user?: { login?: string } | null }[])
+        .filter((c) => c.user?.login === 'github-actions[bot]');
+      for (const c of trusted) {
         for (const b64 of extractAnchors(c.body ?? '')) {
           const decoded = decodeAnchor(b64);
           if (!decoded) continue;

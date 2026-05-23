@@ -56,6 +56,8 @@ export function decodeAnchor(b64: string): DevAgentEventLike | null {
   ) {
     return null;
   }
+  // ts must be parseable — sort/render paths assume valid ISO-ish strings.
+  if (Number.isNaN(Date.parse(e.ts))) return null;
   // `issue` may be null (global events) — only reject if it's neither.
   if (e.issue !== null && typeof e.issue !== 'number') return null;
   return e as DevAgentEventLike;

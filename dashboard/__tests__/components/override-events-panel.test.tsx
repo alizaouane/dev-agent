@@ -29,7 +29,9 @@ describe('<OverrideEventsPanel>', () => {
 
   it('truncates reasons over 80 chars with an ellipsis', () => {
     render(<OverrideEventsPanel events={sample(2)} repo="owner/name" />);
-    // The long reason (index 1) should be rendered truncated.
-    expect(screen.getByText(/x{77}…/)).toBeInTheDocument();
+    // The long reason (index 1) is `'x'.repeat(120)`. The truncate helper
+    // slices to (TRUNCATE - 1) = 79 chars and appends `…`, keeping total
+    // visible length at TRUNCATE = 80. Match the exact 79-x prefix.
+    expect(screen.getByText(/^x{79}…$/)).toBeInTheDocument();
   });
 });

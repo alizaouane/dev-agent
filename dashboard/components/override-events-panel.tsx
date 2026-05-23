@@ -37,8 +37,11 @@ export function OverrideEventsPanel({
         Reconstructed from audit anchors on PR comments. Last 10 in the past 90 days.
       </p>
       <ul className="mt-3 divide-y divide-border">
-        {events.map((e) => (
-          <li key={e.source_comment_url} className="grid grid-cols-12 gap-2 py-2 text-xs">
+        {events.map((e, i) => (
+          // Composite key — a single comment can carry multiple anchors
+          // (e.g., edited to add a follow-up); `source_comment_url` alone
+          // would collide and React would drop or duplicate rows.
+          <li key={`${e.source_comment_url}#${e.ts}#${i}`} className="grid grid-cols-12 gap-2 py-2 text-xs">
             <time
               className="col-span-2 text-muted-foreground"
               dateTime={e.ts}

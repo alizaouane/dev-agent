@@ -38,9 +38,13 @@ function parseArgs(argv: string[]): { outDir: string; windowDays: number } {
       i++;
     }
   }
+  const windowDays = args.windowDays ? Number.parseInt(args.windowDays, 10) : 90;
+  if (!Number.isInteger(windowDays) || windowDays <= 0) {
+    throw new Error('--window-days must be a positive integer');
+  }
   return {
     outDir: args.out ?? '.dev-agent/events',
-    windowDays: args.windowDays ? parseInt(args.windowDays, 10) : 90,
+    windowDays,
   };
 }
 
@@ -54,18 +58,26 @@ async function main(): Promise<void> {
   const octokit = new Octokit({ auth: ghToken });
   const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
 
-  // pulls.list (state: 'all') with sort+direction gives us closed PRs too;
-  // we filter by updated_at >= since on the client side because the API
-  // doesn't expose a server-side `since` for pulls (only issues).
-  const prs = await octokit.paginate(octokit.pulls.list, {
+  // pulls.list (state: 'all') with sort:updated/direction:desc lets us
+  // stop pagination as soon as we cross the lookback boundary — the API
+  // doesn't expose a server-side `since` for pulls, but the sort order
+  // makes early-stop equivalent.
+  const recentPrs: Array<{ number: number; updated_at: string }> = [];
+  for await (const page of octokit.paginate.iterator(octokit.pulls.list, {
     owner,
     repo,
     state: 'all',
     sort: 'updated',
     direction: 'desc',
     per_page: 100,
-  });
-  const recentPrs = prs.filter((p) => p.updated_at >= since);
+  })) {
+    let stop = false;
+    for (const pr of page.data as Array<{ number: number; updated_at: string }>) {
+      if (pr.updated_at < since) { stop = true; break; }
+      recentPrs.push(pr);
+    }
+    if (stop) break;
+  }
 
   fs.mkdirSync(outDir, { recursive: true });
   let totalWritten = 0;
@@ -77,8 +89,14 @@ async function main(): Promise<void> {
       issue_number: pr.number,
       per_page: 100,
     });
+    // Trust only github-actions[bot] as the audit-source — any other
+    // commenter could otherwise inject a forged anchor and corrupt the
+    // exported audit trail.
+    const trusted = comments.filter(
+      (c) => (c as { user?: { login?: string } | null }).user?.login === 'github-actions[bot]',
+    );
     const out: string[] = [];
-    for (const c of comments) {
+    for (const c of trusted) {
       const body = c.body ?? '';
       for (const b64 of extractAnchors(body)) {
         const event = decodeAnchor(b64);

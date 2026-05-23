@@ -61,7 +61,7 @@ export async function loadOverrideEvents(
 ): Promise<OverrideEvent[]>;
 ```
 
-**Behavior.** Lists PRs from the last `windowDays` (default 90) via `octokit.paginate(octokit.pulls.list, { state: 'all' })`. For each PR, paginates `issues.listComments`, runs `extractAnchors` over each body, decodes via `decodeAnchor`, narrows via `summarizeOverride`, attaches the comment's `html_url` for click-through, and sorts by `ts` descending. Returns at most `limit` (default 10) results.
+**Behavior.** Lists PRs from the last `windowDays` (default 90) via `octokit.paginate.iterator(octokit.pulls.list, { state: 'all', sort: 'updated', direction: 'desc' })`, breaking out of pagination as soon as a PR older than the window is encountered (the sort order guarantees no qualifying PR follows). For each PR, paginates `issues.listComments`, **filters to comments authored by `github-actions[bot]`** (the trusted automation identity — anchors in user-authored comments are forgeries and are dropped), runs `extractAnchors` over each trusted body, decodes via `decodeAnchor`, narrows via `summarizeOverride`, attaches the comment's `html_url` for click-through, and sorts by `ts` descending. Returns at most `limit` (default 10) results.
 
 **Cache.** Hits a sibling of `dashboard/lib/verification/cache.ts` — same 30-min TTL, same hashed-key pattern, keyed by `repo + windowDays + limit`. Repeated visits to the repo workspace within 30 minutes don't re-paginate.
 
