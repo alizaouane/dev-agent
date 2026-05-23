@@ -53,7 +53,7 @@ export const GLOSSARY = {
   'pm-agent': {
     label: 'PM agent',
     short: 'The chat agent that turns ideas into specs.',
-    long: 'The PM agent is the chat on the Brainstorm page. You describe what you want; it asks clarifying questions, drafts a spec, and once you approve, hands off to implementation. The most common way to start something new.',
+    long: 'The PM agent is the chat on the Brainstorm page. You describe what you want; it asks clarifying questions, drafts a spec, and hands off to the implementation agent once you approve.',
   },
   'needs-you-now': {
     label: 'Needs you now',
