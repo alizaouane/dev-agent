@@ -124,7 +124,7 @@ export default async function HomePage() {
             PM proposes
             <Term k="pm-proposes" variant="icon" />
           </h2>
-          <Link href="/proposals" className="text-sm underline">
+          <Link href="/proposals" className="text-sm hover:underline">
             See all ({proposals.length})
           </Link>
         </div>
@@ -146,7 +146,7 @@ export default async function HomePage() {
                 </div>
                 <Link
                   href={`/intent?repo=${encodeURIComponent(p.repo)}&prefill=${encodeURIComponent(p.title)}`}
-                  className="text-sm underline"
+                  className="text-sm hover:underline"
                 >
                   Discuss with PM
                 </Link>

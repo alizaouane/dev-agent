@@ -147,7 +147,7 @@ export default async function ProposalsPage(props: {
         helpTerm="proposals-page"
         actions={
           scopedRepo ? (
-            <Link href="/proposals" data-no-style className="text-sm underline">
+            <Link href="/proposals" data-no-style className="text-sm hover:underline">
               View all repos
             </Link>
           ) : undefined
@@ -238,7 +238,7 @@ export default async function ProposalsPage(props: {
             </p>
             <Link
               href={showSnoozed ? hideSnoozedHref : showSnoozedHref}
-              className="text-sm underline"
+              className="text-sm hover:underline"
             >
               {showSnoozed ? 'Hide snoozed' : 'Show snoozed'}
             </Link>

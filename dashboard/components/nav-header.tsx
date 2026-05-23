@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { HelpPanel } from '@/components/help-panel';
 import { AutoBreadcrumbs } from '@/components/ui/breadcrumbs';
 import { cn } from '@/lib/utils';
-import type { ReactNode } from 'react';
+import { Suspense, type ReactNode } from 'react';
 
 const PRIMARY = [
   { href: '/', label: 'Home' },
@@ -106,7 +106,9 @@ export function NavHeaderShell({
           {username && signOutForm}
         </div>
       </div>
-      <AutoBreadcrumbs />
+      <Suspense fallback={null}>
+        <AutoBreadcrumbs />
+      </Suspense>
     </header>
   );
 }

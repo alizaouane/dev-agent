@@ -161,7 +161,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             PM proposes
             <Term k="pm-proposes" variant="icon" />
           </h2>
-          <Link href={`/proposals?repo=${encodeURIComponent(name)}`} className="text-sm underline">
+          <Link href={`/proposals?repo=${encodeURIComponent(name)}`} className="text-sm hover:underline">
             See all
           </Link>
         </div>
@@ -179,7 +179,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                 </div>
                 <Link
                   href={`/intent?repo=${encodeURIComponent(name)}&prefill=${encodeURIComponent(p.title)}`}
-                  className="text-sm underline"
+                  className="text-sm hover:underline"
                 >
                   Discuss with PM
                 </Link>
@@ -239,7 +239,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       {/* Band 6 — Cost (placeholder for v1) */}
       <section>
         <h2 className="mb-3 text-lg font-semibold">Cost (this repo, last 30d)</h2>
-        <Link href={`/cost?repo=${encodeURIComponent(name)}`} className="text-sm underline">
+        <Link href={`/cost?repo=${encodeURIComponent(name)}`} className="text-sm hover:underline">
           Open full cost view →
         </Link>
       </section>

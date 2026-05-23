@@ -66,7 +66,9 @@ export function Breadcrumbs({ crumbs }: { crumbs: Crumb[] }) {
                   {c.label}
                 </Link>
               ) : (
-                <span className="text-foreground">{c.label}</span>
+                <span aria-current={isLast ? 'page' : undefined} className="text-foreground">
+                  {c.label}
+                </span>
               )}
               {!isLast && <span aria-hidden>›</span>}
             </li>
