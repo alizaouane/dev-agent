@@ -1,5 +1,35 @@
 # Session Log
 
+## 2026-05-23 11:25 UTC — interactive — dashboard UX brand + inline help + nav restructure (PR #101)
+
+**Trigger:** User: "brainstorm getting the UX more user friendly and increasing navigability and ensure it is crystal clear how the app works, now I am getting lost and confused, add some info ? to explain things so the user dont get confused. aligned the UX colour and all with https://www.qualiency.com/"
+
+**What changed:**
+
+- Spec [docs/superpowers/specs/2026-05-23-dashboard-ux-brand-and-help-design.md](docs/superpowers/specs/2026-05-23-dashboard-ux-brand-and-help-design.md) and plan [docs/superpowers/plans/2026-05-23-dashboard-ux-brand-and-help.md](docs/superpowers/plans/2026-05-23-dashboard-ux-brand-and-help.md) — 15-task TDD plan executed via subagent-driven-development.
+- Brand re-skin: swapped `dashboard/app/globals.css` palette tokens to Qualiency navy (`220 30% 18%`) primary + teal (`180 75% 40%`) accent, light + dark parity; added accent button variant in [dashboard/components/ui/button.tsx](dashboard/components/ui/button.tsx).
+- New primitives: [dashboard/components/ui/term.tsx](dashboard/components/ui/term.tsx) (hover tooltip + click popover backed by glossary), [dashboard/components/ui/page-header.tsx](dashboard/components/ui/page-header.tsx) (italic descriptor + optional `(?)` help bubble + actions slot), [dashboard/components/ui/breadcrumbs.tsx](dashboard/components/ui/breadcrumbs.tsx) (pure `crumbsForPath` + `<AutoBreadcrumbs/>` under a Suspense boundary).
+- Glossary single-source-of-truth [dashboard/lib/glossary.ts](dashboard/lib/glossary.ts) — 21 entries (gate-b, pillar-4/5, tier2-smoke, evidence-bundle, scout, swarm-override, wire-up, pm-agent + per-page + per-band entries) with length-bounds tests.
+- Nav restructure in [dashboard/components/nav-header.tsx](dashboard/components/nav-header.tsx) — server/client split, WORK / INSIGHTS section labels, teal active underline via `aria-current="page"`, breadcrumbs mounted below header on inner pages.
+- `<PageHeader>` mounted on all 9 top-level pages; `<Term variant="icon">` on 5 home + 4 repo-workspace band headings; `<Term>` inline wraps in 8 components (verification badges, feature card, feature detail, inbox item, scan-with-pm-button, override-events-panel, etc.).
+- HelpPanel drawer ([dashboard/components/help-panel.tsx](dashboard/components/help-panel.tsx)) now embeds the full glossary as a canonical reference (each entry: dl row with expandable `<details>` for long body).
+- Playwright smoke spec [dashboard/__tests__/e2e/ux-brand-help.spec.ts](dashboard/__tests__/e2e/ux-brand-help.spec.ts) with auth-skip guard.
+- Helper extraction [dashboard/lib/state-label.tsx](dashboard/lib/state-label.tsx) (`renderStateBadgeContent`) consolidated the IIFE that was duplicated across feature-card/feature-detail/inbox-item — resolved CodeRabbit major review item.
+- CodeRabbit review on PR #101: all 4 comments resolved in commit `6ffb2b3` — closed-vs-shipped descriptor, helper extraction, plan-doc absolute-path cleanup (45 occurrences), spec-doc fence language tags. Per-thread replies + summary comment posted.
+- Final shape: 23 commits, +3287/-220, 501/501 vitest tests pass, typecheck clean. Merged via squash as [6e53b2c](https://github.com/alizaouane/dev-agent/commit/6e53b2c).
+
+**Deferred / Next:**
+
+- State-badge `<Term>` substitution lacks dedicated unit tests in `feature-card` / `feature-detail` / `inbox-item` (the extracted helper has tests; the call sites do not — only matters if a future change uses a different state and forgets to wire the helper).
+- Cost page has a paragraph descriptor below the new `<PageHeader>` descriptor — mild duplication, drop one on next visit.
+- Long repo names in `<PageHeader>` can overflow on narrow mobile widths (no `truncate`); revisit if mobile becomes a real surface.
+- Unwired-state CTA on Home still uses hand-rolled classes instead of `<Button variant="accent">` (pre-existing; safe to normalize).
+- Run the Playwright smoke spec in CI once an authed dev session exists — currently skips when `/auth/signin` redirect fires.
+
+**Next session should start with:** the four "Deferred / Next" items above are all low-risk follow-up polish on the dashboard UX work. Pick one based on which surface the user is in next, or wait for the user's next ask.
+
+---
+
 ## 2026-05-20 14:00 UTC — interactive — establish SESSION_LOG.md habit in dev-agent repo
 
 **Trigger:** User: "make it a habit to write a session log as best practice for this app development."
