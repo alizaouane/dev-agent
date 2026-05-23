@@ -142,20 +142,25 @@ describe('orchestrator invariants', () => {
   });
 
   it('pending-canary states all have well-formed exit transitions even though no entry exists yet', () => {
-    // Locks in the v1 invariant: the 3 new states must have both pass
-    // and fail exits even though nothing yet transitions INTO them. This
-    // catches an accidental edit that would leave a pending-canary state
-    // unreachable AND with no exit (i.e., a true dead-end).
-    const newStates: StateLabel[] = ['state:acm-building', 'state:swarm-reviewing', 'state:tier2-smoke'];
-    for (const state of newStates) {
+    // Locks in the v1 invariant: every new verification state has at least
+    // one exit and a clear success path. `state:acm-building` and
+    // `state:swarm-reviewing` additionally route failures to `state:blocked`.
+    // `state:tier2-smoke` is intentionally pass-only at the orchestrator
+    // level — the engine workflow `phase-tier2-smoke.yml` applies the
+    // `tier2-failed` label and exits non-zero on failure WITHOUT
+    // transitioning state. Recovery is documented in the rollout runbook.
+    const states: StateLabel[] = ['state:acm-building', 'state:swarm-reviewing', 'state:tier2-smoke'];
+    for (const state of states) {
       const exits = TRANSITION_TABLE.filter((r) => r.from === state);
-      expect(exits.length, `${state} has no exit transitions`).toBeGreaterThanOrEqual(2);
+      expect(exits.length, `${state} has no exit transitions`).toBeGreaterThanOrEqual(1);
       const targets = new Set(exits.map((r) => r.to));
-      // At least one success target (not blocked) and at least one fail target (blocked).
       const hasSuccess = [...targets].some((t) => t !== 'state:blocked');
-      const hasFailure = targets.has('state:blocked');
       expect(hasSuccess, `${state} has no success exit`).toBe(true);
-      expect(hasFailure, `${state} has no failure exit`).toBe(true);
+    }
+    const labelOnlyFailureStates: StateLabel[] = ['state:acm-building', 'state:swarm-reviewing'];
+    for (const state of labelOnlyFailureStates) {
+      const targets = new Set(TRANSITION_TABLE.filter((r) => r.from === state).map((r) => r.to));
+      expect(targets.has('state:blocked'), `${state} has no failure exit`).toBe(true);
     }
   });
 
@@ -173,17 +178,23 @@ describe('orchestrator invariants', () => {
     }
   });
 
-  it('every new verification state (acm-building, swarm-reviewing, tier2-smoke) has both a pass and a fail trigger', () => {
-    const newStates: StateLabel[] = [
+  it('verification states have a pass trigger; acm-building + swarm-reviewing also have a fail trigger', () => {
+    // tier2-smoke is intentionally pass-only — failure is signalled via the
+    // `tier2-failed` label (engine workflow), not a state transition.
+    const allWithPass: StateLabel[] = [
       'state:acm-building',
       'state:swarm-reviewing',
       'state:tier2-smoke',
     ];
-    for (const state of newStates) {
+    for (const state of allWithPass) {
       const outbound = TRANSITION_TABLE.filter((r) => r.from === state).map((r) => r.trigger);
       const hasPass = outbound.some((t) => t.endsWith('-pass') || t === 'human-override');
-      const hasFail = outbound.some((t) => t.endsWith('-fail'));
       expect(hasPass, `${state} lacks a pass trigger`).toBe(true);
+    }
+    const alsoWithFail: StateLabel[] = ['state:acm-building', 'state:swarm-reviewing'];
+    for (const state of alsoWithFail) {
+      const outbound = TRANSITION_TABLE.filter((r) => r.from === state).map((r) => r.trigger);
+      const hasFail = outbound.some((t) => t.endsWith('-fail'));
       expect(hasFail, `${state} lacks a fail trigger`).toBe(true);
     }
   });

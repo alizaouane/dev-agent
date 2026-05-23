@@ -41,8 +41,15 @@ export type TransitionTrigger =
   | 'swarm-pass'
   | 'swarm-fail'
   | 'human-override'
-  | 'tier2-pass'
-  | 'tier2-fail';
+  | 'tier2-pass';
+// Note: there is no `tier2-fail` trigger. The engine workflow
+// `phase-tier2-smoke.yml` applies the `tier2-failed` label on a failed
+// verdict and exits non-zero — it does NOT remove `state:tier2-smoke`
+// or transition state. The runbook (`docs/runbooks/2026-05-20-tier2-smoke-rollout.md`)
+// describes the recovery path (re-add `state:staging-deployed` or
+// manual dispatch). A previous draft of this table had a fictional
+// `tier2-fail → state:blocked` row; removing it so the orchestrator
+// only describes transitions that actually happen.
 
 export type TransitionRow = {
   from: StateLabel;
@@ -72,7 +79,6 @@ export const TRANSITION_TABLE: readonly TransitionRow[] = [
   { from: 'state:swarm-reviewing',   trigger: 'human-override',     to: 'state:pr-review' },
   { from: 'state:staging-deployed',  trigger: 'workflow-tier2-fire', to: 'state:tier2-smoke',      fires: 'dev-agent-tier2-smoke.yml' },
   { from: 'state:tier2-smoke',       trigger: 'tier2-pass',         to: 'state:ready-to-promote' },
-  { from: 'state:tier2-smoke',       trigger: 'tier2-fail',         to: 'state:blocked' },
 ] as const;
 
 export type TransitionResult =
