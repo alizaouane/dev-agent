@@ -39,7 +39,7 @@ permissions:
 
 jobs:
   bug-scout:
-    uses: alizaouane/dev-agent/.github/workflows/phase-bug-scout.yml@v1
+    uses: alizaouane/dev-agent/.github/workflows/phase-bug-scout.yml@main
     with:
       config_path: .dev-agent.yml
       focus_paths: ${{ inputs.focus_paths || '' }}

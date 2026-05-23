@@ -37,7 +37,7 @@ describe('examples/web-app-template', () => {
     expect(blocked.some((p) => p.includes('.github/workflows'))).toBe(true);
   });
 
-  it('wrapper workflow references the published v1 tag', () => {
+  it('wrapper workflow references the reusable workflows on @main', () => {
     const path = resolve(templateRoot, '.github/workflows/dev-agent.yml');
     expect(existsSync(path)).toBe(true);
     const raw = readFileSync(path, 'utf8');
@@ -45,9 +45,14 @@ describe('examples/web-app-template', () => {
     const jobs = Object.values(parsed.jobs);
     expect(jobs.length).toBeGreaterThan(0);
     for (const job of jobs) {
-      // Every job must call a reusable workflow pinned to a published
-      // tag — never a branch name (which would silently follow main).
-      expect(job.uses).toMatch(/^alizaouane\/dev-agent\/\.github\/workflows\/phase-[a-z-]+\.yml@v\d+/);
+      // Every job tracks dev-agent's main branch directly. We previously
+      // pinned to @v1 (the standard reusable-workflow convention), but
+      // since we control both sides and don't maintain a release cadence,
+      // the tag became chronically stale — fixes shipped to main but
+      // never reached consumers until the tag was force-moved by hand
+      // (twice in one day; see PR #102, #103). Tracking main eliminates
+      // that lag entirely.
+      expect(job.uses).toMatch(/^alizaouane\/dev-agent\/\.github\/workflows\/phase-[a-z-]+\.yml@main$/);
     }
   });
 
@@ -72,8 +77,8 @@ describe('examples/web-app-template', () => {
     expect(raw).not.toContain('phase-smoke-verify.yml');
   });
 
-  it('verification wrapper exists + all jobs are pinned to v1', () => {
-    // dev-agent-verification.yml is the auto-dispatch wrapper (v1.5+) that
+  it('verification wrapper exists + all jobs track @main', () => {
+    // dev-agent-verification.yml is the auto-dispatch wrapper that
     // fires the verification gates on issue/PR events. Its presence is what
     // activates the gates on a consumer; absence keeps existing flows
     // unchanged. Lock the shape so consumers copying it land a working setup.
@@ -83,13 +88,14 @@ describe('examples/web-app-template', () => {
     const parsed = yaml.load(raw) as { jobs: Record<string, { uses?: string }> };
     const jobs = Object.values(parsed.jobs);
     expect(jobs.length).toBeGreaterThan(0);
-    // Reusable-workflow jobs must pin to a published v-tag, never a branch.
+    // Reusable-workflow jobs track dev-agent's main directly — see the
+    // wrapper-on-main test above for the rationale (stale-tag incidents).
     // The aggregate `verification-gate` job is a plain runs-on/steps job
     // (no `uses:`) — it has nothing to pin, so it's excluded here.
     const reusableJobs = jobs.filter((job) => job.uses !== undefined);
     expect(reusableJobs.length).toBeGreaterThan(0);
     for (const job of reusableJobs) {
-      expect(job.uses).toMatch(/^alizaouane\/dev-agent\/\.github\/workflows\/phase-[a-z-]+\.yml@v\d+/);
+      expect(job.uses).toMatch(/^alizaouane\/dev-agent\/\.github\/workflows\/phase-[a-z-]+\.yml@main$/);
     }
   });
 
@@ -169,7 +175,7 @@ describe('examples/web-app-template', () => {
     const reusableJobs = jobs.filter((j) => j.uses !== undefined);
     expect(reusableJobs.length).toBe(1);
     expect(reusableJobs[0].uses).toMatch(
-      /^alizaouane\/dev-agent\/\.github\/workflows\/phase-tier2-smoke\.yml@v\d+/,
+      /^alizaouane\/dev-agent\/\.github\/workflows\/phase-tier2-smoke\.yml@main$/,
     );
     const resolveJob = jobs.find((j) => j.uses === undefined);
     expect(resolveJob?.if ?? '').toMatch(/state:staging-deployed/);
