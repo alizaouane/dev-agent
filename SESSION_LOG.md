@@ -1,5 +1,25 @@
 # Session Log
 
+## 2026-05-23 16:49 UTC — interactive — fix engine-checkout ref (workflow_sha was wrong) (PR #105)
+
+**Trigger:** Right after v1 deletion, social-media-content's `unfinished-work-scout` failed with `fatal: remote error: upload-pack: not our ref 5207764a85842c28ccfe5d83f4b970629f67947e`. The SHA belonged to social-media-content's own wrapper YAML, not to dev-agent.
+
+**Root cause (self-inflicted):** PR #102 had changed the engine-checkout `ref:` from `v1` to `${{ github.workflow_sha }}` based on Codex review feedback. The fix was wrong — in a reusable workflow, `github.workflow_sha` resolves to the **caller's** SHA, not the called workflow's SHA. So phase-*.yml was trying to clone alizaouane/dev-agent at the consumer's commit hash. The bug stayed latent because earlier failures (stale v1 tag → ERR_MODULE_NOT_FOUND, 25-turn cap) fired before the engine checkout was actually exercised; the prior "successful" run on Aug 15:31 used `@v1` pre-PR-#102. Removing v1 in PR #104 exposed the latent bug to every consumer.
+
+**What changed:**
+
+- [PR #105](https://github.com/alizaouane/dev-agent/pull/105) → merged as [03315e6](https://github.com/alizaouane/dev-agent/commit/03315e6): reverted all 11 `ref: ${{ github.workflow_sha }}` back to `ref: main` in `.github/workflows/phase-*.yml`. Inline comments now explain why `workflow_sha` is wrong and why `main` is correct (no tags to drift against).
+- The Codex P2 concern this was originally fixing (caller-vs-engine drift) is now moot — PR #104 removed v1 so every consumer pins to `@main`, and engine-on-main matches caller-on-main automatically.
+
+**Deferred / Next:**
+
+- **User to verify:** trigger `unfinished-work-scout` on social-media-content. Should now succeed — engine checkout uses `main`, agent runs with 30-turn cap.
+- **Lesson for future code review acceptance:** verify reviewer suggestions against actual docs/behavior before implementing, especially for context-variable semantics. I accepted Codex's `workflow_sha` suggestion based on first-principles reasoning instead of checking the docs.
+
+**Next session should start with:** if the scout finally runs green, this whole arc (stale tag → workflow_sha → turn cap → tag removal → workflow_sha revert) is closed and `social-media-content` + `caliente-booking-app` are fully operational. If still failing, the next failure mode is brand-new and unrelated.
+
+---
+
 ## 2026-05-23 16:45 UTC — interactive — v1 tag removal complete (consumer PRs merged, tag deleted)
 
 **Trigger:** Both consumer rollout PRs merged: [social-media-content#1](https://github.com/alizaouane/social-media-content/pull/1) and [caliente-booking-app#158](https://github.com/alizaouane/caliente-booking-app/pull/158). Audit confirmed 0 remaining `@v1` references across either consumer (11 workflows, all on `@main`).
