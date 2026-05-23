@@ -1,5 +1,30 @@
 # Session Log
 
+## 2026-05-23 15:44 UTC — interactive — unstick consumer bug-scout: v1 force-move + workflow_sha binding (PR #102)
+
+**Trigger:** User showed a screenshot of `dev-agent · bug-scout #10` failing on `alizaouane/social-media-content` with "still having this bug" — the same `ERR_MODULE_NOT_FOUND` for `lib/cli/config-to-json.ts` that the May 20 SESSION_LOG entry said was fixed.
+
+**What changed:**
+
+- **Root cause:** The May 19 fix [1643a62](https://github.com/alizaouane/dev-agent/commit/1643a62) (`fix(workflows): scout phases check out dev-agent engine for lib/cli tooling`) landed on `main` but the `v1` tag still pointed at the May 8 commit `2707f48` (PR #82). Consumer wrappers pin to `@v1`, so every scheduled run for 5+ consecutive days picked up the pre-fix version. `main` was **160 commits ahead of v1**. Verified via `git merge-base --is-ancestor 1643a62 v1` → NO.
+- **Immediate fix (out-of-band):** Force-moved `v1` to current main HEAD `3aae848` via `git tag -f v1 main && git push -f origin v1`. Every consumer immediately picks up the engine fix on next scheduled run, no per-consumer change needed.
+- **Forward-looking hygiene** ([PR #102](https://github.com/alizaouane/dev-agent/pull/102), merged as [cc3139f](https://github.com/alizaouane/dev-agent/commit/cc3139f)): swapped the 11 internal `ref: v1` engine-checkout pins in `.github/workflows/phase-*.yml` to `ref: ${{ github.workflow_sha }}` — engine scripts now always come from the same commit as the reusable workflow YAML, regardless of how the caller pins (tag/branch/SHA). Eliminates the tag-vs-engine drift class entirely.
+- **Codex P2 review item resolved:** the original `ref: main` proposal would have reintroduced drift if a caller pinned to a tag; switched to `github.workflow_sha` instead. Per-thread reply + PR summary comment posted.
+- **CI iteration:** initial attempt also changed consumer templates from `@v1` → `@main` to "remove version pinning". Two test suites caught this: `tests/unit/web-app-template.test.ts` (the `@v\d+` pin policy) and `tests/unit/wire-up-template-drift.test.ts` (the embedded wire-up copy still uses `@v1`). Reverted the template changes — `@v1` now means "latest" by convention since v1 tracks main HEAD.
+- **Bug detected during the revert:** my glob `dev-agent-*.yml` skipped the main wrapper `dev-agent.yml` (no hyphen after `dev-agent`). CI caught it, follow-up commit [7b7380d](https://github.com/alizaouane/dev-agent/commit/7b7380d) fixed.
+- Final shape: 4 commits, 734/734 vitest tests pass, CI green.
+
+**Deferred / Next:**
+
+- **Convention:** going forward, when fixes land on main that need to reach consumers, force-move `v1` to current main HEAD. This is now the standard pattern.
+- **Workflow_sha self-reference:** when phase-*.yml runs (called from a consumer), `github.workflow_sha` resolves to the SHA of the called phase YAML. If `main` rolls forward mid-run, this guarantees in-run consistency. Behavior validated by reading [GitHub docs](https://docs.github.com/en/actions/reference/contexts-reference#github-context); not yet observed in a real failing case.
+- **`v1` tag deletion deferred:** the user originally suggested removing v1 entirely. Kept it as the rolling stable reference instead — matches the codebase's pinned-tag policy (enforced by `web-app-template.test.ts`) and only requires a periodic tag move rather than rewriting every consumer's deployed YAML.
+- **Verification still needed:** I couldn't re-trigger the failing bug-scout on `social-media-content` from this session (classifier blocked cross-repo workflow_dispatch). User to verify by clicking "Run workflow" on https://github.com/alizaouane/social-media-content/actions/workflows/dev-agent-bug-scout.yml — should turn green within ~60s. Otherwise tomorrow's 09:00 UTC scheduled run will be the natural test.
+
+**Next session should start with:** if user reports the consumer bug-scout is now green, archive the issue. If still failing, the next investigation step is `gh run view <new-run-id> --log-failed` to see whether it's the same ERR_MODULE_NOT_FOUND (means v1 didn't roll the way I think it did) or a different error (new bug).
+
+---
+
 ## 2026-05-23 11:25 UTC — interactive — dashboard UX brand + inline help + nav restructure (PR #101)
 
 **Trigger:** User: "brainstorm getting the UX more user friendly and increasing navigability and ensure it is crystal clear how the app works, now I am getting lost and confused, add some info ? to explain things so the user dont get confused. aligned the UX colour and all with https://www.qualiency.com/"
