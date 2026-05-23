@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { getOctokit } from '@/lib/gh';
 import { PageHeader } from '@/components/ui/page-header';
+import { Button } from '@/components/ui/button';
 import { listAllowedRepos } from '@/lib/repos';
 import { loadOverrideEvents } from '@/lib/dashboard/override-events';
 import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
@@ -115,10 +116,25 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     <div className="flex flex-col gap-10">
       <SetupChecklist repoName={name} steps={setupSteps} />
       {/* Band 1 — Repo header */}
-      <PageHeader
-        title={name}
-        descriptor="Everything about this repo on one page."
-      />
+      <div>
+        <PageHeader
+          title={name}
+          descriptor="Everything about this repo on one page."
+          actions={
+            <Button asChild size="lg" variant="accent">
+              <Link href={`/intent?repo=${encodeURIComponent(name)}`} data-no-style>
+                Brainstorm new work on {name}
+              </Link>
+            </Button>
+          }
+        />
+        <p className="-mt-4 mb-2 text-xs text-muted-foreground">
+          {repo.wired_up ? 'Wired ✓' : 'Not wired'} · default branch {repo.default_branch} ·{' '}
+          <a href={repo.html_url} target="_blank" rel="noreferrer noopener" data-no-style className="underline hover:text-foreground">
+            GitHub
+          </a>
+        </p>
+      </div>
 
       {/* Band 2 — In flight */}
       <section>

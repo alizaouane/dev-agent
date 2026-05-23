@@ -2,7 +2,7 @@
 
 import * as Popover from '@radix-ui/react-popover';
 import * as Tooltip from '@radix-ui/react-tooltip';
-import { GLOSSARY, type TermKey } from '@/lib/glossary';
+import { GLOSSARY, type GlossaryEntry, type TermKey } from '@/lib/glossary';
 import { cn } from '@/lib/utils';
 
 type TermProps = {
@@ -18,7 +18,7 @@ type TermProps = {
 };
 
 export function Term({ k, label, variant = 'inline', className }: TermProps) {
-  const entry = GLOSSARY[k as keyof typeof GLOSSARY] as (typeof GLOSSARY)[keyof typeof GLOSSARY] | undefined;
+  const entry: GlossaryEntry | undefined = GLOSSARY[k as keyof typeof GLOSSARY];
 
   // Warn synchronously in dev so the warning is observable in the same render
   // tick within tests (avoids flakiness from useEffect async scheduling).

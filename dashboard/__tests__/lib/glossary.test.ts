@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { GLOSSARY } from '@/lib/glossary';
+import { GLOSSARY, type GlossaryEntry } from '@/lib/glossary';
 
 describe('GLOSSARY', () => {
   it('has at least one entry', () => {
@@ -28,7 +28,7 @@ describe('GLOSSARY', () => {
   });
 
   it('every optional `link` is a non-empty string when present', () => {
-    for (const [key, entry] of Object.entries(GLOSSARY)) {
+    for (const [key, entry] of Object.entries(GLOSSARY) as Array<[string, GlossaryEntry]>) {
       if (entry.link !== undefined) {
         expect(entry.link, `${key}.link`).toMatch(/^.+/);
       }

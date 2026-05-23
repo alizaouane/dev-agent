@@ -138,9 +138,20 @@ export default async function ProposalsPage(props: {
   return (
     <div>
       <PageHeader
-        title="Proposals"
-        descriptor="Ranked list of scout suggestions."
+        title={scopedRepo ? `Proposals · ${scopedRepo.owner}/${scopedRepo.name}` : 'Proposals'}
+        descriptor={
+          scopedRepo
+            ? `What the PM agent thinks you should consider doing next in ${scopedRepo.owner}/${scopedRepo.name}.`
+            : 'Ranked list of scout suggestions across your wired repos. Carry-over commitments rank above new ideas.'
+        }
         helpTerm="proposals-page"
+        actions={
+          scopedRepo ? (
+            <Link href="/proposals" data-no-style className="text-sm underline">
+              View all repos
+            </Link>
+          ) : undefined
+        }
       />
       {repoParamUnmatched ? (
         <p className="mb-4 rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-2 text-sm">
