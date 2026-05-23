@@ -1,5 +1,25 @@
 # Session Log
 
+## 2026-05-23 16:45 UTC — interactive — v1 tag removal complete (consumer PRs merged, tag deleted)
+
+**Trigger:** Both consumer rollout PRs merged: [social-media-content#1](https://github.com/alizaouane/social-media-content/pull/1) and [caliente-booking-app#158](https://github.com/alizaouane/caliente-booking-app/pull/158). Audit confirmed 0 remaining `@v1` references across either consumer (11 workflows, all on `@main`).
+
+**What changed:**
+
+- Both consumers now track `alizaouane/dev-agent@main` directly. No more manual tag-rolling.
+- `v1` tag deleted from `alizaouane/dev-agent` origin and local (was `0b9d4f6`). Confirmed via `git tag -l` — only `v0.1.0`–`v0.5.0` remain (historical, unreferenced).
+- The full v1 removal arc this session: dev-agent PR #102 (`workflow_sha` engine binding) → PR #103 (turn-cap fix that triggered the second stale-v1 incident) → PR #104 (drop v1 from dev-agent templates + tests) → consumer PRs (`smc#1`, `cba#158`) → tag deletion. End-to-end ~2 hours.
+
+**Deferred / Next:**
+
+- **Verify next scout runs go green** on both consumers. social-media-content's `dev-agent-unfinished-work-scout` hit the 25-cap before merge — it should now succeed at 30 because `@main` resolves to PR #103's bump.
+- **Convention going forward:** every new wired consumer (via the dashboard's wire-up flow) installs templates already on `@main` — no v1 in the embedded copy. No future stale-tag bugs possible.
+- **Open question:** is the `phase-*.yml` internal `ref: ${{ github.workflow_sha }}` binding still strictly necessary now that no consumer references a fixed tag? Probably yes — it still guards against the case where `main` rolls forward mid-run between the outer YAML fetch and the engine-checkout step. Keep.
+
+**Next session should start with:** if user reports scout runs are green on both consumers, this whole thread is closed. If still failing, the next debug step is per-workflow log inspection (different bug, not stale-tag).
+
+---
+
 ## 2026-05-23 16:31 UTC — interactive — drop v1 pin from templates + tests (PR #104)
 
 **Trigger:** After force-moving `v1` twice in one session (to ship the bug-scout engine-checkout fix from PR #102, then the turn-cap fix from PR #103), the user asked: "can we get rid of this label for good? I don't see a need for this." Stale-tag was a chronic cost without offsetting protection for a single-org tool.
