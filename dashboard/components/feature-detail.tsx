@@ -1,6 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Term } from '@/components/ui/term';
+import { renderStateBadgeContent } from '@/lib/state-label';
 import {
   Table,
   TableBody,
@@ -47,14 +48,7 @@ export function FeatureDetail({
         <CardHeader>
           <div className="flex flex-wrap items-center gap-3">
             <CardTitle>{issue.title}</CardTitle>
-            <Badge variant="secondary">
-              {(() => {
-                const stateLabel = issue.state.replace('state:', '');
-                if (stateLabel === 'tier2-smoke') return <Term k="tier2-smoke" label={stateLabel} />;
-                if (/^gate[\s-]?b$/i.test(stateLabel)) return <Term k="gate-b" label={stateLabel} />;
-                return stateLabel;
-              })()}
-            </Badge>
+            <Badge variant="secondary">{renderStateBadgeContent(issue.state)}</Badge>
             <span className="text-sm text-muted-foreground">
               {repo} #{issue.number}
             </span>

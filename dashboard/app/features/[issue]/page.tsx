@@ -105,7 +105,9 @@ export default async function FeaturePage(props: {
         title={issueData.title || `#${issue_number}`}
         descriptor={
           issueData.state === 'closed'
-            ? 'Shipped — verification chips below show what was green at merge.'
+            ? issueData.state_reason === 'not_planned'
+              ? 'Closed without shipping (not planned, duplicate, or won’t fix).'
+              : 'Shipped — verification chips below show what was green at merge.'
             : stateLabel?.includes('gate-b')
               ? 'Awaiting your review at Gate B.'
               : 'In progress — current step shown below.'

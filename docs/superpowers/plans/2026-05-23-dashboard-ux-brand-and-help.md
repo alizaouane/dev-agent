@@ -20,7 +20,7 @@
 - [ ] **Step 1: Create the feature branch from current HEAD**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git checkout -b feat/dashboard-ux-brand-help
 ```
 
@@ -29,7 +29,7 @@ git checkout -b feat/dashboard-ux-brand-help
 `<Term>` uses Radix Popover (click-to-open card). Radix Tooltip and Dialog are already in deps; Popover is not.
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm install @radix-ui/react-popover@^1.1.15
 ```
 
@@ -38,7 +38,7 @@ Expected: `package.json` adds `"@radix-ui/react-popover": "^1.1.15"` under `depe
 - [ ] **Step 3: Verify build still works**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run typecheck
 ```
 
@@ -47,7 +47,7 @@ Expected: exit 0, no errors.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/package.json dashboard/package-lock.json
 git commit -m "chore(dashboard): add @radix-ui/react-popover for <Term> popovers"
 ```
@@ -129,7 +129,7 @@ Open [dashboard/app/globals.css](../../dashboard/app/globals.css) and replace th
 - [ ] **Step 2: Boot the dev server and visually sanity-check**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run dev
 ```
 
@@ -145,7 +145,7 @@ Kill the dev server (Ctrl-C) once verified.
 - [ ] **Step 3: Run existing tests**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test
 ```
 
@@ -154,7 +154,7 @@ Expected: all existing tests pass (no test depends on specific color values).
 - [ ] **Step 4: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/app/globals.css
 git commit -m "feat(dashboard): swap palette to Qualiency tokens (navy + teal)"
 ```
@@ -180,7 +180,7 @@ The block should now contain `default`, `destructive`, `outline`, `secondary`, `
 - [ ] **Step 2: Type-check**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run typecheck
 ```
 
@@ -189,7 +189,7 @@ Expected: exit 0.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/ui/button.tsx
 git commit -m "feat(dashboard): add Button variant=\"accent\" (teal CTA)"
 ```
@@ -263,7 +263,7 @@ describe('GLOSSARY', () => {
 - [ ] **Step 2: Run the test and confirm it fails**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/lib/glossary.test.ts
 ```
 
@@ -399,7 +399,7 @@ export type TermKey = keyof typeof GLOSSARY;
 - [ ] **Step 4: Run the test and confirm it passes**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/lib/glossary.test.ts
 ```
 
@@ -408,7 +408,7 @@ Expected: PASS, 6 tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/lib/glossary.ts dashboard/__tests__/lib/glossary.test.ts
 git commit -m "feat(dashboard): glossary single-source-of-truth for jargon terms"
 ```
@@ -479,7 +479,7 @@ describe('<Term>', () => {
 - [ ] **Step 2: Run the tests and confirm they fail**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/term.test.tsx
 ```
 
@@ -603,7 +603,7 @@ export function Term({ k, label, variant = 'inline', className }: TermProps) {
 - [ ] **Step 4: Run the tests and confirm they pass**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/term.test.tsx
 ```
 
@@ -612,7 +612,7 @@ Expected: PASS, 6 tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/ui/term.tsx dashboard/__tests__/components/term.test.tsx
 git commit -m "feat(dashboard): <Term> primitive (hover tooltip + click popover)"
 ```
@@ -663,7 +663,7 @@ describe('<PageHeader>', () => {
 - [ ] **Step 2: Run the tests and confirm they fail**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/page-header.test.tsx
 ```
 
@@ -705,7 +705,7 @@ export function PageHeader({ title, descriptor, helpTerm, actions }: PageHeaderP
 - [ ] **Step 4: Run the tests and confirm they pass**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/page-header.test.tsx
 ```
 
@@ -714,7 +714,7 @@ Expected: PASS, 4 tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/ui/page-header.tsx dashboard/__tests__/components/page-header.test.tsx
 git commit -m "feat(dashboard): <PageHeader> with title, descriptor, helpTerm, actions"
 ```
@@ -804,7 +804,7 @@ describe('crumbsForPath', () => {
 - [ ] **Step 2: Run the tests and confirm they fail**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/breadcrumbs.test.tsx
 ```
 
@@ -906,7 +906,7 @@ export function AutoBreadcrumbs() {
 - [ ] **Step 4: Run the tests and confirm they pass**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/breadcrumbs.test.tsx
 ```
 
@@ -915,7 +915,7 @@ Expected: PASS, 7 tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/ui/breadcrumbs.tsx dashboard/__tests__/components/breadcrumbs.test.tsx
 git commit -m "feat(dashboard): <Breadcrumbs> + crumbsForPath route mapping"
 ```
@@ -969,7 +969,7 @@ describe('<NavLinks>', () => {
 - [ ] **Step 2: Run the test and confirm it fails**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/nav-header.test.tsx
 ```
 
@@ -1138,7 +1138,7 @@ import { NavHeader } from '@/components/nav-header.server';
 - [ ] **Step 6: Run all tests**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test
 ```
 
@@ -1147,7 +1147,7 @@ Expected: all tests pass, including the updated nav-header test.
 - [ ] **Step 7: Boot dev server and visually verify**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run dev
 ```
 
@@ -1162,7 +1162,7 @@ Kill dev server.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/nav-header.tsx \
         dashboard/components/nav-header.server.tsx \
         dashboard/app/layout.tsx \
@@ -1332,7 +1332,7 @@ If `issueData.title` is empty for any reason, fall back to `#${issue_number}` â€
 - [ ] **Step 10: Type-check and run all tests**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run typecheck && npm test
 ```
 
@@ -1341,7 +1341,7 @@ Expected: exit 0, all tests pass.
 - [ ] **Step 11: Boot dev server and visually verify**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run dev
 ```
 
@@ -1352,7 +1352,7 @@ Kill dev server.
 - [ ] **Step 12: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/app/page.tsx \
         dashboard/app/repos/page.tsx \
         dashboard/app/repos/\[name\]/page.tsx \
@@ -1417,7 +1417,7 @@ If a heading on the page doesn't have a glossary key (e.g., "Settings", "Cost (t
 - [ ] **Step 3: Type-check**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run typecheck
 ```
 
@@ -1426,7 +1426,7 @@ Expected: exit 0.
 - [ ] **Step 4: Boot dev server and visually verify**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run dev
 ```
 
@@ -1435,7 +1435,7 @@ On Home, every band heading except "Your repos" has a `(?)` bubble next to it. H
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/app/page.tsx dashboard/app/repos/\[name\]/page.tsx
 git commit -m "feat(dashboard): band (?) icons on Home + Repo workspace"
 ```
@@ -1479,7 +1479,7 @@ Open `dashboard/components/verification-posture-strip.tsx`. Add the import, then
 - [ ] **Step 3: Run existing verification tests**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/verification-badges.test.tsx __tests__/components/verification-posture-strip.test.tsx
 ```
 
@@ -1490,7 +1490,7 @@ Expected: PASS.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/verification-badges.tsx dashboard/components/verification-posture-strip.tsx
 git commit -m "feat(dashboard): <Term> in verification badges + posture strip"
 ```
@@ -1540,7 +1540,7 @@ Open `dashboard/components/inbox-item.tsx`. Add the import. Wrap any visible gat
 - [ ] **Step 6: Run all tests**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test
 ```
 
@@ -1549,7 +1549,7 @@ Expected: all pass. If a card/detail/inbox test asserts on text via `getByText`,
 - [ ] **Step 7: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/feature-card.tsx \
         dashboard/components/feature-detail.tsx \
         dashboard/components/run-progress.tsx \
@@ -1586,7 +1586,7 @@ Open `dashboard/components/setup-checklist.tsx`. Add the import. Wrap `"wire-up"
 - [ ] **Step 4: Run all tests**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test
 ```
 
@@ -1595,7 +1595,7 @@ Expected: all pass.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/repo-card.tsx \
         dashboard/components/install-workflow-panel.tsx \
         dashboard/components/setup-checklist.tsx
@@ -1642,7 +1642,7 @@ describe('<HelpPanel>', () => {
 - [ ] **Step 2: Run the test and confirm it fails**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/help-panel.test.tsx
 ```
 
@@ -1736,7 +1736,7 @@ export function HelpPanel() {
 - [ ] **Step 4: Run the test and confirm it passes**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm test -- __tests__/components/help-panel.test.tsx
 ```
 
@@ -1745,7 +1745,7 @@ Expected: PASS, 2 tests.
 - [ ] **Step 5: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/components/help-panel.tsx dashboard/__tests__/components/help-panel.test.tsx
 git commit -m "feat(dashboard): embed full glossary inside HelpPanel drawer"
 ```
@@ -1808,7 +1808,7 @@ test.describe('UX â€” brand + help + nav', () => {
 - [ ] **Step 2: Run the spec (requires the dev server to start automatically per `playwright.config.ts`)**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run test:e2e -- ux-brand-help
 ```
 
@@ -1819,7 +1819,7 @@ If a test fails because the loaded Home requires GitHub auth, scope to `chromium
 - [ ] **Step 3: Commit**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git add dashboard/__tests__/e2e/ux-brand-help.spec.ts
 git commit -m "test(dashboard): playwright smoke for nav + help + brand"
 ```
@@ -1831,7 +1831,7 @@ git commit -m "test(dashboard): playwright smoke for nav + help + brand"
 - [ ] **Step 1: Run the full vitest suite + typecheck**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run typecheck && npm test
 ```
 
@@ -1840,7 +1840,7 @@ Expected: both exit 0.
 - [ ] **Step 2: Manual visual sweep**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent/dashboard"
+cd dashboard
 npm run dev
 ```
 
@@ -1858,7 +1858,7 @@ Kill dev server.
 - [ ] **Step 3: Push branch and open PR**
 
 ```bash
-cd "/Users/alizaouane/Documents/Qualiency/Software Dev/dev-agent"
+cd .  # repo root
 git push -u origin feat/dashboard-ux-brand-help
 gh pr create --title "feat(dashboard): brand refresh + inline help + nav restructure" --body "$(cat <<'EOF'
 ## Summary

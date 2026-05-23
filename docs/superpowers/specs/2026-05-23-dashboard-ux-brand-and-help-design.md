@@ -133,7 +133,7 @@ Rewrite `dashboard/components/nav-header.tsx`.
 
 ### Visual shape
 
-```
+```text
 ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
 │ ◆ dev-agent    Home · Repos · Brainstorm    │    WORK  Pipeline · Proposals    INSIGHTS  Activity · Cost          [Brainstorm new work →]   (?)   @ali │
 │                ━━━━                                                                                                                                       │ ← teal underline marks active page
@@ -349,7 +349,7 @@ export function PageHeader({ title, descriptor, helpTerm, actions }: PageHeaderP
 ```
 
 Shape:
-```
+```text
 Home  (?)                                                       [Brainstorm new work →]
 Everything that needs you across your wired repos, oldest first.
 ```
