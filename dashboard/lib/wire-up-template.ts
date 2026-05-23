@@ -730,7 +730,7 @@ jobs:
           # canonical link. The runbook previously documented an HTML-comment
           # workaround for this; this fix removes the need for the workaround.
           SPEC=$(gh issue view "$ISSUE" --repo "$REPO" --json body --jq '.body' 2>/dev/null \
-            | awk '/^\`\`\`/ { skip = !skip; next } !skip' \
+            | awk '/^ {0,3}(\`\`\`|~~~)/ { skip = !skip; next } !skip' \
             | sed 's/\`[^\`]*\`//g' \
             | grep -oE 'docs/specs/[a-zA-Z0-9._/-]+\.md' | head -1 || true)
           if [ -z "$SPEC" ]; then
