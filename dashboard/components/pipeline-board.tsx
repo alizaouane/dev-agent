@@ -1,3 +1,5 @@
+// no glossary terms in user-visible strings — column headings are state labels
+// (spec-ready, implementing, pr-review, etc.) which don't match any glossary key.
 import Link from 'next/link';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';

@@ -1,5 +1,7 @@
 'use client';
 
+// no glossary terms in user-visible strings
+
 import { useState } from 'react';
 import { RunProgress } from '@/components/run-progress';
 

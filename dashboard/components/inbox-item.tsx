@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Term } from '@/components/ui/term';
 import type { FeatureItem } from '@/lib/pipeline';
 import { approveGate, abandonFeature } from '@/lib/actions';
 
@@ -31,7 +32,14 @@ export function InboxItem({ item }: { item: FeatureItem }) {
             {item.title}
           </Link>
           <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-            <Badge variant="secondary">{item.state.replace('state:', '')}</Badge>
+            <Badge variant="secondary">
+              {(() => {
+                const stateLabel = item.state.replace('state:', '');
+                if (stateLabel === 'tier2-smoke') return <Term k="tier2-smoke" label={stateLabel} />;
+                if (/^gate[\s-]?b$/i.test(stateLabel)) return <Term k="gate-b" label={stateLabel} />;
+                return stateLabel;
+              })()}
+            </Badge>
             <span>{item.repo}</span>
             <span>#{item.issue_number}</span>
             <span>{ageLabel(item.age_seconds)} old</span>

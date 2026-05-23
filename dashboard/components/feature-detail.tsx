@@ -1,5 +1,6 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
+import { Term } from '@/components/ui/term';
 import {
   Table,
   TableBody,
@@ -10,6 +11,14 @@ import {
 } from '@/components/ui/table';
 import type { ParsedTelemetry } from '@/lib/telemetry';
 import { PILLAR_LABELS, type PillarId, type VerificationOutcome } from '@/lib/verification/types';
+import type { TermKey } from '@/lib/glossary';
+
+/** Map pillar IDs that have a glossary entry to their TermKey. */
+const PILLAR_TERM: Partial<Record<PillarId, TermKey>> = {
+  gate_b: 'gate-b',
+  audit_p4: 'pillar-4',
+  risk_p5: 'pillar-5',
+};
 
 type IssueShape = {
   number: number;
@@ -38,7 +47,14 @@ export function FeatureDetail({
         <CardHeader>
           <div className="flex flex-wrap items-center gap-3">
             <CardTitle>{issue.title}</CardTitle>
-            <Badge variant="secondary">{issue.state.replace('state:', '')}</Badge>
+            <Badge variant="secondary">
+              {(() => {
+                const stateLabel = issue.state.replace('state:', '');
+                if (stateLabel === 'tier2-smoke') return <Term k="tier2-smoke" label={stateLabel} />;
+                if (/^gate[\s-]?b$/i.test(stateLabel)) return <Term k="gate-b" label={stateLabel} />;
+                return stateLabel;
+              })()}
+            </Badge>
             <span className="text-sm text-muted-foreground">
               {repo} #{issue.number}
             </span>
@@ -113,7 +129,10 @@ export function FeatureDetail({
                   className="rounded border border-border p-3"
                 >
                   <summary className="cursor-pointer text-sm font-medium">
-                    {PILLAR_LABELS[o.pillar]} — {o.status} — {o.summary}
+                    {PILLAR_TERM[o.pillar]
+                      ? <Term k={PILLAR_TERM[o.pillar]!} label={PILLAR_LABELS[o.pillar]} />
+                      : PILLAR_LABELS[o.pillar]}{' '}
+                    — {o.status} — {o.summary}
                   </summary>
                   <div className="mt-2 text-sm text-muted-foreground">
                     Ran at {o.ran_at}.{' '}

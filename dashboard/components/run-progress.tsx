@@ -1,5 +1,7 @@
 'use client';
 
+// no glossary terms in user-visible strings
+
 import { useEffect, useState } from 'react';
 
 type StepDetail = {
