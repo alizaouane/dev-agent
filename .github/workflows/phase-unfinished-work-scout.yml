@@ -93,7 +93,8 @@ jobs:
       # lib/cli tooling. The reusable-workflow YAML ships from dev-agent but
       # its scripts don't, so check the engine out separately into a subdir
       # (excluded from git state so it can't dirty the consumer's tree).
-      # Pinned to v1 to match how consumers pin this reusable workflow.
+      # Pinned to the same SHA as the caller's YAML via github.workflow_sha, so the
+      # engine scripts always match the YAML revision (no tag-vs-main drift).
       - name: Reserve engine checkout from git state
         run: echo '.dev-agent-engine/' >> .git/info/exclude
 
@@ -101,7 +102,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: alizaouane/dev-agent
-          ref: main
+          ref: ${{ github.workflow_sha }}
           path: .dev-agent-engine
 
       - uses: actions/setup-node@v4
