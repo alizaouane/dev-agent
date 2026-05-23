@@ -54,7 +54,7 @@ permissions:
 jobs:
   implement:
     if: inputs.phase == 'implement'
-    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@main
+    uses: alizaouane/dev-agent/.github/workflows/phase-implement.yml@v1
     with:
       # fromJSON forces a number — `${{ inputs.issue_number }}` is
       # serialized as a string when forwarded to a typed reusable
@@ -67,7 +67,7 @@ jobs:
 
   staging-deploy:
     if: inputs.phase == 'staging-deploy'
-    uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@main
+    uses: alizaouane/dev-agent/.github/workflows/phase-staging-deploy.yml@v1
     with:
       # fromJSON forces a number — `${{ inputs.issue_number }}` is
       # serialized as a string when forwarded to a typed reusable
@@ -87,7 +87,7 @@ jobs:
 
   promote-to-prod:
     if: inputs.phase == 'promote-to-prod'
-    uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@main
+    uses: alizaouane/dev-agent/.github/workflows/phase-promote-to-prod.yml@v1
     with:
       # fromJSON forces a number — `${{ inputs.issue_number }}` is
       # serialized as a string when forwarded to a typed reusable
@@ -100,7 +100,7 @@ jobs:
 
   rollback:
     if: inputs.phase == 'rollback'
-    uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@main
+    uses: alizaouane/dev-agent/.github/workflows/phase-rollback.yml@v1
     with:
       # fromJSON forces a number — `${{ inputs.issue_number }}` is
       # serialized as a string when forwarded to a typed reusable
