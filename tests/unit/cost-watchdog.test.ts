@@ -62,14 +62,17 @@ describe('aggregateCostFromComments', () => {
     expect(breakdown.total).toBe(0);
   });
 
-  it('skips comments with non-finite or negative cost_usd', () => {
+  it('skips comments with non-finite, negative, or implausibly-large cost_usd', () => {
     const issues = [{
       number: 1, title: 'x', comments: [
         // parseTelemetry accepts numeric strings; cap-evasion attempts with
-        // NaN/Infinity/negative values must not be summed into totals.
+        // NaN/Infinity/negative/implausibly-large values must not be summed.
         { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $NaN\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
         { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $Infinity\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
         { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $-50\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
+        // Forged-looking absurd value — must be dropped (forged telemetry
+        // could otherwise inflate MTD into a false `budget-exhausted`).
+        { body: `🤖 Phase: phase-implement\nModel: claude-opus-4-7\nTokens: 1 in / 1 out\nCost: $9999999\nStatus: completed`, created_at: '2026-05-10T10:00:00Z' },
         { body: tg('phase-implement', 1.50), created_at: '2026-05-10T10:00:00Z' },
       ],
     }];
