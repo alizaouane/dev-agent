@@ -724,7 +724,14 @@ jobs:
           echo "staging_url=$STAGING_URL" >> "$GITHUB_OUTPUT"
 
           # --- spec_path ---
+          # Strip fenced code blocks (\`\`\`...\`\`\`) AND inline backtick segments
+          # (\`...\`) from the body before matching, so a stale spec reference
+          # inside example code or quoted text doesn't get picked before the
+          # canonical link. The runbook previously documented an HTML-comment
+          # workaround for this; this fix removes the need for the workaround.
           SPEC=$(gh issue view "$ISSUE" --repo "$REPO" --json body --jq '.body' 2>/dev/null \
+            | awk '/^\`\`\`/ { skip = !skip; next } !skip' \
+            | sed 's/\`[^\`]*\`//g' \
             | grep -oE 'docs/specs/[a-zA-Z0-9._/-]+\.md' | head -1 || true)
           if [ -z "$SPEC" ]; then
             BODY=$'🤖 Phase: tier2-smoke\nVerdict: skipped\n\nCould not find a \`docs/specs/*.md\` reference in the issue body. tier2-smoke needs the spec to author the Playwright probe. Add the spec link to the issue body and re-trigger by removing and re-adding the \`state:staging-deployed\` label.'
