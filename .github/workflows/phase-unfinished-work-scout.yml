@@ -204,6 +204,20 @@ jobs:
           echo "Findings: $FINDING_COUNT, scanned ~$SCANNED files"
           echo "Summary: $SUMMARY"
 
+          # Ensure required labels exist before filing issues. gh issue create
+          # fails the whole call if any --label refers to a label that doesn't
+          # exist in the consumer repo, and wire-up doesn't create them. Static
+          # label list; --force keeps color/description in sync if pre-existing.
+          ensure_label() {
+            gh label create "$1" --repo "$REPO_OWNER/$REPO_NAME" \
+              --color "${2:-fbca04}" --description "${3:-}" --force >/dev/null 2>&1 || true
+          }
+          ensure_label "kind:unfinished-work" "fbca04" "Unfinished work found by dev-agent unfinished-work-scout"
+          ensure_label "state:proposed" "c5def5" "Scout-proposed; needs human triage"
+          for CAT in stub half_shipped abandoned_migration untracked_spec skipped_test; do
+            ensure_label "unfinished-category:$CAT" "fbca04" ""
+          done
+
           printf '%s' "$AGENT_JSON" | jq -c '.findings[]' | while IFS= read -r FINDING; do
             TITLE=$(printf '%s' "$FINDING" | jq -r '.title')
             CAT=$(printf '%s' "$FINDING" | jq -r '.category')
