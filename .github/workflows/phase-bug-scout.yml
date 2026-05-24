@@ -213,17 +213,27 @@ jobs:
           }
           ensure_label "kind:bug-scout" "d73a4a" "Bug found by dev-agent bug-scout"
           ensure_label "state:proposed" "c5def5" "Scout-proposed; needs human triage"
-          for SEV in high medium low; do
+          for SEV in high medium low unknown; do
             ensure_label "severity:$SEV" "fbca04" ""
           done
-          for CAT in security broken_logic code_smell; do
+          for CAT in security broken_logic code_smell unknown; do
             ensure_label "bug-category:$CAT" "fbca04" ""
           done
+          # Normalize model output to the allowlist so an off-enum value
+          # (typo, new category the prompt didn't anticipate) can't make
+          # gh issue create fail on a missing label and silently drop the
+          # finding via `|| true`.
+          normalize_severity() {
+            case "$1" in high|medium|low) printf '%s' "$1" ;; *) printf 'unknown' ;; esac
+          }
+          normalize_bug_category() {
+            case "$1" in security|broken_logic|code_smell) printf '%s' "$1" ;; *) printf 'unknown' ;; esac
+          }
 
           printf '%s' "$AGENT_JSON" | jq -c '.findings[]' | while IFS= read -r FINDING; do
             TITLE=$(printf '%s' "$FINDING" | jq -r '.title')
-            SEV=$(printf '%s' "$FINDING" | jq -r '.severity')
-            CAT=$(printf '%s' "$FINDING" | jq -r '.category')
+            SEV=$(normalize_severity "$(printf '%s' "$FINDING" | jq -r '.severity')")
+            CAT=$(normalize_bug_category "$(printf '%s' "$FINDING" | jq -r '.category')")
             FILE=$(printf '%s' "$FINDING" | jq -r '.file')
             LINE=$(printf '%s' "$FINDING" | jq -r '.line // ""')
             DESC=$(printf '%s' "$FINDING" | jq -r '.description')
