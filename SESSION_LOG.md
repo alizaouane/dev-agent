@@ -1,5 +1,25 @@
 # Session Log
 
+## 2026-05-24 06:48 UTC — interactive — scouts auto-create labels + normalize off-enum output (PR #106)
+
+**Trigger:** After the v1 cleanup work landed, the user re-ran `unfinished-work-scout` on `social-media-content` and saw nothing new on `/proposals`. Investigation: the agent ran successfully, found 5 unfinished-work items in ~93 files, but **all 5 `gh issue create` calls silently failed** with `could not add label: 'kind:unfinished-work' not found`. Labels never existed in either consumer repo (wire-up doesn't create them); `gh issue create --label X` fails the whole call when X is missing and `|| true` swallowed the error.
+
+**What changed:**
+
+- **Immediate (out-of-band):** Created the 21 required labels in both `alizaouane/social-media-content` and `alizaouane/caliente-booking-app` via batch `gh label create` script. So today's pending scout findings can land.
+- **Structural ([PR #106](https://github.com/alizaouane/dev-agent/pull/106)) → merged as [bc20d0d](https://github.com/alizaouane/dev-agent/commit/bc20d0d):** Each scout (`phase-bug-scout.yml`, `phase-cleanup-scout.yml`, `phase-unfinished-work-scout.yml`) now starts its parse-and-file step with an `ensure_label` preamble that runs `gh label create --force` for the full enum set (idempotent — first run creates, subsequent runs keep description/color in sync). Self-healing: no consumer ever needs label-setup work again.
+- **CodeRabbit follow-up:** Initial fix preflight-created known labels but issue-filing still used raw model output for `$SEV`/`$CAT`. An off-enum value (typo, hallucination, new category the prompt didn't anticipate) would re-introduce the silent-drop class one layer deeper. Each scout now (1) ensures a `*:unknown` fallback label exists, and (2) normalizes the model's value through a shell `case` statement: documented values pass through, anything else maps to `unknown`. Off-enum findings still get filed (under `unknown`) for human triage.
+
+**Deferred / Next:**
+
+- **User verification:** re-trigger `unfinished-work-scout` on either consumer; expected behavior is 5 new GitHub issues labeled `kind:unfinished-work` + `state:proposed` + `unfinished-category:*`, surfacing on the dashboard's `/proposals` page alongside the 2 existing `PENDING SPEC` items.
+- **Possibly stale:** the agent's summary on the original successful run noted that the 2 `PENDING SPEC` items the user keeps seeing ("Social Media Audit", "Starter Content Pack") are *largely implemented* — the deterministic spec scout flags them only because no tracking issue was filed to mark them as in-flight. User can "File as scoping issue" to remove the noise.
+- **Convention:** wire-up still doesn't pre-create labels. Now self-healing on first scout run, so not urgent, but worth a future PR to make wire-up label-aware so the first-run delay is gone.
+
+**Next session should start with:** if user reports new GitHub issues appearing on the consumer + on the dashboard's /proposals, the whole multi-PR scout-fix arc (PRs #102–#106) is finally closed. If still nothing surfaces, next step is reading the new run's "Findings: N" line + the post-step exit-code chain to find the next silent failure mode.
+
+---
+
 ## 2026-05-23 16:49 UTC — interactive — fix engine-checkout ref (workflow_sha was wrong) (PR #105)
 
 **Trigger:** Right after v1 deletion, social-media-content's `unfinished-work-scout` failed with `fatal: remote error: upload-pack: not our ref 5207764a85842c28ccfe5d83f4b970629f67947e`. The SHA belonged to social-media-content's own wrapper YAML, not to dev-agent.
