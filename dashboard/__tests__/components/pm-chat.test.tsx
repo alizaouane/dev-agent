@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, type MockInstance } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 // Replace Radix Select (which doesn't render its portal reliably in jsdom)
@@ -310,7 +310,7 @@ describe('<PmChat> — Approve card surfaces the target repo', () => {
  * with the current `repo` state, so every request reads the latest value.
  */
 describe('<PmChat> — transport carries the current repo selection', () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let fetchSpy: MockInstance<typeof fetch>;
 
   beforeEach(() => {
     window.localStorage.clear();
