@@ -18,7 +18,7 @@ import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
-import { PILLAR_LABELS } from '@/lib/verification/types';
+import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
 const CLEANUP_WORKFLOW_PATH = '.github/workflows/dev-agent-cleanup-scout.yml';
@@ -220,9 +220,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
               {(Object.keys(workspace.pillars) as Array<keyof typeof workspace.pillars>).map((p) => (
                 <li key={p} className="flex items-center gap-2">
                   <span aria-hidden>{workspace.pillars[p] ? '✓' : '·'}</span>
-                  <span className={workspace.pillars[p] ? '' : 'text-muted-foreground'}>
-                    {PILLAR_LABELS[p]}
-                  </span>
+                  <Term
+                    k={PILLAR_TERM[p]}
+                    label={PILLAR_LABELS[p]}
+                    className={workspace.pillars[p] ? '' : 'text-muted-foreground'}
+                  />
                 </li>
               ))}
             </ul>

@@ -35,6 +35,11 @@ export const GLOSSARY = {
     short: 'The artifact bundle that proves a PR is safe to merge.',
     long: 'Every PR generates an EvidenceBundle: test output, audit reports, traces, and screenshots if applicable. Stored as a workflow artifact and summarized as a single Markdown comment on the PR.',
   },
+  'pillar-2': {
+    label: 'Evidence + Swarm Review (Pillar 2)',
+    short: 'EvidenceBundle artifact + multi-agent swarm review of the PR.',
+    long: 'Two halves in one pillar. (1) **EvidenceBundle**: every PR generates a bundle of test output, audit reports, traces, and screenshots, summarized as a Markdown comment on the PR. (2) **Swarm review**: a multi-agent reviewer reads the PR and that bundle, then signs off or blocks. Together they decide whether the PR is ready for Gate B.',
+  },
   'scout': {
     label: 'scout',
     short: 'Background source that proposes work for you.',
