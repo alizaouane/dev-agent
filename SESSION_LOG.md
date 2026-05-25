@@ -1,5 +1,26 @@
 # Session Log
 
+## 2026-05-25 08:21 UTC — interactive — Configured-pillars tooltips + surface Pillar 2's swarm-review (PR #107)
+
+**Trigger:** User pointed at the "Configured pillars" panel on the repo workspace page (Gate B / Audit / Evidence / Risk / Smoke) and asked what each pillar does + asked for inline info so they don't have to leave the page. Follow-up question: "where is code review in our pillar?" — answer revealed Pillar 2 was hiding the swarm-review half behind the "Evidence" label.
+
+**What changed:**
+
+- [PR #107](https://github.com/alizaouane/dev-agent/pull/107) → merged as [646ae02](https://github.com/alizaouane/dev-agent/commit/646ae02).
+- **Tooltips on every pillar** — wrapped each row of the "Configured pillars" list in [app/repos/[name]/page.tsx](dashboard/app/repos/[name]/page.tsx) with the existing `<Term>` primitive. Hover shows the one-line short; click opens the popover with the full explanation.
+- **Centralized PillarId → TermKey mapping** in [lib/verification/types.ts](dashboard/lib/verification/types.ts) as `PILLAR_TERM: Record<PillarId, TermKey>` (alongside `PILLAR_LABELS`). One source of truth.
+- **Consolidated feature-detail's local copy** of the same mapping (previously `Partial`, only covered 3 of 5 pillars) to use the shared full record. Removed the dead local declaration.
+- **Pillar 2 rename** — `PILLAR_LABELS.evidence_p2` from `"Evidence (Pillar 2)"` → `"Evidence + Swarm Review (Pillar 2)"`. New glossary entry `pillar-2` (label matches, long-text explains both halves: EvidenceBundle artifact + multi-agent swarm review). `PILLAR_TERM.evidence_p2` repointed at the new `pillar-2` entry so the popover header matches the panel label. Existing `evidence-bundle` entry left intact for inline noun usage.
+
+**Deferred / Next:**
+
+- **Pillar 6 (Self-review) and standalone `phase-pr-review.yml` are still not surfaced** as first-class pillars. They run, but the verification engine doesn't emit them as outcomes. Adding them would require: (1) extending `PILLAR_IDS` to include them, (2) updating phase-implement.yml to emit a Pillar 6 outcome, (3) wiring pr-review's outputs into the EvidenceBundle. Multi-file engine work; deferred.
+- **Pillars 1, 3, 8** — gaps in numbering. Pillar 1 is the ACM gate (lives inside phase-implement.yml, not surfaced). Pillars 3 and 8 don't appear in the codebase grep — likely never built or renumbered. Worth a docs cleanup pass on `docs/runbooks/enabling-verification-gates.md` and the pillar map.
+
+**Next session should start with:** if the user wants Pillar 6 / pr-review surfaced, that's the next engine PR. Otherwise the dashboard's "what does each pillar do?" affordance is now complete for the 5 surfaced pillars.
+
+---
+
 ## 2026-05-24 06:48 UTC — interactive — scouts auto-create labels + normalize off-enum output (PR #106)
 
 **Trigger:** After the v1 cleanup work landed, the user re-ran `unfinished-work-scout` on `social-media-content` and saw nothing new on `/proposals`. Investigation: the agent ran successfully, found 5 unfinished-work items in ~93 files, but **all 5 `gh issue create` calls silently failed** with `could not add label: 'kind:unfinished-work' not found`. Labels never existed in either consumer repo (wire-up doesn't create them); `gh issue create --label X` fails the whole call when X is missing and `|| true` swallowed the error.
