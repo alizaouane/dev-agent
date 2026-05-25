@@ -1,6 +1,33 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi, afterEach, type MockInstance } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+// Replace Radix Select (which doesn't render its portal reliably in jsdom)
+// with a native <select>. Behavior under test is the React state plumbing,
+// not Radix's listbox UI — and the production component still uses Radix.
+vi.mock('@/components/ui/select', () => {
+  type SelectProps = {
+    value: string;
+    onValueChange: (v: string) => void;
+    children: React.ReactNode;
+  };
+  return {
+    Select: ({ value, onValueChange, children }: SelectProps) => (
+      <select
+        data-testid="repo-select-mock"
+        value={value}
+        onChange={(e) => onValueChange(e.target.value)}
+      >
+        {children}
+      </select>
+    ),
+    SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => (
+      <option value={value}>{children}</option>
+    ),
+    SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+    SelectValue: () => null,
+  };
+});
 import { PmChat } from '@/components/pm-chat';
 import { DRAFT_STORAGE_KEY } from '@/lib/pm-chat-draft';
 import type { RepoInfo } from '@/lib/repos';
@@ -268,5 +295,78 @@ describe('<PmChat> — Approve card surfaces the target repo', () => {
     expect(
       screen.getByRole('button', { name: /Start on q\/whatsapp-console/i }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * Regression test for the misrouted-PM bug: the transport's body() closure
+ * captured the FIRST-render `repo` value. Switching the dropdown updated
+ * the displayed value (Approve card heading, etc.) but the streaming chat
+ * request still POSTed the original repo, so the PM agent loaded pm.md
+ * from the wrong repository and the user saw a response grounded in the
+ * wrong product domain.
+ *
+ * The fix routes the transport's body() through a ref that's kept in sync
+ * with the current `repo` state, so every request reads the latest value.
+ */
+describe('<PmChat> — transport carries the current repo selection', () => {
+  let fetchSpy: MockInstance<typeof fetch>;
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    // Stub the streaming endpoint with a minimal empty stream so the
+    // transport's fetch call resolves without hanging the test.
+    fetchSpy = vi.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(new ReadableStream({ start: (c) => c.close() }), {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    );
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it('POSTs the dropdown-selected repo, not the initial one', async () => {
+    const user = userEvent.setup();
+    // Start pinned to q/social-media via initialRepo so the post-switch
+    // assertion is unambiguous (any successful switch to whatsapp-console
+    // means the dropdown change really propagated through React state).
+    render(<PmChat repos={repos} initialRepo="q/social-media" />);
+
+    // Switch the dropdown to q/whatsapp-console via the mocked native select.
+    const select = screen.getByTestId('repo-select-mock') as HTMLSelectElement;
+    await user.selectOptions(select, 'q/whatsapp-console');
+
+    // Sanity-check the visible state actually flipped — the Approve card
+    // heading mirrors the selected repo, so use it as the post-switch
+    // signal before exercising the chat.
+    await waitFor(() =>
+      expect(
+        screen.getByRole('heading', {
+          name: /Approve and start implementation on q\/whatsapp-console/i,
+        }),
+      ).toBeInTheDocument(),
+    );
+
+    // Type a pitch and send it.
+    const input = screen.getByPlaceholderText(/describe the feature/i);
+    await user.type(input, 'help me start a feature');
+    const sendButton = screen.getByRole('button', { name: /^Send$/i });
+    await user.click(sendButton);
+
+    await waitFor(() => {
+      expect(fetchSpy).toHaveBeenCalled();
+    });
+
+    const call = fetchSpy.mock.calls.find(([url]) =>
+      typeof url === 'string' && url.endsWith('/api/pm-chat'),
+    );
+    expect(call, 'expected a POST to /api/pm-chat').toBeDefined();
+
+    const init = call![1] as RequestInit;
+    const body = JSON.parse(init.body as string);
+    expect(body.repo).toBe('q/whatsapp-console');
   });
 });

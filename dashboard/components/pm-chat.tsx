@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useRef, useState, useTransition } from 'react';
 import { useChat } from '@ai-sdk/react';
 import { DefaultChatTransport, safeValidateUIMessages, type UIMessage } from 'ai';
 import { Button } from '@/components/ui/button';
@@ -78,12 +78,26 @@ export function PmChat({
   // launch and the implementation landed on the wrong repository.
   const [pendingDraft, setPendingDraft] = useState<PersistedDraft | null>(null);
 
-  const transport = new DefaultChatTransport({
-    api: '/api/pm-chat',
-    // Forward the selected repo with every turn so the server can refresh
-    // the PM's context (pm.md + pipeline) for that specific repo.
-    body: () => ({ repo }),
-  });
+  // useChat constructs its internal Chat instance once and reuses it across
+  // renders, so a fresh `transport` per render would be ignored. We have to
+  // build the transport once. But `body: () => ({ repo })` would then close
+  // over the first-render `repo` value forever, and switching the dropdown
+  // mid-conversation wouldn't change what the API receives — causing the
+  // PM to keep loading pm.md from the original repo even after the user
+  // visibly switched. Route `repo` through a ref kept in sync via effect
+  // so the transport's body() always reads the latest selection.
+  const repoRef = useRef(repo);
+  useEffect(() => {
+    repoRef.current = repo;
+  }, [repo]);
+
+  const [transport] = useState(
+    () =>
+      new DefaultChatTransport({
+        api: '/api/pm-chat',
+        body: () => ({ repo: repoRef.current }),
+      }),
+  );
 
   const { messages, sendMessage, status, error, setMessages } = useChat({
     transport,
