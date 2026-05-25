@@ -8,7 +8,7 @@ export const PILLAR_LABELS: Record<PillarId, string> = {
   audit_p4: 'Audit (Pillar 4)',
   risk_p5: 'Risk (Pillar 5)',
   smoke_p7: 'Smoke (Pillar 7)',
-  evidence_p2: 'Evidence (Pillar 2)',
+  evidence_p2: 'Evidence + Swarm Review (Pillar 2)',
 };
 
 /** PillarId → glossary key. Use with <Term k={PILLAR_TERM[pillarId]} ...>
@@ -19,7 +19,7 @@ export const PILLAR_TERM: Record<PillarId, TermKey> = {
   audit_p4: 'pillar-4',
   risk_p5: 'pillar-5',
   smoke_p7: 'tier2-smoke',
-  evidence_p2: 'evidence-bundle',
+  evidence_p2: 'pillar-2',
 };
 
 const PILLAR_STATUSES = ['passed', 'blocked', 'advisory', 'failed', 'not_run'] as const;
