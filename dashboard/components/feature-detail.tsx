@@ -11,15 +11,7 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import type { ParsedTelemetry } from '@/lib/telemetry';
-import { PILLAR_LABELS, type PillarId, type VerificationOutcome } from '@/lib/verification/types';
-import type { TermKey } from '@/lib/glossary';
-
-/** Map pillar IDs that have a glossary entry to their TermKey. */
-const PILLAR_TERM: Partial<Record<PillarId, TermKey>> = {
-  gate_b: 'gate-b',
-  audit_p4: 'pillar-4',
-  risk_p5: 'pillar-5',
-};
+import { PILLAR_LABELS, PILLAR_TERM, type PillarId, type VerificationOutcome } from '@/lib/verification/types';
 
 type IssueShape = {
   number: number;
