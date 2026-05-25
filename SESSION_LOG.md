@@ -1,5 +1,29 @@
 # Session Log
 
+## 2026-05-25 11:12 UTC — interactive — fix PM chat sending wrong repo after dropdown switch (PR #108)
+
+**Trigger:** User: "in brainstorming I select social flux repo but the PM tell me it's grounded on another one." Investigation initially misread as a user/UX confusion (their local SocialFlux folder = github `social-media-content` via git remote), but the user pushed back: "you're wrong, I picked social media and the PM talks about booking app." That made it a real bug.
+
+**Root cause (self-inflicted, classic React stale-closure):** In [pm-chat.tsx](dashboard/components/pm-chat.tsx) the streaming transport was constructed every render as `new DefaultChatTransport({ body: () => ({ repo }) })`. But `useChat` from `@ai-sdk/react` v3 constructs its internal `Chat` instance once and reuses it across renders — so only the FIRST-render transport was ever used. Its `body()` closure captured the FIRST-render `repo` permanently. Switching the dropdown updated the visible UI (Approve card heading mirrored the new value) but the streaming POST kept sending the original repo, so `/api/pm-chat` loaded `pm.md` from the wrong repository and the PM responded grounded in caliente's product domain (Movra / studio booking) instead of social-media-content.
+
+This was a real regression of the misrouted-PR bug class. The existing `pm-chat.test.tsx` test (added in PR #83) covered the localStorage saveDraft path but not the live transport. The header comment in that test predicted exactly today's failure: *"Users would type a new feature intending repo A, but the dropdown had silently switched to repo B and the resulting issue + workflow + PR landed on the wrong repo."*
+
+**What changed:**
+
+- [PR #108](https://github.com/alizaouane/dev-agent/pull/108) → merged as [6f7e619](https://github.com/alizaouane/dev-agent/commit/6f7e619).
+- **Fix:** routed `repo` through a `useRef` kept in sync via `useEffect`, constructed the transport once with `useState(() => new DefaultChatTransport({ body: () => ({ repo: repoRef.current }) }))`. Every request now reads the live selection.
+- **Regression test:** added in `pm-chat.test.tsx`. Mocks `@/components/ui/select` at module level (Radix Select's portal doesn't render reliably in jsdom) so the dropdown can be driven by a native `<select>`. Test renders with `initialRepo="q/social-media"`, switches to `q/whatsapp-console`, sends a message, asserts the captured fetch POST body has `repo: "q/whatsapp-console"`. Verified the test fails on the pre-fix code and passes on the fix (manual stash + re-run).
+- **Typecheck fix:** explicit `MockInstance<typeof fetch>` annotation on `fetchSpy` (the generic `ReturnType<typeof vi.spyOn>` resolved too loose to hold fetch's signature).
+
+**Deferred / Next:**
+
+- **Lesson:** when state needs to reach an SDK that constructs its handler once, always route through a ref + effect. Pattern is now in this codebase; consider adding to the dashboard's `CLAUDE.md` or `docs/` if other similar SDK integrations appear.
+- The user should re-verify by visiting `/intent`, switching dropdown, and seeing the PM ground in the right repo. The fix is live as of merge — Vercel auto-deploys main.
+
+**Next session should start with:** if the user confirms the PM grounds correctly on the selected repo, this is closed. If still wrong, the next thing to inspect is whether the deployed Vercel build picked up the merge.
+
+---
+
 ## 2026-05-25 08:21 UTC — interactive — Configured-pillars tooltips + surface Pillar 2's swarm-review (PR #107)
 
 **Trigger:** User pointed at the "Configured pillars" panel on the repo workspace page (Gate B / Audit / Evidence / Risk / Smoke) and asked what each pillar does + asked for inline info so they don't have to leave the page. Follow-up question: "where is code review in our pillar?" — answer revealed Pillar 2 was hiding the swarm-review half behind the "Evidence" label.
