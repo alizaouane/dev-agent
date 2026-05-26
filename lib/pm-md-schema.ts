@@ -40,7 +40,7 @@ export type PmDecision = z.infer<typeof pmDecisionSchema>;
 /**
  * One competitor the PM should keep an eye on. The competitive scout
  * emits a "go review them" proposal per entry; the user clicks
- * "Discuss with PM" to dig in. Snooze handles re-surfacing noise.
+ * "Brainstorm in Claude Code" to dig in. Snooze handles re-surfacing noise.
  *
  * We store URL + name only at v1. Per-competitor `last_reviewed`
  * date or hash-of-content checks are reasonable future enhancements

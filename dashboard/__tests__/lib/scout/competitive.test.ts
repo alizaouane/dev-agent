@@ -64,7 +64,7 @@ competitors:
 
     // Without notes, falls back to the default "check what they shipped" copy.
     const dsp = proposals.find((p) => p.meta?.competitor_name === 'DanceStudio Pro')!;
-    expect(dsp.description).toContain('Click "Discuss with PM"');
+    expect(dsp.description).toContain('Click "Brainstorm in Claude Code"');
   });
 
   it('returns empty when pm.md has no competitors field', async () => {

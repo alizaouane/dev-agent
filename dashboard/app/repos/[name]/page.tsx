@@ -16,6 +16,7 @@ import { EmptyState } from '@/components/empty-state';
 import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
 import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
+import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
@@ -123,7 +124,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           descriptor="Everything about this repo on one page."
           actions={
             <Button asChild size="lg" variant="accent">
-              <Link href={`/intent?repo=${encodeURIComponent(name)}`} data-no-style>
+              <Link href="/intent" data-no-style>
                 Brainstorm new work on {name}
               </Link>
             </Button>
@@ -177,12 +178,13 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                     {p.title}
                   </a>
                 </div>
-                <Link
-                  href={`/intent?repo=${encodeURIComponent(name)}&prefill=${encodeURIComponent(p.title)}`}
-                  className="text-sm hover:underline"
-                >
-                  Discuss with PM
-                </Link>
+                {typeof p.meta?.issue_number === 'number' ? (
+                  <ProposalBrainstormButton issueNumber={p.meta.issue_number} />
+                ) : (
+                  <Link href="/intent" className="text-sm hover:underline">
+                    Brainstorm in Claude Code
+                  </Link>
+                )}
               </li>
             ))}
           </ul>
