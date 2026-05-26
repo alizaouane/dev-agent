@@ -178,10 +178,12 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
         run: |
           set -euo pipefail
           export PROMPT_VARS_JSON=$(jq -nc \
             --arg spec_path "$SPEC_PATH" \
+            --arg plan_path "${PLAN_PATH:-}" \
             --arg branch_name "feat/dev-agent-issue-${ISSUE_NUMBER}" \
             --argjson issue "$ISSUE_NUMBER" \
             --arg test "$(jq -r '.commands.test // "npm test"' /tmp/config.json)" \
@@ -192,7 +194,7 @@ jobs:
             --argjson maxfiles "$(jq -r '.guardrails.max_files_changed // 30' /tmp/config.json)" \
             --argjson maxlines "$(jq -r '.guardrails.max_lines_changed // 800' /tmp/config.json)" \
             --argjson auditpre "$(jq -c '.audit_skills.pre_pr // []' /tmp/config.json)" \
-            '{spec_path:$spec_path, branch_name:$branch_name, issue_number:$issue, commands:{test:$test, typecheck:$typecheck, lint:(if ($lint|length) > 0 then $lint else null end)}, guardrails:{blocked_paths:$blocked, require_explicit_unlock:$unlock, max_files_changed:$maxfiles, max_lines_changed:$maxlines}, audit_skills:{pre_pr:$auditpre}}')
+            '{spec_path:$spec_path, plan_path:$plan_path, branch_name:$branch_name, issue_number:$issue, commands:{test:$test, typecheck:$typecheck, lint:(if ($lint|length) > 0 then $lint else null end)}, guardrails:{blocked_paths:$blocked, require_explicit_unlock:$unlock, max_files_changed:$maxfiles, max_lines_changed:$maxlines}, audit_skills:{pre_pr:$auditpre}}')
           # Sanity check: PROMPT_VARS_JSON must be non-empty JSON. jq's
           # `select` filter can silently produce no output, leaving us with
           # an empty string that breaks render-prompt.ts. Fail loudly here.

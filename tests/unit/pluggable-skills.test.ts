@@ -46,6 +46,7 @@ describe('audit_skills.pre_pr (implement)', () => {
   it('renders cleanly when audit_skills.pre_pr is empty (Handlebars strict-mode)', () => {
     const out = renderPrompt('implement', {
       spec_path: 'docs/specs/x.md',
+      plan_path: '',
       branch_name: 'feat/dev-agent-issue-1',
       issue_number: 1,
       commands: { test: 'npm test', typecheck: 'npm run tc', lint: null },
@@ -63,6 +64,7 @@ describe('audit_skills.pre_pr (implement)', () => {
   it('renders with a non-empty audit list', () => {
     const out = renderPrompt('implement', {
       spec_path: 'docs/specs/x.md',
+      plan_path: '',
       branch_name: 'feat/dev-agent-issue-1',
       issue_number: 1,
       commands: { test: 'npm test', typecheck: 'npm run tc', lint: null },
