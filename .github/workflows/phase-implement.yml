@@ -208,6 +208,7 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
         run: |
           set -euo pipefail
           {
@@ -215,6 +216,9 @@ jobs:
             echo ""
             echo "**Issue title:** $ISSUE_TITLE"
             echo "**Spec file:** \`$SPEC_PATH\`"
+            if [ -n "$PLAN_PATH" ] && [ -f "$PLAN_PATH" ]; then
+              echo "**Plan file:** \`$PLAN_PATH\`"
+            fi
             echo ""
             echo "---"
             echo ""
@@ -222,6 +226,14 @@ jobs:
             echo ""
             cat "$SPEC_PATH"
             echo ""
+            if [ -n "$PLAN_PATH" ] && [ -f "$PLAN_PATH" ]; then
+              echo "---"
+              echo ""
+              echo "## Plan content"
+              echo ""
+              cat "$PLAN_PATH"
+              echo ""
+            fi
             echo "---"
             echo ""
             echo "## Issue body"
