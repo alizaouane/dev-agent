@@ -1,5 +1,31 @@
 # Session Log
 
+## 2026-05-26 UTC — interactive — PM brainstorming moves into Claude Code via /develop
+
+**Trigger:** User: "the PM brainstorming is not user friendly and doesn't use claude code at all. I need it to use claude code so I can use the claude code skills there." After pushback on the dashboard-first principle, the user clarified: "I use mainly claude code for my coding." That reframed the work — for this user, brainstorming + spec + plan writing belong in Claude Code (where the superpowers skills already do this job well), while the dashboard keeps proposals + approvals + engine orchestration.
+
+**What changed (11 commits on `feat/pm-via-claude-code`):**
+
+- **Spec:** [docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md](docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md)
+- **Plan:** [docs/superpowers/plans/2026-05-26-pm-via-claude-code.md](docs/superpowers/plans/2026-05-26-pm-via-claude-code.md) (17 tasks, sub-agent-driven)
+- **Engine:** `phase-implement.yml` now extracts an optional `plan_path` alongside `spec_path` (269daff), cats the plan content into the agent prompt (959e529), `prompts/implement.md` references `{{plan_path}}` (7c64216), and the render-prompt jq wiring feeds it through (4b28ad7). All 736 engine tests pass.
+- **Slash command:** [commands/develop.md](commands/develop.md) rewritten as a 4-phase orchestrator — PM evaluation → `superpowers:brainstorming` → `superpowers:writing-plans` → handoff (22817fc). The handoff files a `state:spec-ready` issue with `Spec:` and `Plan:` links to files committed to the consumer repo.
+- **Dashboard bridge:** new `dispatchExistingIssue` server action takes an existing `state:spec-ready` issue and dispatches the implement workflow (23dffab). New `feature-approve-button.tsx` client component renders on `/features/[issue]` for that state and calls the new action (c03e646). New `proposal-brainstorm-button.tsx` on `/proposals` copies `/develop --from-issue <#>` to the clipboard (f875ec9).
+- **Dashboard removal:** `/intent` replaced with a static explainer pointing at `/develop` (db66c32); `/api/pm-chat` route + `pm-chat.tsx` + `pm-tools.ts` + `pm-chat-draft.ts` + `pm-md-update.ts` + their tests deleted (511ed2d); `extractAgreedScope` / `approveAndStart` / `applyPmMdUpdate` removed from `dashboard/lib/actions.ts` (e5c981f). Stale "Discuss with PM" references swept from home page, per-repo page, scout output text, and pm-md schema docstrings.
+- **Dependencies:** `@ai-sdk/react` uninstalled (was only used by PmChat). `@ai-sdk/anthropic` + `ai` **kept** — still used by `categorize-proposals.ts` and `recommend-next.ts` for server-side AI calls (proposal triage + next-action recommendation). Plan was wrong about exclusivity; implementer paused per the "before you begin" guard and verified.
+- **Tests:** dashboard 452/452 passing (down from 506 — removed 43 PM-chat tests, 11 `approveAndStart`/`applyPmMdUpdate` tests; 3 `wireUpRepo` tests relocated). Engine 736/736 passing.
+
+**Deferred / Next:**
+
+- **Manual end-to-end** (Task 7 of the plan, deferred): run `/develop "<pitch>"` on `caliente-booking-app` or `social-media-content` once this branch ships, verify all four phases complete and the engine picks up the resulting `state:spec-ready` issue.
+- **Proposals without an issue number** (e.g. `unfinished_plan`, `pending_spec`, `spec_drift`, `competitor_watch`) lose their one-click brainstorming affordance because `/develop --from-issue` needs a number. Workaround: copy the proposal text and run `/develop "<pitch>"`. v1.1 idea: a `/develop --pitch "..."` variant + a "Copy as pitch" button on those rows.
+- **`spec_plan_via_pr: true`** consumer flag — v1.1.
+- **`/develop --abandon <topic>`** cleanup command — v1.1.
+
+**Next session should start with:** open a PR from `feat/pm-via-claude-code` → `main`, run `/develop` end-to-end on a real consumer repo to validate the full chain, and merge once the manual smoke is clean. The 11 commits are small and well-attributed if review wants to step through.
+
+---
+
 ## 2026-05-25 11:12 UTC — interactive — fix PM chat sending wrong repo after dropdown switch (PR #108)
 
 **Trigger:** User: "in brainstorming I select social flux repo but the PM tell me it's grounded on another one." Investigation initially misread as a user/UX confusion (their local SocialFlux folder = github `social-media-content` via git remote), but the user pushed back: "you're wrong, I picked social media and the PM talks about booking app." That made it a real bug.
