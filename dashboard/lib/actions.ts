@@ -640,6 +640,122 @@ export async function approveAndStart(
 }
 
 /**
+ * Server Action: dispatch the implement workflow for an issue that is
+ * already at `state:spec-ready` — the path used when a user filed the
+ * issue via the `/develop` slash command in their repo's Claude Code
+ * session (which writes the spec + plan and opens the issue directly),
+ * and now wants to approve it from the dashboard without re-running
+ * the PM chat.
+ *
+ * Distinct from `approveAndStart`, which creates the issue from PM-chat
+ * output. Here the issue already exists; we validate state, dispatch,
+ * and flip the state label to `state:implementing`.
+ *
+ * On success, redirects to the feature page (so `redirect()`'s
+ * NEXT_REDIRECT propagates; on failure we return an
+ * `ApproveAndStartError` so the message surfaces in the UI rather than
+ * getting masked by Next.js's generic server-action error string).
+ *
+ * Form fields:
+ *  - `repo`  — `owner/name`
+ *  - `issue` — issue number (string, parsed to int)
+ */
+export async function dispatchExistingIssue(
+  formData: FormData,
+): Promise<ApproveAndStartError | void> {
+  let issueNumberForRedirect: number | null = null;
+  let repoFullForRedirect: string | null = null;
+  let issueUrl: string | null = null;
+
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = (formData.get('repo') as string).trim();
+    const issueStr = (formData.get('issue') as string).trim();
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    const issue_number = parseInt(issueStr, 10);
+    if (Number.isNaN(issue_number)) throw new Error('issue must be a number');
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    // Look up the issue and validate it's in the expected state BEFORE
+    // we dispatch. Catching a wrong-state issue here keeps us from
+    // double-dispatching an already-running implement run or kicking
+    // off work on a scoping/abandoned issue.
+    const issue = await wrapStep('looking up issue', () =>
+      octokit.issues.get({ owner, repo, issue_number }),
+    );
+    issueUrl = issue.data.html_url;
+    const labels = issue.data.labels.map((l) =>
+      typeof l === 'string' ? l : (l.name ?? ''),
+    );
+    if (!labels.includes('state:spec-ready')) {
+      const currentState = labels.find((l) => l.startsWith('state:')) ?? 'unknown state';
+      return {
+        error: `issue is at ${currentState}; expected state:spec-ready`,
+        issue_url: issue.data.html_url,
+      };
+    }
+
+    const repoData = await wrapStep('looking up repo', () =>
+      octokit.repos.get({ owner, repo }),
+    );
+    const default_branch = repoData.data.default_branch;
+
+    await wrapStep('dispatching implement workflow', () =>
+      octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: 'dev-agent.yml',
+        ref: default_branch,
+        inputs: {
+          phase: 'implement',
+          issue_number: String(issue_number),
+          invocation_mode: 'live',
+        },
+      }),
+    );
+
+    // Flip state:spec-ready → state:implementing while preserving every
+    // other label (kind:feature, area:*, etc). Best-effort: at this
+    // point the workflow is already queued and the dashboard's
+    // active-runs view reflects the live run — a label-flip hiccup
+    // shouldn't error the whole approve flow (the implement workflow's
+    // own end-of-phase label transition will reconcile).
+    const nextLabels = labels
+      .filter((l) => l !== 'state:spec-ready')
+      .concat('state:implementing');
+    try {
+      await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
+    } catch (err) {
+      console.warn(
+        `dispatchExistingIssue: state:implementing label flip failed for ${owner}/${repo}#${issue_number} (run is already dispatched):`,
+        err,
+      );
+    }
+
+    issueNumberForRedirect = issue_number;
+    repoFullForRedirect = repoFull;
+  } catch (e) {
+    const message = formatApproveError(e, issueUrl);
+    console.error('[dispatchExistingIssue] failed', {
+      message,
+      issueUrl,
+      raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
+    });
+    return { error: message, ...(issueUrl ? { issue_url: issueUrl } : {}) };
+  }
+
+  // Outside the try/catch so `redirect()`'s NEXT_REDIRECT signal
+  // propagates to the framework — wrapping it would swallow the redirect.
+  revalidatePath('/');
+  redirect(
+    `/features/${issueNumberForRedirect}?repo=${encodeURIComponent(repoFullForRedirect!)}`,
+  );
+}
+
+/**
  * Wrap a single step so its failure carries the step name and the
  * upstream API status. Without this, the user just sees Octokit's bare
  * "HttpError" message and can't tell whether it was the issue create,

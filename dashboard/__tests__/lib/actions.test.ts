@@ -134,6 +134,76 @@ describe('approveGate', () => {
   });
 });
 
+describe('dispatchExistingIssue', () => {
+  beforeEach(() => {
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+        html_url: 'https://github.com/x/y/issues/42',
+      },
+    });
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({
+      data: { permission: 'admin' },
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
+    mockOctokit.issues.setLabels.mockResolvedValue({});
+  });
+
+  it('dispatches implement workflow and flips state:spec-ready → state:implementing', async () => {
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    // redirect() throws (mocked above to `__redirect__:<url>`); we look at it
+    // to confirm the success-path was reached without a thrown framework error.
+    await expect(dispatchExistingIssue(fd)).rejects.toThrow(/__redirect__:\/features\/42/);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: 'dev-agent.yml',
+        ref: 'main',
+        inputs: expect.objectContaining({
+          phase: 'implement',
+          issue_number: '42',
+        }),
+      }),
+    );
+    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'x',
+        repo: 'y',
+        issue_number: 42,
+        labels: expect.arrayContaining(['state:implementing', 'kind:feature']),
+      }),
+    );
+    // Ensure state:spec-ready is gone after the flip.
+    const setLabelsCall = mockOctokit.issues.setLabels.mock.calls[0][0];
+    expect(setLabelsCall.labels).not.toContain('state:spec-ready');
+  });
+
+  it('rejects when the issue is not at state:spec-ready', async () => {
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [{ name: 'state:scoping' }],
+        html_url: 'https://github.com/x/y/issues/42',
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({
+      error: expect.stringContaining('state:spec-ready'),
+      issue_url: 'https://github.com/x/y/issues/42',
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+});
+
 describe('abandonFeature', () => {
   it('relabels state:abandoned and closes', async () => {
     mockOctokit.issues.get.mockResolvedValue({
