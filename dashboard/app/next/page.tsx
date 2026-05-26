@@ -63,9 +63,10 @@ export default async function NextPage() {
         <Link href="/proposals" className="underline">
           /proposals
         </Link>
-        ) and picks a single thing worth doing. If you disagree,{' '}
+        ) and picks a single thing worth doing. If you disagree, run{' '}
+        <code>/develop</code>{' '}
         <Link href="/intent" className="underline">
-          brainstorm with the PM
+          in Claude Code
         </Link>{' '}
         to argue it through.
       </p>
@@ -101,7 +102,7 @@ export default async function NextPage() {
           href="/intent"
           className="inline-flex items-center rounded-md border border-border px-4 py-2 text-sm font-medium hover:bg-accent"
         >
-          Brainstorm with PM
+          Brainstorm in Claude Code
         </Link>
         <form action={regenerateRecommendation}>
           <button
