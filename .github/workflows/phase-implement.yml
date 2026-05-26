@@ -143,19 +143,14 @@ jobs:
           set -euo pipefail
           gh issue view "$ISSUE_NUMBER" --json number,title,body,labels > issue.json
           TITLE=$(jq -r '.title' issue.json)
-          # Find the linked spec file path. The previous regex hardcoded
-          # the .dev-agent.yml `specs_dir` (default docs/specs) — it
-          # missed valid spec references under e.g.
-          # docs/superpowers/specs/, leaving the agent to work from a
-          # placeholder. Now: try `${SPECS_DIR}/*.md` first (canonical),
-          # then fall back to ANY `docs/**/*.md` reference in the body
-          # (broad), and only fall back to placeholder if neither
-          # exists on disk.
           SPECS_DIR=$(jq -r '.artifacts.specs_dir // "docs/specs"' /tmp/config.json)
+          PLANS_DIR=$(jq -r '.artifacts.plans_dir // "docs/plans"' /tmp/config.json)
           BODY=$(jq -r '.body' issue.json)
+
+          # Spec: try ${SPECS_DIR}/*.md first, then any docs/**/*.md
+          # reference in the body; fall back to a placeholder.
           SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "${SPECS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
           if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
-            # Broader fallback: any docs/**/*.md reference in the body.
             SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]+\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
           fi
           if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
@@ -163,8 +158,20 @@ jobs:
             mkdir -p "$SPECS_DIR"
             printf '# (no spec linked)\n\nThe issue body did not reference a spec file under `%s/` or any `docs/**/*.md` path that exists on this branch. Treat the issue body as the spec.\n' "$SPECS_DIR" > "$SPEC_PATH"
           fi
+
+          # Plan: optional. Try ${PLANS_DIR}/*.md, then any docs/**/plans*/**/*.md
+          # in the body. Empty string if not present — implement.md handles
+          # the optional case.
+          PLAN_PATH=$(printf '%s' "$BODY" | grep -oE "${PLANS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
+          if [ -z "$PLAN_PATH" ] || [ ! -f "$PLAN_PATH" ]; then
+            PLAN_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]*plans?[^[:space:])\"\\\`]*\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
+          fi
+          # PLAN_PATH stays empty if no plan link present — that's valid
+          # for legacy issues filed via the old dashboard chat.
+
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
+          echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Render system prompt
         id: prompt
