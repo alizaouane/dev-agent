@@ -28,7 +28,19 @@ Activate when the user is in a dev-agent-wired consumer repo (has `.dev-agent.ym
 
 ## Pre-flight (Phase 0)
 
-Before any other work, run these checks. **Bail loudly** on any failure — there's no point doing the rest if the handoff can't land.
+Before any other work, resolve the target consumer repo and run sanity checks. **Bail loudly** on any failure — there's no point doing the rest if the handoff can't land.
+
+### Repo resolution
+
+The skill works against the consumer repo specified by one of these (in priority order):
+
+1. **`--repo owner/name` in the user's invocation** (passed by the `/develop` slash command when copied from the dashboard's `/proposals` button, or typed explicitly). If the directory `~/.dev-agent/clones/<owner>-<name>` exists, `cd` into it and `git pull` to fast-forward. Otherwise `gh repo clone <owner>/<name> ~/.dev-agent/clones/<owner>-<name>` then `cd` into it.
+2. **`cwd` containing `.dev-agent.yml`** — use cwd directly.
+3. **Neither** — ask the user which repo to target (interactive). Bail if they don't provide one.
+
+After repo resolution, the rest of Phase 0 runs **from inside the resolved repo's working tree**.
+
+### Sanity checks
 
 ```bash
 # Verify we're in a dev-agent-wired consumer repo
@@ -37,8 +49,16 @@ test -f .dev-agent.yml || { echo "ERROR: no .dev-agent.yml — this skill only r
 # Verify gh is authenticated
 gh auth status >/dev/null 2>&1 || { echo "ERROR: gh CLI not authenticated. Run 'gh auth login' first."; exit 1; }
 
-# Verify write permission on the repo (Phase 4 will fail without it)
-gh repo view --json viewerCanAdminister,nameWithOwner -q '.viewerCanAdminister' | grep -q true || { echo "ERROR: you lack write permission on this repo. Phase 4 (gh issue create) would fail."; exit 1; }
+# Verify the user has at least WRITE permission on the repo. Phase 4
+# creates an issue + (if needed) creates labels — both require write,
+# not admin. viewerCanAdminister is admin-only and would reject normal
+# collaborators with WRITE or MAINTAIN. viewerPermission returns the
+# canonical role (ADMIN/MAINTAIN/WRITE/TRIAGE/READ/NONE).
+PERM=$(gh repo view --json viewerPermission -q '.viewerPermission' 2>/dev/null || echo "")
+case "$PERM" in
+  ADMIN|MAINTAIN|WRITE) ;;
+  *) echo "ERROR: you need WRITE, MAINTAIN, or ADMIN access on this repo (you have: ${PERM:-unknown}). Phase 4 (gh issue create + label create) would fail."; exit 1 ;;
+esac
 ```
 
 If any check fails, surface the error verbatim and stop. Do not proceed.

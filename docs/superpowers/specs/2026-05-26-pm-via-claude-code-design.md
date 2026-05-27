@@ -145,11 +145,9 @@ The brainstorming skill drives its own checklist (clarifying questions one at a 
 
 ### Phase 3 — Plan writing
 
-Brainstorming's defined terminal state is "invoke writing-plans." `/develop` honors that by invoking `superpowers:writing-plans` with the spec as input. The skill produces `docs/plans/YYYY-MM-DD-<topic>-plan.md`.
+The `start-feature` skill inlines the plan-writing pattern directly — it writes the plan file (`docs/superpowers/plans/YYYY-MM-DD-<topic>.md`) using an embedded plan template (bite-sized TDD tasks, exact file paths, commit-per-step). The skill explicitly does **not** invoke `superpowers:writing-plans` as a sub-skill, because that skill's terminal state ("Execution Handoff" prompt asking the user to choose subagent-driven vs inline execution) would start local execution and never return control for Phase 4. See "Entry point: skill, not slash command (v1.1 revision)" above for the architectural rationale.
 
-**Skill-handoff conflict.** `superpowers:writing-plans` ends with its own "Execution Handoff" prompt (subagent-driven vs inline) and starts executing the plan locally if the user picks either option. That is the **wrong** terminal state inside `/develop`: dev-agent's engine implements the plan via the consumer's GitHub Actions, not via local Claude Code. The `/develop` command instructs the orchestrator to ignore the writing-plans execution prompt and proceed directly to Phase 4 once the plan is committed.
-
-**Exit condition:** the plan is written and committed. No local execution kicks off.
+**Exit condition:** the plan is written and committed to `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` (or `docs/plans/` per consumer convention — both locations are recognized by the engine's plan-path extractor). No local execution kicks off; the dev-agent engine implements the plan via GitHub Actions once the user approves the resulting `state:spec-ready` issue.
 
 ### Phase 4 — Handoff
 
