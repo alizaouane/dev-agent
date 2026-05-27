@@ -130,7 +130,9 @@ The brainstorming skill drives its own checklist (clarifying questions one at a 
 
 Brainstorming's defined terminal state is "invoke writing-plans." `/develop` honors that by invoking `superpowers:writing-plans` with the spec as input. The skill produces `docs/plans/YYYY-MM-DD-<topic>-plan.md`.
 
-**Exit condition:** the plan is written, reviewed, and committed.
+**Skill-handoff conflict.** `superpowers:writing-plans` ends with its own "Execution Handoff" prompt (subagent-driven vs inline) and starts executing the plan locally if the user picks either option. That is the **wrong** terminal state inside `/develop`: dev-agent's engine implements the plan via the consumer's GitHub Actions, not via local Claude Code. The `/develop` command instructs the orchestrator to ignore the writing-plans execution prompt and proceed directly to Phase 4 once the plan is committed.
+
+**Exit condition:** the plan is written and committed. No local execution kicks off.
 
 ### Phase 4 — Handoff
 

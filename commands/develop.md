@@ -54,7 +54,9 @@ The skill drives its own checklist (clarifying questions, propose 2-3 approaches
 
 The brainstorming skill's terminal state is "invoke writing-plans." Honor that — invoke `superpowers:writing-plans` with the just-written spec as input. The skill writes `docs/plans/YYYY-MM-DD-<topic>.md` (or `docs/superpowers/plans/...` per consumer convention).
 
-**Exit Phase 3 when** the plan file is committed.
+**CRITICAL — do not follow writing-plans's "Execution Handoff" prompt.** That skill ends by asking the user to pick between **Subagent-Driven** and **Inline Execution**, then begins executing the plan locally. **Inside `/develop` that's the wrong terminal state** — dev-agent's engine executes the plan via the consumer repo's GitHub Actions (`phase-implement.yml`), not via local Claude Code subagents. When writing-plans prints the "Two execution options" prompt, **ignore it, do not ask the user to choose, and immediately proceed to Phase 4** to file the handoff issue.
+
+**Exit Phase 3 when** the plan file is committed. Do **not** dispatch any implementation work locally.
 
 ## Phase 4 — Handoff
 
