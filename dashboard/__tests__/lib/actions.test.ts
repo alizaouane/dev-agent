@@ -298,6 +298,122 @@ describe('dispatchExistingIssue', () => {
   });
 });
 
+describe('dispatchFromSpec', () => {
+  beforeEach(() => {
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({
+      data: { permission: 'admin' },
+    });
+    // Both files present on the default branch by default.
+    mockOctokit.repos.getContent.mockResolvedValue({ data: { type: 'file' } });
+    mockOctokit.issues.create.mockResolvedValue({
+      data: {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+      },
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
+    mockOctokit.issues.setLabels.mockResolvedValue({});
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
+      data: { workflow_runs: [] },
+    });
+  });
+
+  it('creates a state:spec-ready issue from existing spec + plan paths and dispatches implement', async () => {
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', 'docs/superpowers/specs/2026-05-01-foo-design.md');
+    fd.append('plan_path', 'docs/superpowers/plans/2026-05-01-foo.md');
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:\/features\/77/);
+
+    expect(mockOctokit.issues.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'x',
+        repo: 'y',
+        title: 'Foo feature',
+        labels: expect.arrayContaining(['state:spec-ready', 'kind:feature']),
+        body: expect.stringMatching(
+          /Spec: docs\/superpowers\/specs\/2026-05-01-foo-design\.md[\s\S]*Plan: docs\/superpowers\/plans\/2026-05-01-foo\.md/,
+        ),
+      }),
+    );
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: 'dev-agent.yml',
+        ref: 'main',
+        inputs: expect.objectContaining({
+          phase: 'implement',
+          issue_number: '77',
+        }),
+      }),
+    );
+    // After dispatch, the issue should be at state:implementing (not spec-ready).
+    const setLabelsCall = mockOctokit.issues.setLabels.mock.calls.at(-1)?.[0];
+    expect(setLabelsCall?.labels).toContain('state:implementing');
+    expect(setLabelsCall?.labels).not.toContain('state:spec-ready');
+  });
+
+  it('refuses when spec_path does not exist on the default branch', async () => {
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === 'docs/superpowers/specs/missing.md') {
+        const err = new Error('Not Found') as Error & { status: number };
+        err.status = 404;
+        throw err;
+      }
+      return { data: { type: 'file' } };
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', 'docs/superpowers/specs/missing.md');
+    fd.append('plan_path', 'docs/superpowers/plans/2026-05-01-foo.md');
+    fd.append('title', 'Foo');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual({ error: expect.stringContaining('spec_path') });
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses when plan_path does not exist on the default branch', async () => {
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === 'docs/superpowers/plans/missing.md') {
+        const err = new Error('Not Found') as Error & { status: number };
+        err.status = 404;
+        throw err;
+      }
+      return { data: { type: 'file' } };
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', 'docs/superpowers/specs/2026-05-01-foo-design.md');
+    fd.append('plan_path', 'docs/superpowers/plans/missing.md');
+    fd.append('title', 'Foo');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual({ error: expect.stringContaining('plan_path') });
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses without write permission (returns error, does not throw)', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({
+      data: { permission: 'read' },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', 'docs/superpowers/specs/2026-05-01-foo-design.md');
+    fd.append('plan_path', 'docs/superpowers/plans/2026-05-01-foo.md');
+    fd.append('title', 'Foo');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual({ error: expect.stringMatching(/lacks write/) });
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('abandonFeature', () => {
   it('relabels state:abandoned and closes', async () => {
     mockOctokit.issues.get.mockResolvedValue({
