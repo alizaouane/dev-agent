@@ -39,7 +39,7 @@ Then in any consumer repo:
 | Command | Purpose |
 |---|---|
 | `/dev-agent-init` | One-time consumer-repo bootstrap |
-| `/develop [pitch \| --from-issue <#>]` | Full PM flow in Claude Code: PM evaluation → spec brainstorm → plan write → handoff. Files a `state:spec-ready` issue with links to the spec + plan. See [docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md](docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md). |
+| `/develop [pitch \| --from-issue <#>]` | Thin wrapper around the `dev-agent:start-feature` skill. The skill itself auto-activates on most pitch intents ("I want to add X", "X is broken", etc.) — use `/develop` for explicit invocation. See [skills/start-feature/SKILL.md](skills/start-feature/SKILL.md). |
 | `/proposals` | List open scout-proposed features |
 | `/status` | Tabular view of in-flight features |
 | `/approve <issue#> [--promote]` | Advance past Gate 1 / 2 / 3 |
@@ -49,16 +49,17 @@ Then in any consumer repo:
 
 See `commands/<name>.md` for full per-command docs.
 
-## Internal skills (reference)
+## Skills (reference)
 
-| Skill | Purpose |
-|---|---|
-| `orchestrator` | State-machine reference + transition rules |
-| `scout` | Source adapters + digest generator |
-| `drift-check` | Diff-vs-spec scope creep detector |
-| `notify` | 4-channel notification fan-out (push/email/issue/status-file) |
+| Skill | User-invocable | Purpose |
+|---|---|---|
+| `start-feature` | **yes** | Auto-activates when starting new work (feature/bug/improvement) in a wired-up repo. Runs PM evaluation → spec → plan → state:spec-ready issue handoff. See [skills/start-feature/SKILL.md](skills/start-feature/SKILL.md). |
+| `orchestrator` | no | State-machine reference + transition rules |
+| `scout` | no | Source adapters + digest generator |
+| `drift-check` | no | Diff-vs-spec scope creep detector |
+| `notify` | no | 4-channel notification fan-out (push/email/issue/status-file) |
 
-These are `user-invocable: false` — invoked by slash commands and reusable workflows, not by the user.
+`user-invocable: false` skills are invoked by slash commands and reusable workflows, not by the user.
 
 ### Required superpowers version
 
