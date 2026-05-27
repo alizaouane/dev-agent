@@ -134,6 +134,170 @@ describe('approveGate', () => {
   });
 });
 
+describe('dispatchExistingIssue', () => {
+  beforeEach(() => {
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+        html_url: 'https://github.com/x/y/issues/42',
+      },
+    });
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({
+      data: { permission: 'admin' },
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
+    mockOctokit.issues.setLabels.mockResolvedValue({});
+    // Default: no active runs — the idempotency guard inside
+    // dispatchExistingIssue calls fetchActiveRunsForIssue which calls
+    // octokit.actions.listWorkflowRuns under the hood, so an empty
+    // response makes the guard pass through.
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
+      data: { workflow_runs: [] },
+    });
+  });
+
+  it('dispatches implement workflow and flips state:spec-ready → state:implementing', async () => {
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    // redirect() throws (mocked above to `__redirect__:<url>`); we look at it
+    // to confirm the success-path was reached without a thrown framework error.
+    await expect(dispatchExistingIssue(fd)).rejects.toThrow(/__redirect__:\/features\/42/);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: 'dev-agent.yml',
+        ref: 'main',
+        inputs: expect.objectContaining({
+          phase: 'implement',
+          issue_number: '42',
+        }),
+      }),
+    );
+    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        owner: 'x',
+        repo: 'y',
+        issue_number: 42,
+        labels: expect.arrayContaining(['state:implementing', 'kind:feature']),
+      }),
+    );
+    // Ensure state:spec-ready is gone after the flip.
+    const setLabelsCall = mockOctokit.issues.setLabels.mock.calls[0][0];
+    expect(setLabelsCall.labels).not.toContain('state:spec-ready');
+  });
+
+  it('rejects when the issue is not at state:spec-ready', async () => {
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [{ name: 'state:scoping' }],
+        html_url: 'https://github.com/x/y/issues/42',
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({
+      error: expect.stringContaining('state:spec-ready'),
+      issue_url: 'https://github.com/x/y/issues/42',
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-numeric issue input without calling the dispatch', async () => {
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42oops');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({ error: expect.stringMatching(/issue/i) });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('refuses dispatch when an active run already targets the issue', async () => {
+    // Idempotency guard: a previous approve hit a label-flip failure
+    // (issue stuck at state:spec-ready) but the dispatch succeeded —
+    // the second click must not queue a duplicate implement run.
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
+      data: {
+        workflow_runs: [
+          {
+            id: 999,
+            status: 'in_progress',
+            display_title: 'implement → issue #42 (live)',
+            created_at: '2026-05-27T00:00:00Z',
+            html_url: 'https://github.com/x/y/actions/runs/999',
+          },
+        ],
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({
+      error: expect.stringContaining('active run'),
+      issue_url: 'https://github.com/x/y/issues/42',
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('strips all state:* labels (not just state:spec-ready) when flipping to state:implementing', async () => {
+    // Defensive against issues that ended up with two state labels (e.g.,
+    // from a prior recovery step). Downstream consumers read a single
+    // state — leaving the extra around would let them pick the wrong one.
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [
+          { name: 'state:spec-ready' },
+          { name: 'state:scoping' },
+          { name: 'kind:feature' },
+        ],
+        html_url: 'https://github.com/x/y/issues/42',
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    await expect(dispatchExistingIssue(fd)).rejects.toThrow(/__redirect__:/);
+    const setLabelsCall = mockOctokit.issues.setLabels.mock.calls[0][0];
+    expect(setLabelsCall.labels).toEqual(['kind:feature', 'state:implementing']);
+    expect(setLabelsCall.labels).not.toContain('state:spec-ready');
+    expect(setLabelsCall.labels).not.toContain('state:scoping');
+  });
+
+  it('still redirects when post-dispatch label flip fails (idempotency guard handles re-clicks)', async () => {
+    // setLabels failure after a successful dispatch is logged + swallowed
+    // because the workflow is already queued. The next user-click is
+    // protected by the active-runs idempotency guard (covered above), so
+    // a stuck label can't cause duplicate dispatches.
+    mockOctokit.issues.setLabels.mockRejectedValue(new Error('label-fail'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    await expect(dispatchExistingIssue(fd)).rejects.toThrow(/__redirect__:\/features\/42/);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('label flip failed'),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
+  });
+});
+
 describe('abandonFeature', () => {
   it('relabels state:abandoned and closes', async () => {
     mockOctokit.issues.get.mockResolvedValue({
@@ -569,6 +733,89 @@ describe('wireUpRepo', () => {
       error: expect.stringMatching(/lacks write/),
     });
   });
+
+  it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    (pushRepoSecret as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
+    }
+
+    expect(pushRepoSecret).toHaveBeenCalledWith({
+      octokit: expect.anything(),
+      owner: 'q',
+      repo: 'r',
+      name: 'ANTHROPIC_API_KEY',
+      value: 'sk-ant-test',
+    });
+    // Files were committed directly to the default branch (no PR flow).
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
+  });
+
+  it('skips pushRepoSecret when ANTHROPIC_API_KEY is unset on the dashboard', async () => {
+    // No env var.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    (pushRepoSecret as ReturnType<typeof vi.fn>).mockClear();
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
+    }
+
+    expect(pushRepoSecret).not.toHaveBeenCalled();
+    // Files still committed even without the secret.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+  });
+
+  it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    (pushRepoSecret as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      Object.assign(new Error('Resource not accessible by integration'), { status: 403 }),
+    );
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
+    }
+
+    // The wire-up still landed all three files; only the secret push failed.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 describe('installWorkflow', () => {
@@ -741,430 +988,6 @@ describe('installWorkflow', () => {
     expect(mockOctokit.repos.getContent).toHaveBeenCalledWith(
       expect.objectContaining({ ref: 'develop' }),
     );
-  });
-});
-
-describe('approveAndStart', () => {
-  it('files an issue with the agreed scope and dispatches the implement workflow', async () => {
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 77 } });
-    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
-
-    const { approveAndStart } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('title', 'Add refunds');
-    fd.append(
-      'pm_final_message',
-      [
-        'Sounds good. Here is the scope.',
-        '',
-        '## Agreed scope',
-        '',
-        'Add a refund button to the booking-detail page.',
-        'Stripe API only — no UI for partial refunds in this iteration.',
-      ].join('\n'),
-    );
-
-    try {
-      await approveAndStart(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:\/features\/77/);
-    }
-
-    // Open with state:spec-ready (intermediate, accurate). Promotion
-    // to state:implementing only happens AFTER successful dispatch
-    // (separate test below covers the failure case).
-    expect(mockOctokit.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: 'q',
-        repo: 'r',
-        title: 'Add refunds',
-        labels: ['kind:user-intent', 'state:spec-ready'],
-      }),
-    );
-    // Issue body must contain the agreed-scope content so the implement
-    // agent has something to read.
-    const createCall = mockOctokit.issues.create.mock.calls[0][0];
-    expect(createCall.body).toContain('Add a refund button to the booking-detail page.');
-
-    // Workflow dispatched with phase=implement against the consumer's
-    // wrapper workflow.
-    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: 'q',
-        repo: 'r',
-        workflow_id: 'dev-agent.yml',
-        ref: 'main',
-        inputs: {
-          phase: 'implement',
-          issue_number: '77',
-          invocation_mode: 'live',
-        },
-      }),
-    );
-
-    // Label promoted to state:implementing only after dispatch succeeds.
-    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
-      expect.objectContaining({
-        owner: 'q',
-        repo: 'r',
-        issue_number: 77,
-        labels: ['kind:user-intent', 'state:implementing'],
-      }),
-    );
-    // Order matters: dispatch must come before the label flip, otherwise
-    // a dispatch failure strands the issue in state:implementing.
-    expect(mockOctokit.actions.createWorkflowDispatch.mock.invocationCallOrder[0]).toBeLessThan(
-      mockOctokit.issues.setLabels.mock.invocationCallOrder[0],
-    );
-  });
-
-  it('does NOT promote to state:implementing if the workflow dispatch fails', async () => {
-    // Regression guard: previously the issue was created with
-    // state:implementing up-front, so a dispatch failure stranded the
-    // issue with a label that mocked the dashboard pipeline view and
-    // tripped orch-sweep's stuck-issue alarm.
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 88 } });
-    mockOctokit.actions.createWorkflowDispatch.mockRejectedValueOnce(
-      Object.assign(new Error('Unprocessable Entity'), { status: 422 }),
-    );
-
-    const { approveAndStart } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('title', 'X');
-    fd.append('pm_final_message', '## Agreed scope\n\nbuild it.');
-
-    const result = await approveAndStart(fd);
-    expect(result).toMatchObject({ error: expect.stringContaining('dispatching implement workflow failed') });
-
-    // Issue was created with the safe intermediate label.
-    expect(mockOctokit.issues.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        labels: ['kind:user-intent', 'state:spec-ready'],
-      }),
-    );
-    // Crucially: setLabels(state:implementing) is NOT called, so the
-    // issue stays at state:spec-ready and orch-sweep won't flag it.
-    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
-  });
-
-  it("dispatches on the repo's actual default branch, not a hardcoded 'main' (regression)", async () => {
-    // Production bug: the implement dispatch hardcoded ref='main',
-    // which 404s on any consumer whose default branch is named
-    // differently. Use 'develop' so a future regression to 'main'
-    // fails this test loudly.
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
-    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 99 } });
-    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
-
-    const { approveAndStart } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('title', 'X');
-    fd.append('pm_final_message', '## Agreed scope\n\nbuild it.');
-
-    try {
-      await approveAndStart(fd);
-    } catch {
-      // redirect throws by design.
-    }
-
-    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
-      expect.objectContaining({ ref: 'develop' }),
-    );
-  });
-
-  it('refuses when the PM message has no "## Agreed scope" section', async () => {
-    const { approveAndStart } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('title', 'Something');
-    fd.append('pm_final_message', 'Sure, let me know more about how this fits with...');
-    // Errors are returned (not thrown) so production server-action
-    // masking can't hide them — see ApproveAndStartError.
-    const result = await approveAndStart(fd);
-    expect(result).toBeDefined();
-    expect((result as { error: string }).error).toMatch(/Agreed scope.*not converged/);
-    // No issue created, no workflow dispatched.
-    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
-    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
-  });
-
-  it('accepts heading variations: extra hashes, capitalization, trailing punctuation', async () => {
-    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
-    mockOctokit.issues.create.mockResolvedValue({ data: { number: 100 } });
-    mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
-
-    const { approveAndStart } = await import('@/lib/actions');
-    const variations = [
-      '### AGREED SCOPE\n\nbuild the thing.',
-      '## Agreed Scope:\n\nbuild the thing.',
-      '## Agreed scope —\n\nbuild the thing.',
-    ];
-    for (const variant of variations) {
-      mockOctokit.issues.create.mockClear();
-      const fd = new FormData();
-      fd.append('repo', 'q/r');
-      fd.append('title', 'X');
-      fd.append('pm_final_message', variant);
-      try {
-        await approveAndStart(fd);
-      } catch (e) {
-        // redirect
-        if (!(e instanceof Error) || !e.message.includes('NEXT_REDIRECT') && !e.message.includes('__redirect__')) throw e;
-      }
-      expect(mockOctokit.issues.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: expect.stringContaining('build the thing'),
-        }),
-      );
-    }
-  });
-
-  it("stops scope extraction at the next H2-or-deeper heading (e.g. ## pm.md update doesn't bleed in)", async () => {
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.issues.create.mockResolvedValueOnce({ data: { number: 101 } });
-    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
-
-    const { approveAndStart } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('title', 'X');
-    fd.append(
-      'pm_final_message',
-      [
-        'Sounds good.',
-        '',
-        '## Agreed scope',
-        '',
-        'Build the refund button.',
-        '',
-        '## pm.md update',
-        '',
-        '```markdown',
-        '---',
-        'goals: { q2: "x" }',
-        '---',
-        '```',
-      ].join('\n'),
-    );
-    try {
-      await approveAndStart(fd);
-    } catch (e) {
-      // redirect
-      if (!(e instanceof Error) || (!e.message.includes('NEXT_REDIRECT') && !e.message.includes('__redirect__'))) throw e;
-    }
-    const body = mockOctokit.issues.create.mock.calls[0][0].body as string;
-    expect(body).toContain('Build the refund button.');
-    // The pm.md update block must NOT be in the issue body.
-    expect(body).not.toContain('pm.md update');
-    expect(body).not.toContain('goals: { q2:');
-  });
-
-  it('refuses without write permission on the target repo', async () => {
-    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
-      data: { permission: 'read' },
-    });
-    const { approveAndStart } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('title', 'Anything');
-    fd.append(
-      'pm_final_message',
-      '## Agreed scope\n\nA real scope block to clear the converged check.',
-    );
-    // Errors return (not throw) — see the no-Agreed-scope test above.
-    const result = await approveAndStart(fd);
-    expect((result as { error: string }).error).toMatch(/lacks write/);
-  });
-});
-
-describe('applyPmMdUpdate', () => {
-  it('opens a PR replacing .dev-agent/pm.md with the proposed content', async () => {
-    mockOctokit.repos.get.mockResolvedValueOnce({
-      data: { default_branch: 'main' },
-    });
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'tip' } } });
-    mockOctokit.repos.getContent.mockResolvedValueOnce({
-      data: { sha: 'old-pm-sha', content: 'irrelevant', encoding: 'base64' },
-    });
-    mockOctokit.git.createRef.mockResolvedValueOnce({});
-    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({});
-    mockOctokit.pulls.create.mockResolvedValueOnce({
-      data: { html_url: 'https://github.com/q/r/pull/12' },
-    });
-
-    const { applyPmMdUpdate } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('new_content', '---\ngoals: {}\n---\n\nUpdated body.');
-    fd.append('summary', 'chore(pm.md): record refund decision');
-
-    try {
-      await applyPmMdUpdate(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:.*\/pull\/12/);
-    }
-
-    // Branch was created off main tip.
-    expect(mockOctokit.git.createRef).toHaveBeenCalledWith(
-      expect.objectContaining({ sha: 'tip' }),
-    );
-    // The branch name carries a date-stamp prefix.
-    const refArg = mockOctokit.git.createRef.mock.calls[0][0];
-    expect(refArg.ref).toMatch(/^refs\/heads\/chore\/pm-md-update-\d{4}-\d{2}-\d{2}T/);
-
-    // File was committed with the existing sha (so the API treats it as
-    // an update rather than a create-conflict).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
-      expect.objectContaining({
-        path: '.dev-agent/pm.md',
-        sha: 'old-pm-sha',
-        message: 'chore(pm.md): record refund decision',
-      }),
-    );
-
-    expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        head: refArg.ref.replace('refs/heads/', ''),
-        base: 'main',
-        title: 'chore(pm.md): record refund decision',
-      }),
-    );
-  });
-
-  it('creates the file fresh when pm.md does not yet exist on the default branch', async () => {
-    mockOctokit.repos.get.mockResolvedValueOnce({
-      data: { default_branch: 'main' },
-    });
-    mockOctokit.git.getRef.mockResolvedValueOnce({ data: { object: { sha: 'tip' } } });
-    // 404 on getContent — no existing pm.md
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.git.createRef.mockResolvedValueOnce({});
-    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValueOnce({});
-    mockOctokit.pulls.create.mockResolvedValueOnce({
-      data: { html_url: 'https://github.com/q/r/pull/13' },
-    });
-
-    const { applyPmMdUpdate } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('new_content', 'fresh content');
-
-    try {
-      await applyPmMdUpdate(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__/);
-    }
-
-    // No `sha` arg means the API will create rather than update.
-    const fileArg = mockOctokit.repos.createOrUpdateFileContents.mock.calls[0][0];
-    expect(fileArg.sha).toBeUndefined();
-  });
-
-  it('rejects empty new_content', async () => {
-    const { applyPmMdUpdate } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('new_content', '   ');
-    await expect(applyPmMdUpdate(fd)).rejects.toThrow(/empty/);
-  });
-
-  it('refuses without write permission', async () => {
-    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
-      data: { permission: 'read' },
-    });
-    const { applyPmMdUpdate } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('repo', 'q/r');
-    fd.append('new_content', 'content');
-    await expect(applyPmMdUpdate(fd)).rejects.toThrow(/lacks write/);
-  });
-
-  it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-
-    const { pushRepoSecret } = await import('@/lib/gh-secrets');
-    (pushRepoSecret as ReturnType<typeof vi.fn>).mockResolvedValueOnce(undefined);
-
-    const { wireUpRepo } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('owner', 'q');
-    fd.append('repo', 'r');
-    try {
-      await wireUpRepo(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
-    }
-
-    expect(pushRepoSecret).toHaveBeenCalledWith({
-      octokit: expect.anything(),
-      owner: 'q',
-      repo: 'r',
-      name: 'ANTHROPIC_API_KEY',
-      value: 'sk-ant-test',
-    });
-    // Files were committed directly to the default branch (no PR flow).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
-    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
-  });
-
-  it('skips pushRepoSecret when ANTHROPIC_API_KEY is unset on the dashboard', async () => {
-    // No env var.
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-
-    const { pushRepoSecret } = await import('@/lib/gh-secrets');
-    (pushRepoSecret as ReturnType<typeof vi.fn>).mockClear();
-
-    const { wireUpRepo } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('owner', 'q');
-    fd.append('repo', 'r');
-    try {
-      await wireUpRepo(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
-    }
-
-    expect(pushRepoSecret).not.toHaveBeenCalled();
-    // Files still committed even without the secret.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
-  });
-
-  it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
-    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
-    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
-    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-
-    const { pushRepoSecret } = await import('@/lib/gh-secrets');
-    (pushRepoSecret as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
-      Object.assign(new Error('Resource not accessible by integration'), { status: 403 }),
-    );
-
-    const { wireUpRepo } = await import('@/lib/actions');
-    const fd = new FormData();
-    fd.append('owner', 'q');
-    fd.append('repo', 'r');
-    try {
-      await wireUpRepo(fd);
-    } catch (e) {
-      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
-    }
-
-    // The wire-up still landed all three files; only the secret push failed.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
-    expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
-    warnSpy.mockRestore();
   });
 });
 
@@ -1405,7 +1228,7 @@ describe('mergeFeaturePR', () => {
   });
 
   it('refuses without write permission', async () => {
-    // Same security gate as approveAndStart / cancelRun /
+    // Same security gate as dispatchExistingIssue / cancelRun /
     // redispatchPhase — the action calls assertWritePermission
     // before mutating, and a read-only collaborator must be turned
     // away before pulls.merge fires.

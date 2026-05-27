@@ -10,6 +10,7 @@ import { VerificationPostureStrip } from '@/components/verification-posture-stri
 import { EmptyState } from '@/components/empty-state';
 import { PageHeader } from '@/components/ui/page-header';
 import { Term } from '@/components/ui/term';
+import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 
 export default async function HomePage() {
   const octokit = await getOctokit();
@@ -144,12 +145,13 @@ export default async function HomePage() {
                     {p.title}
                   </a>
                 </div>
-                <Link
-                  href={`/intent?repo=${encodeURIComponent(p.repo)}&prefill=${encodeURIComponent(p.title)}`}
-                  className="text-sm hover:underline"
-                >
-                  Discuss with PM
-                </Link>
+                {typeof p.meta?.issue_number === 'number' ? (
+                  <ProposalBrainstormButton issueNumber={p.meta.issue_number} repo={p.repo} />
+                ) : (
+                  <Link href="/intent" className="text-sm hover:underline">
+                    Brainstorm in Claude Code
+                  </Link>
+                )}
               </li>
             ))}
           </ul>

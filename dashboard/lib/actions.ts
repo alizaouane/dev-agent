@@ -21,36 +21,12 @@ import {
 } from './scout/snooze';
 import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
+import { fetchActiveRunsForIssue } from './active-runs';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
   type SchedulePreset,
 } from './bug-scout-schedule';
-import { appendApprovedScopeEntry } from './session-log';
-
-/**
- * Extract the "Agreed scope" section from the PM agent's final message.
- * Tolerant of minor PM-emission variations:
- *   - 2+ leading hashes (`##`, `###`)
- *   - case insensitive (`Agreed Scope`, `AGREED SCOPE`)
- *   - optional trailing punctuation (`Agreed scope:`, `Agreed scope.`)
- *   - extra whitespace around the heading
- *
- * Body extraction stops at the next `## `-or-deeper heading so a later
- * `## pm.md update` block doesn't get accidentally swallowed into the
- * scope. Returns null if no such section is present.
- */
-function extractAgreedScope(pmMessage: string): string | null {
-  const headingRe = /^#{2,}\s*Agreed\s+Scope\s*[:\-—]?\s*$/im;
-  const headingMatch = pmMessage.match(headingRe);
-  if (!headingMatch || headingMatch.index === undefined) return null;
-  const after = pmMessage.slice(headingMatch.index + headingMatch[0].length);
-  // Stop at the next H2-or-deeper heading (so unrelated trailing
-  // sections like `## pm.md update` don't bleed into the scope).
-  const stopMatch = after.match(/^#{2,}\s+\S/m);
-  const body = (stopMatch && stopMatch.index !== undefined ? after.slice(0, stopMatch.index) : after).trim();
-  return body.length > 0 ? body : null;
-}
 
 /**
  * Verify `username` has at least `write` permission on `owner/repo`. Uses
@@ -291,7 +267,7 @@ export async function dispatchRollback(formData: FormData): Promise<void> {
  * Returns `{ error }` (does not throw) on failure: production masks any
  * thrown server-action error with the generic "Server Components render"
  * string, which strands the user with no actionable info. Same pattern
- * as `approveAndStart`. On success, falls through to `redirect('/repos')`
+ * as `dispatchExistingIssue`. On success, falls through to `redirect('/repos')`
  * which throws NEXT_REDIRECT for the framework.
  */
 export async function wireUpRepo(
@@ -401,7 +377,7 @@ export async function wireUpRepo(
  *
  * Returns `{ error }` instead of throwing so production's Server Components
  * mask doesn't strand the user with no actionable info — same pattern as
- * `approveAndStart` / `redispatchPhase`.
+ * `dispatchExistingIssue` / `redispatchPhase`.
  *
  * Form fields:
  *  - `repo`     — `owner/name`
@@ -473,120 +449,97 @@ export async function installWorkflow(
 }
 
 /**
- * Server Action: end of the PM brainstorm chat. The user has agreed on a
- * scope and clicked "Approve and start." We:
+ * Returned (not thrown) when a step in `dispatchExistingIssue` fails.
+ * Returning the error keeps the message visible to the user even in
+ * production — Next.js masks any error thrown out of a server action with
+ * the generic "An error occurred in the Server Components render" string,
+ * which strands the user with no actionable info. `issue_url` is set when
+ * the issue context was resolved before the failure, so the user can
+ * resume manually rather than losing the work.
  *
- *   1. Extract the "Agreed scope" section from the PM's final message;
- *      reject if missing (the chat hasn't converged yet).
- *   2. Verify write permission on the target repo.
- *   3. Create a GitHub issue carrying:
- *        - the scope as the body (the implement workflow uses the issue
- *          body as spec when no `docs/specs/<slug>.md` is linked — the
- *          drill issues already validate this path)
- *        - labels `kind:user-intent` + `state:implementing` (skipping
- *          state:scoping/state:spec-ready because we already converged).
- *   4. Dispatch `dev-agent.yml` on the consumer repo with phase=implement.
- *      The wrapper workflow (installed by wireUpRepo) forwards to the
- *      reusable phase-implement.yml@v1.
- *   5. Redirect to the dashboard's feature page so the user sees telemetry
- *      flow as the agent runs.
- *
- * Form fields:
- *  - `repo`           — owner/name of the wired-up consumer
- *  - `title`          — short feature title (used as the issue title)
- *  - `pm_final_message` — the PM agent's last message containing the
- *                         "## Agreed scope" block.
- */
-/**
- * Returned (not thrown) when a step in `approveAndStart` fails. Returning the
- * error keeps the message visible to the user even in production — Next.js
- * masks any error thrown out of a server action with the generic "An error
- * occurred in the Server Components render" string, which strands the user
- * with no actionable info. `issue_url` is set when the issue was successfully
- * created before the failure, so the user can resume manually rather than
- * losing the work.
+ * Name retained for git-history continuity; `dispatchExistingIssue` is the
+ * only producer now that the PM-chat-driven `approveAndStart` is gone.
  */
 export type ApproveAndStartError = { error: string; issue_url?: string };
 
-export async function approveAndStart(
+/**
+ * Server Action: dispatch the implement workflow for an issue that is
+ * already at `state:spec-ready` — the path used when a user filed the
+ * issue via the `/develop` slash command in their repo's Claude Code
+ * session (which writes the spec + plan and opens the issue directly),
+ * and now wants to approve it from the dashboard.
+ *
+ * The issue already exists; we validate state, dispatch the implement
+ * workflow, and flip the state label to `state:implementing`.
+ *
+ * On success, redirects to the feature page (so `redirect()`'s
+ * NEXT_REDIRECT propagates; on failure we return an
+ * `ApproveAndStartError` so the message surfaces in the UI rather than
+ * getting masked by Next.js's generic server-action error string).
+ *
+ * Form fields:
+ *  - `repo`  — `owner/name`
+ *  - `issue` — issue number (string, parsed to int)
+ */
+export async function dispatchExistingIssue(
   formData: FormData,
 ): Promise<ApproveAndStartError | void> {
-  let issueNumber: number | null = null;
-  let issueUrl: string | null = null;
+  let issueNumberForRedirect: number | null = null;
   let repoFullForRedirect: string | null = null;
+  let issueUrl: string | null = null;
 
   try {
     const session_username = await getCurrentUsername();
     const octokit = await getOctokit();
     const repoFull = (formData.get('repo') as string).trim();
-    const title = ((formData.get('title') as string) ?? '').trim();
-    const pmFinalMessage = ((formData.get('pm_final_message') as string) ?? '').trim();
-
+    const issueStr = (formData.get('issue') as string).trim();
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    if (!title) throw new Error('title cannot be empty');
-    const scope = extractAgreedScope(pmFinalMessage);
-    if (!scope) {
-      throw new Error(
-        'no "## Agreed scope" section found in the PM\'s final message — the chat has not converged yet',
-      );
-    }
+    // parseStrictInt rejects "42oops" — the loose `parseInt` would
+    // coerce it to 42 and silently dispatch the wrong issue.
+    const issue_number = parseStrictInt(issueStr, 'issue');
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
 
-    // Resolve the consumer's actual default branch BEFORE creating the
-    // issue — that way if `repos.get` 403s (perms) or the repo is missing,
-    // we fail fast without leaving an orphan issue.
+    // Look up the issue and validate it's in the expected state BEFORE
+    // we dispatch. Catching a wrong-state issue here keeps us from
+    // double-dispatching an already-running implement run or kicking
+    // off work on a scoping/abandoned issue.
+    const issue = await wrapStep('looking up issue', () =>
+      octokit.issues.get({ owner, repo, issue_number }),
+    );
+    issueUrl = issue.data.html_url;
+    const labels = issue.data.labels.map((l) =>
+      typeof l === 'string' ? l : (l.name ?? ''),
+    );
+    if (!labels.includes('state:spec-ready')) {
+      const currentState = labels.find((l) => l.startsWith('state:')) ?? 'unknown state';
+      return {
+        error: `issue is at ${currentState}; expected state:spec-ready`,
+        issue_url: issue.data.html_url,
+      };
+    }
+
+    // Idempotency guard: if a previous approve hit a label-flip failure
+    // (issue stuck at state:spec-ready) but the dispatch itself
+    // succeeded, a second click would queue a duplicate run. Check
+    // active runs first and refuse the dispatch if any are in flight.
+    // The implement workflow's own end-of-phase label transition will
+    // reconcile the stuck label once the live run completes.
+    const activeRuns = await fetchActiveRunsForIssue(octokit, owner, repo, issue_number);
+    if (activeRuns.length > 0) {
+      const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
+      return {
+        error: `dispatch refused — issue already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish before re-approving.`,
+        issue_url: issue.data.html_url,
+      };
+    }
+
     const repoData = await wrapStep('looking up repo', () =>
       octokit.repos.get({ owner, repo }),
     );
     const default_branch = repoData.data.default_branch;
 
-    const issueBody = [
-      `Approved by @${session_username} via the dashboard PM brainstorm.`,
-      ``,
-      `## Agreed scope`,
-      ``,
-      scope,
-    ].join('\n');
-
-    // Open with state:spec-ready (an intermediate, accurate label) and
-    // promote to state:implementing only after the dispatch confirms a
-    // run is queued. If we set state:implementing up-front and dispatch
-    // then fails, we strand the issue with a label that mocks the
-    // dashboard pipeline view + trips orch-sweep's stuck-issue alarm
-    // (which expressly looks for state:implementing to find hung work).
-    const issue = await wrapStep('creating issue', () =>
-      octokit.issues.create({
-        owner,
-        repo,
-        title: title.slice(0, 100),
-        body: issueBody,
-        labels: ['kind:user-intent', 'state:spec-ready'],
-      }),
-    );
-    issueNumber = issue.data.number;
-    issueUrl = issue.data.html_url;
-
-    // Record the human decision in SESSION_LOG.md BEFORE dispatching the
-    // workflow. Best-effort — a 403 / rate-limit / network error here
-    // shouldn't block the dispatch (the issue + workflow are the durable
-    // state; the log is the human-readable mirror).
-    try {
-      await appendApprovedScopeEntry(octokit, owner, repo, default_branch, {
-        issue: issue.data.number,
-        approver: session_username,
-        title: title.slice(0, 100),
-        scope,
-      });
-    } catch (err) {
-      console.warn(
-        `approveAndStart: SESSION_LOG.md append failed for ${owner}/${repo}#${issue.data.number}:`,
-        err,
-      );
-    }
-
-    // Dispatch the consumer's wrapper workflow to start the implement phase.
     await wrapStep('dispatching implement workflow', () =>
       octokit.actions.createWorkflowDispatch({
         owner,
@@ -595,38 +548,42 @@ export async function approveAndStart(
         ref: default_branch,
         inputs: {
           phase: 'implement',
-          issue_number: String(issue.data.number),
+          issue_number: String(issue_number),
           invocation_mode: 'live',
         },
       }),
     );
 
-    // Promote to state:implementing now that the run is queued.
-    // Best-effort: at this point the agent is already going and the
-    // dashboard's active-runs panel reflects the live run, so a
-    // label-flip hiccup shouldn't error the whole approve flow — log
-    // and continue (the implement workflow's own label transition at
-    // phase end will reconcile).
+    // Flip ALL state:* labels → state:implementing. Stripping every
+    // state:* label (not just state:spec-ready) handles the edge case
+    // where an issue was manually relabeled and ended up with two state
+    // labels — without this, the next downstream consumer that reads
+    // "the" state label could pick either one.
+    //
+    // Best-effort: at this point the workflow is already queued and the
+    // dashboard's active-runs view reflects the live run — a label-flip
+    // hiccup shouldn't error the whole approve flow. The next
+    // user-click is protected by the idempotency guard above; the
+    // implement workflow's own end-of-phase label transition will
+    // reconcile the stuck label.
+    const nextLabels = labels
+      .filter((l) => !l.startsWith('state:'))
+      .concat('state:implementing');
     try {
-      await octokit.issues.setLabels({
-        owner,
-        repo,
-        issue_number: issue.data.number,
-        labels: ['kind:user-intent', 'state:implementing'],
-      });
+      await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
     } catch (err) {
       console.warn(
-        `approveAndStart: state:implementing label flip failed for ${owner}/${repo}#${issue.data.number} (run is already dispatched):`,
+        `dispatchExistingIssue: state:implementing label flip failed for ${owner}/${repo}#${issue_number} (run is already dispatched; idempotency guard will catch a re-click):`,
         err,
       );
     }
 
+    issueNumberForRedirect = issue_number;
     repoFullForRedirect = repoFull;
   } catch (e) {
     const message = formatApproveError(e, issueUrl);
-    console.error('[approveAndStart] failed', {
+    console.error('[dispatchExistingIssue] failed', {
       message,
-      issueNumber,
       issueUrl,
       raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
     });
@@ -636,7 +593,9 @@ export async function approveAndStart(
   // Outside the try/catch so `redirect()`'s NEXT_REDIRECT signal
   // propagates to the framework — wrapping it would swallow the redirect.
   revalidatePath('/');
-  redirect(`/features/${issueNumber}?repo=${encodeURIComponent(repoFullForRedirect!)}`);
+  redirect(
+    `/features/${issueNumberForRedirect}?repo=${encodeURIComponent(repoFullForRedirect!)}`,
+  );
 }
 
 /**
@@ -682,117 +641,6 @@ function formatApproveError(e: unknown, issueUrl: string | null): string {
     );
   }
   return parts.join(' · ');
-}
-
-/**
- * Server Action: open a PR replacing `.dev-agent/pm.md` with the PM's
- * proposed content. Compounds the PM's value over time — each
- * meaningful chat can leave the PM smarter for next time without the
- * user manually editing pm.md.
- *
- * Flow:
- *  1. Verify write permission on the target repo.
- *  2. Read the current pm.md (used to detect no-op updates and to
- *     anchor the PR description).
- *  3. Create branch `chore/pm-md-update-<timestamp>` off the default
- *     branch. Timestamp suffix avoids collisions when multiple chats
- *     produce updates within the same minute.
- *  4. Commit the new file content.
- *  5. Open a PR with body explaining what the PM proposed.
- *
- * Form fields:
- *  - `repo`        — `owner/name`
- *  - `new_content` — the full replacement file body (frontmatter + body)
- *  - `summary`     — one-line summary the PM provided alongside the
- *                    block, used as the PR title and commit message.
- *                    Optional; falls back to a generic title.
- *
- * @throws if `new_content` is empty after trimming
- * @throws ForbiddenError if user lacks write perm
- */
-export async function applyPmMdUpdate(formData: FormData): Promise<void> {
-  const session_username = await getCurrentUsername();
-  const octokit = await getOctokit();
-  const repoFull = (formData.get('repo') as string).trim();
-  const newContent = (formData.get('new_content') as string).trim();
-  const summary = ((formData.get('summary') as string) ?? '').trim();
-
-  if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-  if (!newContent) throw new Error('new_content is empty — nothing to apply');
-
-  const [owner, repo] = repoFull.split('/');
-  await assertWritePermission(octokit, owner, repo, session_username);
-
-  // Resolve the default branch tip. If pm.md doesn't exist or the repo
-  // is empty, the PR will create the file fresh.
-  const repoInfo = await octokit.repos.get({ owner, repo });
-  const default_branch = repoInfo.data.default_branch ?? 'main';
-  const ref = await octokit.git.getRef({
-    owner,
-    repo,
-    ref: `heads/${default_branch}`,
-  });
-  const tipSha = ref.data.object.sha;
-
-  // Read the existing pm.md (if any) so the commit can be a true update
-  // — createOrUpdateFileContents requires the current SHA when the file
-  // already exists, otherwise it 422s.
-  let existingSha: string | undefined;
-  try {
-    const existing = await octokit.repos.getContent({
-      owner,
-      repo,
-      path: '.dev-agent/pm.md',
-      ref: default_branch,
-    });
-    if (!Array.isArray(existing.data) && 'sha' in existing.data) {
-      existingSha = existing.data.sha as string;
-    }
-  } catch {
-    // 404: file doesn't exist yet (e.g., wire-up PR still pending).
-    // The commit below will create it.
-  }
-
-  // Branch name with a date suffix so concurrent updates don't collide
-  // and so the PR list is naturally ordered.
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const branchName = `chore/pm-md-update-${stamp}`;
-
-  await octokit.git.createRef({
-    owner,
-    repo,
-    ref: `refs/heads/${branchName}`,
-    sha: tipSha,
-  });
-
-  await octokit.repos.createOrUpdateFileContents({
-    owner,
-    repo,
-    path: '.dev-agent/pm.md',
-    message: summary || 'chore(pm.md): update PM agent memory',
-    content: Buffer.from(newContent, 'utf8').toString('base64'),
-    branch: branchName,
-    sha: existingSha,
-  });
-
-  const prBody = [
-    `Updates \`.dev-agent/pm.md\` with content the PM agent proposed during a brainstorm chat.`,
-    ``,
-    `Triggered by @${session_username} from the dev-agent dashboard.`,
-    ``,
-    `Review the diff carefully — the PM's proposal reflects what it learned from the conversation, but you own the final state of pm.md.`,
-  ].join('\n');
-
-  const pr = await octokit.pulls.create({
-    owner,
-    repo,
-    title: summary || 'chore(pm.md): update PM agent memory',
-    head: branchName,
-    base: default_branch,
-    body: prBody,
-  });
-
-  redirect(pr.data.html_url);
 }
 
 /**
@@ -1141,7 +989,7 @@ export async function getLatestScanRun(
  * have to drop into `gh workflow run` whenever a phase fails or needs
  * a retry.
  *
- * Returns `{ error }` on failure — same contract as `approveAndStart`,
+ * Returns `{ error }` on failure — same contract as `dispatchExistingIssue`,
  * so production's server-action error masking can't hide useful info.
  *
  * Form fields:

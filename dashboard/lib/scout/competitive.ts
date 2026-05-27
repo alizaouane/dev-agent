@@ -14,13 +14,12 @@ import { SOURCE_TO_GROUP } from './types';
  *
  * Why minimal-by-design (v1):
  * - No URL fetching here. Saves cost + latency on every /proposals load.
- * - No LLM analysis at scout time. The PM chat (/intent) already
- *   does great context-aware analysis when the user clicks "Discuss
- *   with PM"; the scout's job is just to remind the user a
- *   competitor exists and is worth checking.
+ * - No LLM analysis at scout time. The user can run `/develop` in Claude
+ *   Code (or click "Brainstorm in Claude Code" on the proposal) to do
+ *   context-aware analysis on demand; the scout's job is just to remind
+ *   the user a competitor exists and is worth checking.
  * - User adds competitors by editing pm.md frontmatter — same shape
- *   as everything else PM-related, so it's discoverable. Or via the
- *   PM chat's `## pm.md update` flow.
+ *   as everything else PM-related, so it's discoverable.
  *
  * Future enhancement candidates (deferred until v1 friction shows up):
  *   - Fetch the competitor URL, hash it, only emit when the hash
@@ -47,7 +46,7 @@ export async function scoutCompetitorWatch(
     description:
       c.notes && c.notes.length > 0
         ? `${c.notes} — ${c.url}`
-        : `Check what they shipped recently. Click "Discuss with PM" to extract feature ideas relevant to your goals. (${c.url})`,
+        : `Check what they shipped recently. Click "Brainstorm in Claude Code" to extract feature ideas relevant to your goals. (${c.url})`,
     url: c.url,
     meta: { competitor_name: c.name, competitor_url: c.url },
   }));

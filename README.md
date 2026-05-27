@@ -39,7 +39,7 @@ Then in any consumer repo:
 | Command | Purpose |
 |---|---|
 | `/dev-agent-init` | One-time consumer-repo bootstrap |
-| `/develop <intent\|url>` | Start a feature; runs spec brainstorm at Gate 1 |
+| `/develop [pitch \| --from-issue <#>]` | Full PM flow in Claude Code: PM evaluation → spec brainstorm → plan write → handoff. Files a `state:spec-ready` issue with links to the spec + plan. See [docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md](docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md). |
 | `/proposals` | List open scout-proposed features |
 | `/status` | Tabular view of in-flight features |
 | `/approve <issue#> [--promote]` | Advance past Gate 1 / 2 / 3 |
@@ -59,6 +59,26 @@ See `commands/<name>.md` for full per-command docs.
 | `notify` | 4-channel notification fan-out (push/email/issue/status-file) |
 
 These are `user-invocable: false` — invoked by slash commands and reusable workflows, not by the user.
+
+### Required superpowers version
+
+`/develop` chains these skills end-to-end:
+
+- `superpowers:brainstorming` — Phase 2 spec writing
+- `superpowers:writing-plans` — Phase 3 plan writing
+- `superpowers:writing-clearly-and-concisely` (optional) — spec/plan polish
+
+Validated against superpowers `5.1.0`. Install via:
+
+```bash
+claude plugin install superpowers@5.1.0
+```
+
+Newer versions should work as long as the brainstorming skill writes specs to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and writing-plans writes to `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` (or `docs/plans/`).
+
+## Status: PM via Claude Code (2026-05-26)
+
+Retires the dashboard's in-browser PM chat. Brainstorming, spec writing, and plan writing now run in Claude Code via `/develop` and the superpowers skill chain. The dashboard keeps proposals, the approval gate (`Approve and start implementation` on `state:spec-ready` issues), status, cost, and engine orchestration. Engine reads optional `plan_path` alongside the existing `spec_path` so the implementation agent gets both. See [docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md](docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md) and [docs/superpowers/plans/2026-05-26-pm-via-claude-code.md](docs/superpowers/plans/2026-05-26-pm-via-claude-code.md).
 
 ## Status: v0.3.0 (Real implement step)
 

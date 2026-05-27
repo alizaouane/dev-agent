@@ -6,6 +6,7 @@ import { ActiveRunsPanel } from '@/components/active-runs-panel';
 import { FailedRunsPanel } from '@/components/failed-runs-panel';
 import { FeaturePRPanel } from '@/components/feature-pr-panel';
 import { RedispatchButtons } from '@/components/redispatch-buttons';
+import { FeatureApproveButton } from '@/components/feature-approve-button';
 import { parseTelemetry } from '@/lib/telemetry';
 import {
   aggregateTimeline,
@@ -126,6 +127,9 @@ export default async function FeaturePage(props: {
         prUrl={prUrl}
         verification={{ outcomes, expandedPillar }}
       />
+      {stateLabel === 'state:spec-ready' ? (
+        <FeatureApproveButton repo={`${owner}/${name}`} issue={issue_number} />
+      ) : null}
       <ActiveRunsPanel runs={activeRuns} repo={`${owner}/${name}`} />
       <FailedRunsPanel runs={failedRuns} />
       <FeaturePRPanel pr={featurePR} repo={`${owner}/${name}`} />

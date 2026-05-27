@@ -3,6 +3,7 @@ import { getOctokit } from '@/lib/gh';
 import { listAllowedRepos, wiredRepos } from '@/lib/repos';
 import { runAllScouts, type Proposal, type ProposalSource } from '@/lib/scout';
 import { PageHeader } from '@/components/ui/page-header';
+import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { enrichProposalsWithFreshness, type FreshnessHint } from '@/lib/scout/freshness';
 import { loadSnoozeMap, partitionBySnooze } from '@/lib/scout/snooze';
 import { resolveProposalAction, snoozeProposal, unsnoozeProposal } from '@/lib/actions';
@@ -41,8 +42,11 @@ const SOURCE_LABEL: Record<ProposalSource, string> = {
  *
  * Each proposal links to the underlying GitHub artifact (plan file,
  * issue, etc.) and offers two affordances:
- *  - **Discuss with PM** → pre-loads /intent with this proposal as the
- *    pitch. Use when you want to engage with it.
+ *  - **Brainstorm in Claude Code** → copies `/develop --from-issue <#>`
+ *    to the clipboard. Paste into Claude Code to pick up brainstorming
+ *    from the GitHub issue. Only shown when the proposal is backed by
+ *    a real issue (most scout sources); plan-file/spec-only proposals
+ *    just have the artifact link.
  *  - **Snooze 7d** → moves the proposal to a collapsed "Snoozed" section
  *    so it stops appearing on every page load. Use when you've decided
  *    "not now" but don't want to dismiss the underlying artifact.
@@ -222,7 +226,7 @@ export default async function ProposalsPage(props: {
           />
           <Section
             title="New ideas"
-            description="Things you haven't decided on yet. Discuss with the PM to figure out if they're worth doing."
+            description="Things you haven't decided on yet. Brainstorm in Claude Code to figure out if they're worth doing."
             proposals={newIdeas}
             freshnessMap={freshnessMap}
           />
@@ -361,12 +365,9 @@ function Section({
                 </form>
               ) : (
                 <>
-                  <Link
-                    href={`/intent?prefill=${encodeURIComponent(buildPmPrefill(p))}&repo=${encodeURIComponent(p.repo)}`}
-                    className="inline-flex items-center rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
-                  >
-                    Discuss with PM
-                  </Link>
+                  {typeof p.meta?.issue_number === 'number' ? (
+                    <ProposalBrainstormButton issueNumber={p.meta.issue_number} repo={p.repo} />
+                  ) : null}
                   {resolveLabel(p) ? (
                     <form action={resolveProposalAction}>
                       <input type="hidden" name="proposal_id" value={p.id} />
@@ -463,11 +464,3 @@ function resolveLabel(p: Proposal): string | null {
   }
 }
 
-/**
- * Format the proposal as a one-paragraph pitch the user (or the PM
- * agent reading it) can react to. Keeps it short — the PM chat will
- * fetch the full context (pm.md, pipeline) on the first turn anyway.
- */
-function buildPmPrefill(p: Proposal): string {
-  return `${SOURCE_LABEL[p.source]} in ${p.repo}: ${p.title}. ${p.description} (${p.url})`;
-}
