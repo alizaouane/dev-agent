@@ -335,11 +335,21 @@ export async function wireUpRepo(
     // Direct-commit each template file to the default branch. Without a
     // `branch` arg, createOrUpdateFileContents targets the repo's default
     // and handles both populated and empty repos uniformly.
+    //
+    // Per-file sha probe: GitHub's Contents API requires the existing
+    // file's sha on update (422 "sha wasn't supplied" otherwise) but
+    // forbids it on create. The pre-check above only guards `.dev-agent.yml`,
+    // so any *other* template file left over from a partial prior wire-up
+    // (e.g., a cleanup commit that removed `.dev-agent.yml` but not the
+    // scout workflows) would 422 mid-loop and wedge the repo half-wired.
+    // We probe each path and forward sha when present.
+    //
     // ESLint disable: per-file commits are intentionally serial — Octokit's
     // createOrUpdateFileContents takes a branch HEAD lock per call, so
     // parallel calls would race on the same branch ref.
     // eslint-disable-next-line no-restricted-syntax
     for (const f of WIRE_UP_FILES) {
+      const sha = await fetchExistingFileSha(octokit, owner, repo, f.path, default_branch);
       await wrapStep(`committing ${f.path}`, () =>
         octokit.repos.createOrUpdateFileContents({
           owner,
@@ -347,6 +357,7 @@ export async function wireUpRepo(
           path: f.path,
           message: `chore(dev-agent): add ${f.path}`,
           content: Buffer.from(f.content, 'utf8').toString('base64'),
+          ...(sha ? { sha } : {}),
         }),
       );
     }
@@ -609,6 +620,38 @@ async function wrapStep<T>(step: string, fn: () => Promise<T>): Promise<T> {
     return await fn();
   } catch (e) {
     throw new Error(`${step} failed — ${describeGhError(e)}`);
+  }
+}
+
+/**
+ * Probe the default branch for `path`. Returns the existing file's sha
+ * (so `createOrUpdateFileContents` treats the commit as an update), or
+ * undefined if the file doesn't exist (create-path; sha must be omitted
+ * or GitHub 422s on the create).
+ *
+ * Errors other than 404 propagate — they indicate a real API failure
+ * (rate limit, auth, etc.) that the caller should surface, not silently
+ * treat as "file absent".
+ */
+async function fetchExistingFileSha(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<string | undefined> {
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
+    // `getContent` returns an array for directories. We only care about file
+    // sha. A directory at `path` means the template path collides with a
+    // user-created dir; let the subsequent commit attempt surface the error.
+    if (!Array.isArray(data) && 'sha' in data && data.type === 'file') {
+      return data.sha;
+    }
+    return undefined;
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return undefined;
+    throw err;
   }
 }
 

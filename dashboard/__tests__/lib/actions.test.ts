@@ -627,7 +627,7 @@ describe('wireUpRepo', () => {
     // Repo is not yet wired up. default_branch is resolved server-side via
     // repos.get rather than trusting form input.
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { wireUpRepo } = await import('@/lib/actions');
@@ -658,7 +658,7 @@ describe('wireUpRepo', () => {
     // Empty repos behave identically — the API creates the initial commit
     // and branch ref on first createOrUpdateFileContents.
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { wireUpRepo } = await import('@/lib/actions');
@@ -701,7 +701,7 @@ describe('wireUpRepo', () => {
     // default is 'develop' should be probed against 'develop' regardless
     // of what the form claims.
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { wireUpRepo } = await import('@/lib/actions');
@@ -737,7 +737,7 @@ describe('wireUpRepo', () => {
   it('pushes ANTHROPIC_API_KEY to the repo when the dashboard env is set', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { pushRepoSecret } = await import('@/lib/gh-secrets');
@@ -768,7 +768,7 @@ describe('wireUpRepo', () => {
   it('skips pushRepoSecret when ANTHROPIC_API_KEY is unset on the dashboard', async () => {
     // No env var.
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { pushRepoSecret } = await import('@/lib/gh-secrets');
@@ -792,7 +792,7 @@ describe('wireUpRepo', () => {
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
@@ -816,12 +816,53 @@ describe('wireUpRepo', () => {
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
+
+  it("passes existing file's sha when a template file already exists on the default branch", async () => {
+    // Repro: orphaned bug-scout workflow from a partial prior wire-up
+    // (`.dev-agent.yml` was deleted by a cleanup commit but the workflow
+    // files were left in place). Without sha, GitHub returns
+    // "422 sha wasn't supplied" and the loop aborts mid-wire-up.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === '.github/workflows/dev-agent-bug-scout.yml') {
+        return { data: { type: 'file', sha: 'EXISTING_SHA_123' } };
+      }
+      throw notFound();
+    });
+    mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
+
+    const { wireUpRepo } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('owner', 'q');
+    fd.append('repo', 'r');
+    try {
+      await wireUpRepo(fd);
+    } catch (e) {
+      expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
+    }
+
+    // All 10 template files committed despite the orphan.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+
+    const calls = mockOctokit.repos.createOrUpdateFileContents.mock.calls as Array<
+      [{ path: string; sha?: string }]
+    >;
+    const bugScoutCall = calls.find(
+      (c) => c[0].path === '.github/workflows/dev-agent-bug-scout.yml',
+    );
+    // The orphan's sha is forwarded so GitHub treats it as an update, not a create.
+    expect(bugScoutCall?.[0].sha).toBe('EXISTING_SHA_123');
+
+    // Files that don't exist must NOT carry a sha — GitHub rejects sha-on-create.
+    const freshCall = calls.find((c) => c[0].path === '.dev-agent.yml');
+    expect(freshCall?.[0]).not.toHaveProperty('sha');
+  });
 });
 
 describe('installWorkflow', () => {
   it('commits the bug-scout workflow file when missing', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { installWorkflow } = await import('@/lib/actions');
@@ -844,7 +885,7 @@ describe('installWorkflow', () => {
 
   it('commits the tier2-smoke workflow file when missing', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { installWorkflow } = await import('@/lib/actions');
@@ -862,7 +903,7 @@ describe('installWorkflow', () => {
 
   it('commits the swarm-override workflow file when missing', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { installWorkflow } = await import('@/lib/actions');
@@ -899,7 +940,7 @@ describe('installWorkflow', () => {
 
     for (const [key, expectedPath] of cases) {
       mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-      mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+      mockOctokit.repos.getContent.mockRejectedValue(notFound());
       mockOctokit.repos.createOrUpdateFileContents.mockClear();
       mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
@@ -916,7 +957,7 @@ describe('installWorkflow', () => {
 
   it('commits the verification workflow file when missing', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { installWorkflow } = await import('@/lib/actions');
@@ -976,7 +1017,7 @@ describe('installWorkflow', () => {
     // No `default_branch` form input is read — server resolves via repos.get.
     // Verify the probe + commit target the repo's actual default ('develop').
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
-    mockOctokit.repos.getContent.mockRejectedValueOnce(notFound());
+    mockOctokit.repos.getContent.mockRejectedValue(notFound());
     mockOctokit.repos.createOrUpdateFileContents.mockResolvedValue({});
 
     const { installWorkflow } = await import('@/lib/actions');
