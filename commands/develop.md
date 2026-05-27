@@ -1,116 +1,46 @@
 ---
-description: PM-eval → spec brainstorm → plan write → handoff. Lands spec + plan in the consumer repo and files a state:spec-ready issue for the dashboard.
-argument-hint: "<pitch> | --from-issue <#> | (empty to pick from /proposals)"
-allowed-tools: Read Write Edit Bash Glob Grep Skill
+description: Start new work (feature, bug, improvement) in a dev-agent-wired repo. Thin wrapper that invokes the `dev-agent:start-feature` skill — the skill auto-activates on most pitch intents, but `/develop` is here for explicit invocation when you want it.
+argument-hint: "<pitch> | --from-issue <#> [--repo owner/name]"
+allowed-tools: Bash Read Skill
 ---
 
 # /develop
 
-End-to-end PM workflow: pitch → scoped spec → reviewable plan → ready-to-implement issue.
+Explicit-invocation wrapper. The real flow lives in the `dev-agent:start-feature` skill — see [skills/start-feature/SKILL.md](../skills/start-feature/SKILL.md).
 
-## Invocation modes
+## What this command does
 
-- `/develop "<pitch>"` — free-form pitch. Starts at Phase 1.
-- `/develop --from-issue <#>` — seeded from an existing GitHub issue (e.g. a scout proposal).
-- `/develop` — interactive: lists open `state:proposed` issues from the current repo, asks you to pick one or pitch fresh.
-- `/develop --resume` — re-enters the most recent in-flight spec draft in `docs/superpowers/specs/`.
+1. **Parse `--repo owner/name`** (if present). This tells the skill to target a specific consumer repo regardless of `cwd` — required when the user pastes the command from the dashboard's cross-repo `/proposals` button, because issue numbers are repo-scoped and `cwd` may be the wrong repo.
+2. **If `--from-issue <#>`** was passed, load the issue body with `gh issue view <#> [--repo $REPO] --json title,body,labels` and use the title + body + `kind:*` label as the seed.
+3. **Otherwise** pass the user's free-form pitch as the seed.
+4. Invoke the `dev-agent:start-feature` skill via the Skill tool, passing the full arg set (pitch / `--from-issue` / `--repo`) as context. The skill's Phase 0 handles repo resolution (clones if needed, validates `.dev-agent.yml`, checks gh auth + write permission).
 
-## Repo detection
+## Why this exists alongside the skill
 
-1. If `cwd` contains `.dev-agent.yml`, treat `cwd` as the consumer repo (default).
-2. Else if `--repo owner/name` is passed, clone or read remotely.
-3. Else ask the user.
+The skill auto-activates on most intents ("I want to add X", "X is broken", "what should I work on"). The slash command is for cases where:
 
-## Phase 1 — PM evaluation
+- You want to be explicit about which entry point fires (e.g., debugging the flow)
+- You're handing off from a dashboard proposal that pasted `/develop --from-issue <#> --repo owner/name` to your clipboard
+- The skill isn't auto-firing for whatever reason and you want a forcing function
 
-Load context:
+Both paths converge on the same skill, so behavior is identical. Pick whichever you prefer.
 
-- `.dev-agent/pm.md` (frontmatter goals + free-form body)
-- Current pipeline: `gh issue list --state open --label state:scoping,state:spec-ready,state:implementing,state:pr-review --json number,title,labels`
-- Recent `SESSION_LOG.md` entries (top 10)
+## Argument forms
 
-Then load the PM persona from `prompts/pm.md` (engine repo) and run the conversation in the terminal. The persona:
-
-- Pushes back on goal misalignment
-- Surfaces in-flight conflicts
-- Estimates effort against past shipped work (`git log --oneline -20`)
-- Emits `## Agreed scope` when aligned
-
-**Exit Phase 1 when** the PM emits a `## Agreed scope` section. Pass that section as the seed to Phase 2.
-
-## Phase 2 — Spec brainstorming
-
-Invoke the `superpowers:brainstorming` skill. Seed the brainstorm with:
-
-- The agreed scope from Phase 1
-- The pitch / source issue
-- The consumer repo context already loaded
-
-The skill drives its own checklist (clarifying questions, propose 2-3 approaches, present design sections with explicit approval gates, write spec to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md`, commit).
-
-**Exit Phase 2 when** the spec file is committed and the brainstorming skill's user-review gate passes.
-
-## Phase 3 — Plan writing
-
-The brainstorming skill's terminal state is "invoke writing-plans." Honor that — invoke `superpowers:writing-plans` with the just-written spec as input. The skill writes `docs/plans/YYYY-MM-DD-<topic>.md` (or `docs/superpowers/plans/...` per consumer convention).
-
-**Exit Phase 3 when** the plan file is committed.
-
-## Phase 4 — Handoff
-
-Detect: spec path + plan path + feature title (from the spec's H1).
-
-Then:
-
-1. **Verify spec + plan are committed to the consumer's default branch** (or to the PR branch if `spec_plan_via_pr: true` in `.dev-agent.yml`).
-2. **Build the issue body:**
-
-   ```text
-   Spec: <spec-path-on-default-branch>
-   Plan: <plan-path-on-default-branch>
-
-   ## TL;DR
-
-   <first paragraph of the spec, verbatim>
-
-   ---
-
-   Brainstormed and planned via `/develop` in Claude Code. Tap "Approve and start implementation" in the dashboard to dispatch the implement workflow.
-   ```
-
-3. **Create the issue:**
-
-   ```bash
-   gh issue create \
-     --repo "$OWNER/$REPO" \
-     --title "$FEATURE_TITLE" \
-     --body "$ISSUE_BODY" \
-     --label "state:spec-ready,kind:feature"
-   ```
-
-   If `--from-issue <#>` was used, copy the source issue's `kind:*` label instead of defaulting to `kind:feature`.
-
-4. **Print the issue URL** and stop. The dashboard's existing repo watcher picks up the new issue.
+- `/develop "<pitch>"` — free-form pitch in the current repo. Phase 1 starts immediately. Repo = `cwd` if `.dev-agent.yml` is present, else the skill asks.
+- `/develop --from-issue <#>` — seeded from an existing GitHub issue in the current repo.
+- `/develop --from-issue <#> --repo owner/name` — same, but the issue lives in `owner/name`, not `cwd`. The skill will `gh repo clone` to `~/.dev-agent/clones/<owner>-<name>/` (or fast-forward an existing clone) and work from there. This is the form the dashboard's `/proposals` "Brainstorm in Claude Code" button generates.
+- `/develop "<pitch>" --repo owner/name` — fresh pitch against a specific consumer repo (no source issue). Same clone-or-fast-forward behavior.
+- `/develop` — interactive; lists open `state:proposed` issues in the current repo and asks the user to pick one or pitch fresh.
 
 ## Failure modes
 
-- No `.dev-agent.yml` in cwd and no `--repo` → ask user; bail if they don't provide one.
-- `gh` not authenticated → print `gh auth login` instruction and exit.
-- PM emits no `## Agreed scope` after 10 turns → save the conversation transcript to `/tmp/develop-pm-stuck-<timestamp>.md` and ask the user whether to continue or abort.
-- Brainstorming skill exits without writing a spec → no Phase 3 / 4; user can `/develop --resume` later.
-- Plan writing skill exits without writing a plan → no Phase 4; spec stays as an orphan draft until next resume.
-- `gh issue create` fails (rate limit, perm) → print error + the would-be body so the user can file manually.
+- Not in a dev-agent-wired repo and no `--repo` flag → skill's Phase 0 asks the user; bails if no answer
+- `gh` not authenticated → skill's Phase 0 bails with `gh auth login` instruction
+- Insufficient permission on the target repo (need WRITE/MAINTAIN/ADMIN) → skill's Phase 0 bails
+- See `skills/start-feature/SKILL.md` "Failure modes" for the full list
 
-## Resumption
+## Notes
 
-`/develop --resume`:
-
-1. Find the most recent `.md` in `docs/superpowers/specs/` whose corresponding plan file doesn't exist at **either** `docs/plans/<same-date>-<same-topic>.md` **or** `docs/superpowers/plans/<same-date>-<same-topic>.md` (Phase 2 done, Phase 3 not started). The `superpowers:writing-plans` skill writes under `docs/superpowers/plans/` by default, but consumers may use `docs/plans/` per their own convention — check both before declaring Phase 3 incomplete.
-2. If both plan paths exist but no `state:spec-ready` issue in the consumer repo references the spec path, resume at Phase 4 (handoff).
-3. Otherwise resume at the appropriate phase.
-
-## Notes for the operator
-
-- This command auto-chains skills. Don't invoke `superpowers:brainstorming` or `superpowers:writing-plans` manually mid-`/develop` — let the orchestrator drive.
-- Phase 1's PM persona is intentionally allowed to take many turns. Brainstorm is the rate-limiting step; don't rush it.
-- The handoff issue at `state:spec-ready` waits for human approval in the dashboard. `/develop` does NOT dispatch the implement workflow itself.
+- The skill owns the four-phase orchestration (PM eval → spec → plan → handoff) AND repo resolution. The slash command is a thin wrapper, not a parallel implementation.
+- Do NOT duplicate phase logic or repo-detection logic here. If you find yourself wanting to edit the orchestration, edit `skills/start-feature/SKILL.md`.

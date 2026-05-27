@@ -80,6 +80,23 @@
 
 Each phase is structured so you can re-enter at any point (`/develop --resume`, `/develop --from-spec <path>`) without re-doing the previous phase.
 
+### Entry point: skill, not slash command (v1.1 revision)
+
+After shipping the slash-command-only version, two problems surfaced:
+
+1. **`superpowers:writing-plans` hijacks Phase 3.** That skill's terminal state is its own "Execution Handoff" prompt (subagent-driven vs inline). Once Claude Code is inside writing-plans, it follows the skill's terminal state — it does not return to `/develop` Phase 4 to file the issue. The handoff issue never gets filed and the user has to file it manually.
+2. **Slash commands require explicit invocation.** The user has to remember `/develop`. For a workflow that should be the canonical entry point ("I want to start a feature"), this is friction.
+
+**Resolution:** the primary entry point becomes a **Claude Code skill** (`dev-agent:start-feature`) that:
+
+- Auto-activates on intents matching its description (pitching a feature, reporting a bug, "what should I work on", etc.)
+- **Inlines all four phases** in a single SKILL.md — no calls to `superpowers:brainstorming` or `superpowers:writing-plans`. The brainstorming and plan-writing *patterns* are embedded directly, so there's no skill boundary where another skill's terminal state can hijack control.
+- **Enforces Phase 4 via TodoWrite.** The first thing the skill does is create a 4-item checklist (PM eval / spec / plan / issue filed). Phase 4 stays `pending` until the GitHub issue URL is printed — an open todo is a visible signal that the skill is not finished.
+
+The `/develop` slash command stays as a thin wrapper around the skill (for explicit invocation, backward compat, and dashboard copy-paste from `/proposals`). The skill is the source of truth for the orchestration logic.
+
+See [skills/start-feature/SKILL.md](../../../skills/start-feature/SKILL.md) for the actual implementation.
+
 ---
 
 ## Slash command surface
@@ -128,9 +145,9 @@ The brainstorming skill drives its own checklist (clarifying questions one at a 
 
 ### Phase 3 — Plan writing
 
-Brainstorming's defined terminal state is "invoke writing-plans." `/develop` honors that by invoking `superpowers:writing-plans` with the spec as input. The skill produces `docs/plans/YYYY-MM-DD-<topic>-plan.md`.
+The `start-feature` skill inlines the plan-writing pattern directly — it writes the plan file (`docs/superpowers/plans/YYYY-MM-DD-<topic>.md`) using an embedded plan template (bite-sized TDD tasks, exact file paths, commit-per-step). The skill explicitly does **not** invoke `superpowers:writing-plans` as a sub-skill, because that skill's terminal state ("Execution Handoff" prompt asking the user to choose subagent-driven vs inline execution) would start local execution and never return control for Phase 4. See "Entry point: skill, not slash command (v1.1 revision)" above for the architectural rationale.
 
-**Exit condition:** the plan is written, reviewed, and committed.
+**Exit condition:** the plan is written and committed to `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` (or `docs/plans/` per consumer convention — both locations are recognized by the engine's plan-path extractor). No local execution kicks off; the dev-agent engine implements the plan via GitHub Actions once the user approves the resulting `state:spec-ready` issue.
 
 ### Phase 4 — Handoff
 
