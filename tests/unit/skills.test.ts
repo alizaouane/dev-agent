@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { resolve } from 'node:path';
 import yaml from 'js-yaml';
-import { EXPECTED_SKILLS } from '../../lib/plugin-files';
+import { EXPECTED_SKILLS, USER_INVOCABLE_SKILLS } from '../../lib/plugin-files';
 
 const skillsDir = resolve(__dirname, '../../skills');
 
@@ -34,10 +34,15 @@ describe('skills/', () => {
         expect((frontmatter.description as string).length).toBeGreaterThan(30);
       });
 
-      it('has user-invocable: false (internal skill)', () => {
+      it('has the expected user-invocable value', () => {
         const raw = readFileSync(path, 'utf8');
         const { frontmatter } = splitFrontmatter(raw);
-        expect(frontmatter['user-invocable']).toBe(false);
+        // Most dev-agent skills are internal (invoked by slash commands
+        // / workflows, not by the user). `start-feature` is the
+        // exception — it auto-activates on user intent in a wired-up
+        // consumer repo, so it carries `user-invocable: true`.
+        const expected = USER_INVOCABLE_SKILLS.has(name);
+        expect(frontmatter['user-invocable']).toBe(expected);
       });
 
       it('body has at least one H2 section', () => {
@@ -48,7 +53,7 @@ describe('skills/', () => {
     });
   }
 
-  it('contains exactly the expected 4 skills (no extras)', () => {
+  it('contains exactly the expected skills (no extras)', () => {
     const dirs = readdirSync(skillsDir, { withFileTypes: true })
       .filter((d) => d.isDirectory())
       .map((d) => d.name)

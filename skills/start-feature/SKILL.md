@@ -1,6 +1,7 @@
 ---
 name: start-feature
 description: Use when starting any new work in a dev-agent-wired consumer repo (a repo with .dev-agent.yml). Triggers on pitching a new feature, reporting a bug, asking "what should I work on next", describing something to build, or saying "this is broken". Orchestrates PM evaluation → spec writing → plan writing → commits to default branch → files a GitHub issue at state:spec-ready that the dev-agent engine picks up. After this skill finishes, the user approves at three gates in the dashboard — no further Claude Code involvement needed for implementation.
+user-invocable: true
 ---
 
 # start-feature

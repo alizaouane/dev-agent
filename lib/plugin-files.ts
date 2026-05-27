@@ -20,7 +20,19 @@ export const EXPECTED_SKILLS = [
   'swarm-review',
   'self-review',
   'tier2-smoke',
+  // User-invocable skill (PM via Claude Code — auto-activates on pitch/bug intents)
+  'start-feature',
 ] as const;
+
+/**
+ * Subset of EXPECTED_SKILLS that are meant to be invoked by the user
+ * (directly or via Claude Code's auto-activation), as opposed to
+ * internal skills invoked by slash commands / workflows. Drives the
+ * `user-invocable: true|false` frontmatter assertion in skills.test.ts.
+ */
+export const USER_INVOCABLE_SKILLS: ReadonlySet<string> = new Set([
+  'start-feature',
+]);
 
 export const EXPECTED_PROMPTS = [
   'implement',
