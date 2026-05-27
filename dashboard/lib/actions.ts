@@ -21,6 +21,7 @@ import {
 } from './scout/snooze';
 import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
+import { fetchActiveRunsForIssue } from './active-runs';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -493,8 +494,9 @@ export async function dispatchExistingIssue(
     const repoFull = (formData.get('repo') as string).trim();
     const issueStr = (formData.get('issue') as string).trim();
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    const issue_number = parseInt(issueStr, 10);
-    if (Number.isNaN(issue_number)) throw new Error('issue must be a number');
+    // parseStrictInt rejects "42oops" — the loose `parseInt` would
+    // coerce it to 42 and silently dispatch the wrong issue.
+    const issue_number = parseStrictInt(issueStr, 'issue');
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
@@ -518,6 +520,21 @@ export async function dispatchExistingIssue(
       };
     }
 
+    // Idempotency guard: if a previous approve hit a label-flip failure
+    // (issue stuck at state:spec-ready) but the dispatch itself
+    // succeeded, a second click would queue a duplicate run. Check
+    // active runs first and refuse the dispatch if any are in flight.
+    // The implement workflow's own end-of-phase label transition will
+    // reconcile the stuck label once the live run completes.
+    const activeRuns = await fetchActiveRunsForIssue(octokit, owner, repo, issue_number);
+    if (activeRuns.length > 0) {
+      const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
+      return {
+        error: `dispatch refused — issue already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish before re-approving.`,
+        issue_url: issue.data.html_url,
+      };
+    }
+
     const repoData = await wrapStep('looking up repo', () =>
       octokit.repos.get({ owner, repo }),
     );
@@ -537,20 +554,26 @@ export async function dispatchExistingIssue(
       }),
     );
 
-    // Flip state:spec-ready → state:implementing while preserving every
-    // other label (kind:feature, area:*, etc). Best-effort: at this
-    // point the workflow is already queued and the dashboard's
-    // active-runs view reflects the live run — a label-flip hiccup
-    // shouldn't error the whole approve flow (the implement workflow's
-    // own end-of-phase label transition will reconcile).
+    // Flip ALL state:* labels → state:implementing. Stripping every
+    // state:* label (not just state:spec-ready) handles the edge case
+    // where an issue was manually relabeled and ended up with two state
+    // labels — without this, the next downstream consumer that reads
+    // "the" state label could pick either one.
+    //
+    // Best-effort: at this point the workflow is already queued and the
+    // dashboard's active-runs view reflects the live run — a label-flip
+    // hiccup shouldn't error the whole approve flow. The next
+    // user-click is protected by the idempotency guard above; the
+    // implement workflow's own end-of-phase label transition will
+    // reconcile the stuck label.
     const nextLabels = labels
-      .filter((l) => l !== 'state:spec-ready')
+      .filter((l) => !l.startsWith('state:'))
       .concat('state:implementing');
     try {
       await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
     } catch (err) {
       console.warn(
-        `dispatchExistingIssue: state:implementing label flip failed for ${owner}/${repo}#${issue_number} (run is already dispatched):`,
+        `dispatchExistingIssue: state:implementing label flip failed for ${owner}/${repo}#${issue_number} (run is already dispatched; idempotency guard will catch a re-click):`,
         err,
       );
     }

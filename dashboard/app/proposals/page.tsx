@@ -366,7 +366,7 @@ function Section({
               ) : (
                 <>
                   {typeof p.meta?.issue_number === 'number' ? (
-                    <ProposalBrainstormButton issueNumber={p.meta.issue_number} />
+                    <ProposalBrainstormButton issueNumber={p.meta.issue_number} repo={p.repo} />
                   ) : null}
                   {resolveLabel(p) ? (
                     <form action={resolveProposalAction}>

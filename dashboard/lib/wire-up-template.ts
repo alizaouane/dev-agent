@@ -268,7 +268,8 @@ recent_decisions: []
 
 # Competitors the PM should watch. Each entry surfaces as a "review
 # competitor X" proposal on /proposals — click "Brainstorm in Claude Code"
-# to extract feature ideas relevant to your goals. Snooze handles noise.
+# to copy a /develop --from-issue <#> command and continue in your
+# Claude Code session. Snooze handles noise.
 competitors: []
 # Example shape:
 # competitors:

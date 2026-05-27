@@ -149,6 +149,13 @@ describe('dispatchExistingIssue', () => {
     });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
     mockOctokit.issues.setLabels.mockResolvedValue({});
+    // Default: no active runs — the idempotency guard inside
+    // dispatchExistingIssue calls fetchActiveRunsForIssue which calls
+    // octokit.actions.listWorkflowRuns under the hood, so an empty
+    // response makes the guard pass through.
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
+      data: { workflow_runs: [] },
+    });
   });
 
   it('dispatches implement workflow and flips state:spec-ready → state:implementing', async () => {
@@ -201,6 +208,93 @@ describe('dispatchExistingIssue', () => {
     });
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
     expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-numeric issue input without calling the dispatch', async () => {
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42oops');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({ error: expect.stringMatching(/issue/i) });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('refuses dispatch when an active run already targets the issue', async () => {
+    // Idempotency guard: a previous approve hit a label-flip failure
+    // (issue stuck at state:spec-ready) but the dispatch succeeded —
+    // the second click must not queue a duplicate implement run.
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
+      data: {
+        workflow_runs: [
+          {
+            id: 999,
+            status: 'in_progress',
+            display_title: 'implement → issue #42 (live)',
+            created_at: '2026-05-27T00:00:00Z',
+            html_url: 'https://github.com/x/y/actions/runs/999',
+          },
+        ],
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({
+      error: expect.stringContaining('active run'),
+      issue_url: 'https://github.com/x/y/issues/42',
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('strips all state:* labels (not just state:spec-ready) when flipping to state:implementing', async () => {
+    // Defensive against issues that ended up with two state labels (e.g.,
+    // from a prior recovery step). Downstream consumers read a single
+    // state — leaving the extra around would let them pick the wrong one.
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [
+          { name: 'state:spec-ready' },
+          { name: 'state:scoping' },
+          { name: 'kind:feature' },
+        ],
+        html_url: 'https://github.com/x/y/issues/42',
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    await expect(dispatchExistingIssue(fd)).rejects.toThrow(/__redirect__:/);
+    const setLabelsCall = mockOctokit.issues.setLabels.mock.calls[0][0];
+    expect(setLabelsCall.labels).toEqual(['kind:feature', 'state:implementing']);
+    expect(setLabelsCall.labels).not.toContain('state:spec-ready');
+    expect(setLabelsCall.labels).not.toContain('state:scoping');
+  });
+
+  it('still redirects when post-dispatch label flip fails (idempotency guard handles re-clicks)', async () => {
+    // setLabels failure after a successful dispatch is logged + swallowed
+    // because the workflow is already queued. The next user-click is
+    // protected by the active-runs idempotency guard (covered above), so
+    // a stuck label can't cause duplicate dispatches.
+    mockOctokit.issues.setLabels.mockRejectedValue(new Error('label-fail'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    await expect(dispatchExistingIssue(fd)).rejects.toThrow(/__redirect__:\/features\/42/);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('label flip failed'),
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
   });
 });
 

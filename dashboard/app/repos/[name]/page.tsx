@@ -179,7 +179,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                   </a>
                 </div>
                 {typeof p.meta?.issue_number === 'number' ? (
-                  <ProposalBrainstormButton issueNumber={p.meta.issue_number} />
+                  <ProposalBrainstormButton issueNumber={p.meta.issue_number} repo={p.repo} />
                 ) : (
                   <Link href="/intent" className="text-sm hover:underline">
                     Brainstorm in Claude Code
