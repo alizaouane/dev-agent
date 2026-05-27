@@ -68,7 +68,7 @@
                           • Commit spec + plan
                             to consumer repo
                           • Create issue with
-                            state:approved
+                            state:spec-ready
                           • Link spec + plan
                             in body
                                   │

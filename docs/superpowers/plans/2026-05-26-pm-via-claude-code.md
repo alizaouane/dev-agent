@@ -39,7 +39,7 @@
 - `dashboard/app/intent/page.tsx` — replace chat with static explainer.
 - `dashboard/lib/actions.ts` — remove `extractAgreedScope`, `approveAndStart`'s scope-extraction branch, and `applyPmMdUpdate`. Add `dispatchExistingIssue` for the new "approve an issue already at `state:spec-ready`" path.
 - `dashboard/__tests__/lib/actions.test.ts` — drop `applyPmMdUpdate` + scope-extraction tests; add `dispatchExistingIssue` tests.
-- `dashboard/package.json` — drop `@ai-sdk/anthropic`, `@ai-sdk/react`, and `ai` if no other consumer remains.
+- `dashboard/package.json` — drop `@ai-sdk/react` (PmChat was the only consumer). **Keep `@ai-sdk/anthropic` and `ai`** — both are still used server-side by `categorize-proposals.ts` and `recommend-next.ts`. Verify with grep before uninstalling anything.
 
 **Docs:**
 - `README.md` — add Install note pinning the validated superpowers version, mention `/develop` as the canonical brainstorming entry point.
@@ -445,7 +445,7 @@ Then:
 1. **Verify spec + plan are committed to the consumer's default branch** (or to the PR branch if `spec_plan_via_pr: true` in `.dev-agent.yml`).
 2. **Build the issue body:**
 
-   ```
+   ```text
    Spec: <spec-path-on-default-branch>
    Plan: <plan-path-on-default-branch>
 
@@ -485,8 +485,9 @@ Then:
 
 `/develop --resume`:
 
-1. Find the most recent `.md` in `docs/superpowers/specs/` whose corresponding `docs/plans/<same-date>-<same-topic>.md` doesn't exist (Phase 2 done, Phase 3 not started), OR no `state:spec-ready` issue references the spec path (Phase 3 done, Phase 4 not started).
-2. Resume at the appropriate phase.
+1. Find the most recent `.md` in `docs/superpowers/specs/` whose corresponding plan file doesn't exist at **either** `docs/plans/<same-date>-<same-topic>.md` **or** `docs/superpowers/plans/<same-date>-<same-topic>.md` (Phase 2 done, Phase 3 not started). The `superpowers:writing-plans` skill writes under `docs/superpowers/plans/` by default; some consumers may use `docs/plans/` — check both before declaring Phase 3 incomplete.
+2. If both plan paths are absent and no `state:spec-ready` issue references the spec path, the brainstorm hasn't progressed past Phase 2; resume at Phase 3.
+3. Otherwise resume at the appropriate phase.
 
 ## Notes for the operator
 
@@ -517,7 +518,7 @@ Use `caliente-booking-app` or `social-media-content` (whichever has a `.dev-agen
 
 In Claude Code, from the consumer repo dir:
 
-```
+```text
 /develop "add a dark mode toggle to the settings page"
 ```
 

@@ -65,7 +65,7 @@ Then:
 1. **Verify spec + plan are committed to the consumer's default branch** (or to the PR branch if `spec_plan_via_pr: true` in `.dev-agent.yml`).
 2. **Build the issue body:**
 
-   ```
+   ```text
    Spec: <spec-path-on-default-branch>
    Plan: <plan-path-on-default-branch>
 
@@ -105,8 +105,9 @@ Then:
 
 `/develop --resume`:
 
-1. Find the most recent `.md` in `docs/superpowers/specs/` whose corresponding `docs/plans/<same-date>-<same-topic>.md` doesn't exist (Phase 2 done, Phase 3 not started), OR no `state:spec-ready` issue references the spec path (Phase 3 done, Phase 4 not started).
-2. Resume at the appropriate phase.
+1. Find the most recent `.md` in `docs/superpowers/specs/` whose corresponding plan file doesn't exist at **either** `docs/plans/<same-date>-<same-topic>.md` **or** `docs/superpowers/plans/<same-date>-<same-topic>.md` (Phase 2 done, Phase 3 not started). The `superpowers:writing-plans` skill writes under `docs/superpowers/plans/` by default, but consumers may use `docs/plans/` per their own convention — check both before declaring Phase 3 incomplete.
+2. If both plan paths exist but no `state:spec-ready` issue in the consumer repo references the spec path, resume at Phase 4 (handoff).
+3. Otherwise resume at the appropriate phase.
 
 ## Notes for the operator
 
