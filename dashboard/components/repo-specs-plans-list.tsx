@@ -70,8 +70,9 @@ function FileList({
       ) : (
         <ul className="divide-y divide-border text-sm">
           {files.map((path) => {
-            const filename = path.split('/').pop() ?? path;
-            const dir = path.slice(0, path.length - filename.length - 1);
+            const parts = path.split('/');
+            const filename = parts.pop() ?? path;
+            const dir = parts.join('/');
             return (
               <li key={path} className="flex items-start justify-between gap-3 py-2">
                 <div className="min-w-0">
