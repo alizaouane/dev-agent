@@ -80,6 +80,23 @@
 
 Each phase is structured so you can re-enter at any point (`/develop --resume`, `/develop --from-spec <path>`) without re-doing the previous phase.
 
+### Entry point: skill, not slash command (v1.1 revision)
+
+After shipping the slash-command-only version, two problems surfaced:
+
+1. **`superpowers:writing-plans` hijacks Phase 3.** That skill's terminal state is its own "Execution Handoff" prompt (subagent-driven vs inline). Once Claude Code is inside writing-plans, it follows the skill's terminal state — it does not return to `/develop` Phase 4 to file the issue. The handoff issue never gets filed and the user has to file it manually.
+2. **Slash commands require explicit invocation.** The user has to remember `/develop`. For a workflow that should be the canonical entry point ("I want to start a feature"), this is friction.
+
+**Resolution:** the primary entry point becomes a **Claude Code skill** (`dev-agent:start-feature`) that:
+
+- Auto-activates on intents matching its description (pitching a feature, reporting a bug, "what should I work on", etc.)
+- **Inlines all four phases** in a single SKILL.md — no calls to `superpowers:brainstorming` or `superpowers:writing-plans`. The brainstorming and plan-writing *patterns* are embedded directly, so there's no skill boundary where another skill's terminal state can hijack control.
+- **Enforces Phase 4 via TodoWrite.** The first thing the skill does is create a 4-item checklist (PM eval / spec / plan / issue filed). Phase 4 stays `pending` until the GitHub issue URL is printed — an open todo is a visible signal that the skill is not finished.
+
+The `/develop` slash command stays as a thin wrapper around the skill (for explicit invocation, backward compat, and dashboard copy-paste from `/proposals`). The skill is the source of truth for the orchestration logic.
+
+See [skills/start-feature/SKILL.md](../../../skills/start-feature/SKILL.md) for the actual implementation.
+
 ---
 
 ## Slash command surface
