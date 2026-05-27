@@ -610,6 +610,152 @@ export async function dispatchExistingIssue(
 }
 
 /**
+ * Start implementation from a spec + plan that already live on the
+ * default branch — the path for specs authored before the `/develop`
+ * skill (or anything else that bypassed the normal PM flow). Creates a
+ * fresh `state:spec-ready` issue whose body links Spec + Plan in the
+ * exact format the implement workflow's prompt-render step expects,
+ * then dispatches the workflow immediately and flips the label to
+ * `state:implementing`.
+ *
+ * Returns `{ error }` for surface-able failures (missing file, wrong
+ * input) and throws for write-perm refusal — same contract as
+ * `dispatchExistingIssue`.
+ */
+export async function dispatchFromSpec(
+  formData: FormData,
+): Promise<ApproveAndStartError | void> {
+  let issueNumberForRedirect: number | null = null;
+  let repoFullForRedirect: string | null = null;
+  let issueUrl: string | null = null;
+
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = (formData.get('repo') as string).trim();
+    const spec_path = (formData.get('spec_path') as string).trim();
+    const plan_path = (formData.get('plan_path') as string).trim();
+    const title = (formData.get('title') as string).trim();
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    if (!spec_path) return { error: 'spec_path is required' };
+    if (!plan_path) return { error: 'plan_path is required' };
+    if (!title) return { error: 'title is required' };
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    const repoData = await wrapStep('looking up repo', () =>
+      octokit.repos.get({ owner, repo }),
+    );
+    const default_branch = repoData.data.default_branch;
+
+    // Verify both files exist on the default branch before creating the
+    // issue. Catching the typo / wrong-path mistake here keeps us from
+    // filing an orphan issue that the implement agent would then choke on.
+    const specExists = await fileExistsOnBranch(octokit, owner, repo, spec_path, default_branch);
+    if (!specExists) {
+      return {
+        error: `spec_path not found on ${default_branch}: ${spec_path}`,
+      };
+    }
+    const planExists = await fileExistsOnBranch(octokit, owner, repo, plan_path, default_branch);
+    if (!planExists) {
+      return {
+        error: `plan_path not found on ${default_branch}: ${plan_path}`,
+      };
+    }
+
+    const body = [
+      `Spec: ${spec_path}`,
+      `Plan: ${plan_path}`,
+      '',
+      '## TL;DR',
+      '',
+      `Implementing the spec at \`${spec_path}\` per the plan at \`${plan_path}\`.`,
+      '',
+      'Filed from the dashboard "Start from existing spec" panel.',
+    ].join('\n');
+
+    const created = await wrapStep('creating spec-ready issue', () =>
+      octokit.issues.create({
+        owner,
+        repo,
+        title,
+        body,
+        labels: ['kind:feature', 'state:spec-ready'],
+      }),
+    );
+    const issue_number = created.data.number;
+    issueUrl = created.data.html_url;
+
+    await wrapStep('dispatching implement workflow', () =>
+      octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: 'dev-agent.yml',
+        ref: default_branch,
+        inputs: {
+          phase: 'implement',
+          issue_number: String(issue_number),
+          invocation_mode: 'live',
+        },
+      }),
+    );
+
+    // Strip every state:* label and add state:implementing. Same rule as
+    // dispatchExistingIssue — keeps downstream consumers from having to
+    // disambiguate between two state labels.
+    const nextLabels = ['kind:feature', 'state:implementing'];
+    try {
+      await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
+    } catch (err) {
+      console.warn(
+        `dispatchFromSpec: state:implementing label flip failed for ${owner}/${repo}#${issue_number} (run is already dispatched):`,
+        err,
+      );
+    }
+
+    issueNumberForRedirect = issue_number;
+    repoFullForRedirect = repoFull;
+  } catch (e) {
+    const message = formatApproveError(e, issueUrl);
+    console.error('[dispatchFromSpec] failed', {
+      message,
+      issueUrl,
+      raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
+    });
+    return { error: message, ...(issueUrl ? { issue_url: issueUrl } : {}) };
+  }
+
+  revalidatePath('/');
+  redirect(
+    `/features/${issueNumberForRedirect}?repo=${encodeURIComponent(repoFullForRedirect!)}`,
+  );
+}
+
+/**
+ * Returns true if `path` resolves to a file (not a directory) on
+ * `ref`. 404 → false; other errors propagate so a real API failure
+ * doesn't silently look like "file missing."
+ */
+async function fileExistsOnBranch(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  path: string,
+  ref: string,
+): Promise<boolean> {
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
+    if (Array.isArray(data)) return false;
+    return 'type' in data && data.type === 'file';
+  } catch (err) {
+    if ((err as { status?: number }).status === 404) return false;
+    throw err;
+  }
+}
+
+/**
  * Wrap a single step so its failure carries the step name and the
  * upstream API status. Without this, the user just sees Octokit's bare
  * "HttpError" message and can't tell whether it was the issue create,

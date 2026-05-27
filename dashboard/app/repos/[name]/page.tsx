@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { listAllowedRepos } from '@/lib/repos';
 import { loadOverrideEvents } from '@/lib/dashboard/override-events';
 import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
+import { listSpecAndPlanFiles } from '@/lib/dashboard/list-spec-plan-files';
 import { runAllScouts } from '@/lib/scout';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
 import { FeatureCard } from '@/components/feature-card';
@@ -17,6 +18,7 @@ import { BugScoutScheduleForm } from '@/components/bug-scout-schedule-form';
 import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
+import { StartFromSpecPanel } from '@/components/start-from-spec-panel';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
@@ -75,6 +77,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     tier2SmokeInstalled,
     swarmOverrideInstalled,
     overrideEvents,
+    specPlanFiles,
   ] = await Promise.all([
     loadRepoWorkspace(octokit, repo),
     runAllScouts(octokit, [repo]).catch(() => []),
@@ -99,6 +102,12 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     repo.wired_up
       ? loadOverrideEvents(octokit, { owner: repo.owner, name: repo.name }).catch(() => [])
       : Promise.resolve([]),
+    repo.wired_up
+      ? listSpecAndPlanFiles(octokit, repo.owner, repo.name, repo.default_branch).catch(() => ({
+          specs: [],
+          plans: [],
+        }))
+      : Promise.resolve({ specs: [], plans: [] }),
   ]);
 
   const [pmMdPresent] = await Promise.all([
@@ -137,6 +146,17 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           </a>
         </p>
       </div>
+
+      {/* Band 1.5 — Start from existing spec */}
+      {repo.wired_up ? (
+        <section>
+          <StartFromSpecPanel
+            repo={name}
+            specs={specPlanFiles.specs}
+            plans={specPlanFiles.plans}
+          />
+        </section>
+      ) : null}
 
       {/* Band 2 — In flight */}
       <section>
