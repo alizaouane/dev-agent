@@ -1,5 +1,25 @@
 # Session Log
 
+## 2026-05-27 19:15 UTC — interactive — fix wireUpRepo 422 sha bug for half-wired consumer repos
+
+**Trigger:** User clicked "Wire up dev-agent" on `alizaouane/whatsapp-console` and got `committing .github/workflows/dev-agent-bug-scout.yml failed — GitHub API 422: Invalid request. "sha" wasn't supplied.` Diagnosis showed `wireUpRepo` calls `octokit.repos.createOrUpdateFileContents` without a `sha` — GitHub's Contents API requires the existing file's `sha` on update. The repo had been partially cleaned by commit `284d23b` (2026-05-25) which removed `.dev-agent.yml` + `dev-agent.yml` but left the scout/verification workflows orphaned, so the pre-check on `.dev-agent.yml` happily passed and the loop blew up on the first orphan.
+
+**What changed (branch `feat/wire-up-sha-fix`, off `main`):**
+
+- **Fix:** [dashboard/lib/actions.ts](dashboard/lib/actions.ts) — added `fetchExistingFileSha(octokit, owner, repo, path, ref)` helper next to `wrapStep` that returns the existing file's sha or undefined on 404. `wireUpRepo` calls it for each `WIRE_UP_FILES` entry and forwards `sha` to `createOrUpdateFileContents` when present. Makes re-wires idempotent against orphans from partial prior wire-ups.
+- **Test:** [dashboard/__tests__/lib/actions.test.ts](dashboard/__tests__/lib/actions.test.ts) — new RED-first test "passes existing file's sha when a template file already exists on the default branch" reproduces the orphan scenario (bug-scout exists with sha, others 404), asserts the orphan gets `sha: 'EXISTING_SHA_123'` and the fresh files don't carry sha. Existing wireUpRepo/installWorkflow tests' `getContent.mockRejectedValueOnce` → `mockRejectedValue` (catch-all) so per-file probes return 404 in tests where no orphan is set up.
+- **Tests:** 458/458 dashboard tests passing. Typecheck clean (remaining errors are from pre-existing macOS-sync `*  2.tsx` duplicate-file artifacts, unrelated to this branch).
+- **`installWorkflow` left alone:** its idempotency guard (`getContent → throw "already installed"`) means the sha-on-update path is never reached; the bug only manifests in `wireUpRepo`'s per-file loop.
+
+**Deferred / Next:**
+
+- **Recovery for `alizaouane/whatsapp-console`** is pending the merge of this PR. User chose "wait for the code fix, then re-wire" — once merged + deployed, the recovery path is: delete `.dev-agent.yml` from the consumer's `main` to clear the precheck, then click "Wire up dev-agent" again. With the fix, the loop now forwards `sha` for the orphaned scout/verification workflows and finishes the wire-up cleanly.
+- **Considered + rejected:** smarter "complete a partial wire-up" UX that detects the half-wired state and resumes. Adds complexity for a rare condition that the cleanup cmd shouldn't have created in the first place. The fix makes re-wire idempotent which is the right invariant; the cleanup cmd is the thing to harden if this recurs.
+
+**Next session should start with:** open the PR for `feat/wire-up-sha-fix` → `main`, get review, merge, then walk the user through the consumer-repo recovery (delete `.dev-agent.yml`, re-click Wire up).
+
+---
+
 ## 2026-05-26 UTC — interactive — PM brainstorming moves into Claude Code via /develop
 
 **Trigger:** User: "the PM brainstorming is not user friendly and doesn't use claude code at all. I need it to use claude code so I can use the claude code skills there." After pushback on the dashboard-first principle, the user clarified: "I use mainly claude code for my coding." That reframed the work — for this user, brainstorming + spec + plan writing belong in Claude Code (where the superpowers skills already do this job well), while the dashboard keeps proposals + approvals + engine orchestration.
