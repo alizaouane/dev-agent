@@ -19,6 +19,7 @@ import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { StartFromSpecPanel } from '@/components/start-from-spec-panel';
+import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
@@ -146,6 +147,21 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           </a>
         </p>
       </div>
+
+      {/* Band 1.4 — Specs & plans on the default branch (read-only browse) */}
+      {repo.wired_up ? (
+        <section>
+          <h2 className="mb-3 text-lg font-semibold">
+            Specs &amp; plans on <code className="text-base">{repo.default_branch}</code>
+          </h2>
+          <RepoSpecsPlansList
+            repoHtmlUrl={repo.html_url}
+            defaultBranch={repo.default_branch}
+            specs={specPlanFiles.specs}
+            plans={specPlanFiles.plans}
+          />
+        </section>
+      ) : null}
 
       {/* Band 1.5 — Start from existing spec */}
       {repo.wired_up ? (
