@@ -71,10 +71,13 @@ If any check fails, surface the error verbatim and stop. Do not proceed.
 - [ ] Phase 1: PM evaluation → Agreed scope
 - [ ] Phase 2: Spec written + committed
 - [ ] Phase 3: Plan written + committed
+- [ ] Phase 3.5: spec-review run; verdict ok or concerns
 - [ ] Phase 4: GitHub issue filed at state:spec-ready
 ```
 
 Use the TodoWrite tool. Mark each item `in_progress` when starting that phase, `completed` only when done. **Phase 4 stays `pending` until the issue URL is printed.** An incomplete todo is the visible signal that the skill is not finished — do not announce "done" or end the turn while any item is pending.
+
+**Phase 3.5 skip exception:** if Phase 1's PM evaluation classified the work as trivial (one-liner, typo, copy fix), mark Phase 3.5 `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill.
 
 ## Phase 1 — PM evaluation
 
@@ -117,48 +120,14 @@ The brainstorming pattern:
 
 **Trivial work shortcut.** If during Phase 1 the PM determined this is a one-liner (typo, color tweak, copy fix), skip the design sections and write a 3-paragraph spec: "what changes, why, acceptance criteria." Do not force a multi-question brainstorm on trivial work.
 
-**Spec document.** Write to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` where `<topic>` is a 2-4 word slug derived from the feature title. Standard structure:
+**Spec document.** Write to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` where `<topic>` is a 2-4 word slug derived from the feature title.
 
-```markdown
-# <Feature title>
+**Use the canonical spec template** at `${PLUGIN_DIR}/templates/spec.template.md`. Read it once at the start of Phase 2 — its embedded HTML comments explain what each section needs and what the `spec-review` skill (Phase 3.5) will check for. Fill placeholders (`{{feature_title}}`, `{{YYYY-MM-DD}}`, `{{owner_name_or_email}}`) and replace each `<…>` block with real content. Keep all section headers — `spec-review` enforces their presence.
 
-**Date:** YYYY-MM-DD
-**Owner:** <user's name or email from `git config user.email`>
-**Status:** Approved (brainstorm complete; ready for plan)
+Two sections are new since the older inline format and matter most:
 
-## Context
-
-<Problem statement; why this matters; what's broken or missing today.>
-
-## Goals
-
-- <bullet>
-- <bullet>
-
-## Non-goals
-
-- <bullet — what we explicitly skip>
-
-## Architecture
-
-<2-5 paragraphs describing the approach. Diagrams if helpful.>
-
-## Implementation outline
-
-<File-by-file or component-by-component sketch — enough that the plan in Phase 3 can be derived. NOT a step-by-step task list (that's Phase 3).>
-
-## Edge cases
-
-<bulleted list>
-
-## Testing strategy
-
-<bulleted list of what tests we need>
-
-## Out of scope (defer)
-
-<bullets — explicitly deferred work>
-```
+- **`## Acceptance Criteria`** — numbered (`AC-1`, `AC-2`, …), atomic, user-visible, testable. The plan's tasks reference these by number (e.g. `Task 1: Account creation (AC: 1, 2)`). The `spec-review` skill cross-checks every AC against a plan task.
+- **`## Files to Touch`** — explicit Create / Modify / Tests paths. The implement agent honors `prompts/implement.md`'s "touch only files the spec declares" rule against this list. drift-check fires on any out-of-list modification.
 
 **Commit the spec** to the default branch:
 
@@ -174,70 +143,13 @@ Mark Phase 2 todo complete. Move to Phase 3.
 
 ## Phase 3 — Plan writing (inline plan template)
 
-**Do NOT invoke `superpowers:writing-plans` as a separate skill.** Same reason: its terminal state ("Execution Handoff: subagent-driven vs inline") would steal control and start executing locally instead of returning to Phase 4 for the issue handoff. Inline the plan template.
+**Do NOT invoke `superpowers:writing-plans` as a separate skill.** Same reason: its terminal state ("Execution Handoff: subagent-driven vs inline") would steal control and start executing locally instead of returning to Phase 4 for the issue handoff. Use the canonical plan template instead.
 
-The plan structure:
+**Use the canonical plan template** at `${PLUGIN_DIR}/templates/plan.template.md`. Read it once at the start of Phase 3. Fill `{{feature_title}}` and replace each `<…>` block with real content. Keep the structure: header → Goal → Architecture → Tech Stack → `## File Structure` → numbered `## Task N: <name> (AC: …)` sections each with 5-step TDD subtasks.
 
-```markdown
-# <Feature title> Implementation Plan
+**Mirror Files to Touch.** The plan's `## File Structure` section MUST list the same paths the spec's `## Files to Touch` section listed. The `spec-review` skill in Phase 3.5 cross-checks the two — mismatches are gate-failing.
 
-> **For agentic workers:** the dev-agent engine implements this plan via the consumer repo's GitHub Actions workflow `phase-implement.yml`. The implementation agent reads this plan task-by-task during the implement phase.
-
-**Goal:** <one sentence>
-
-**Architecture:** <2-3 sentences>
-
-**Tech Stack:** <key technologies + libraries from the existing codebase>
-
----
-
-## File Structure
-
-- Create: `exact/path/to/new-file.ts`
-- Modify: `exact/path/to/existing.ts:LINE-RANGE`
-- Test: `tests/exact/path/to/test.ts`
-
-## Task 1: <component name>
-
-**Files:**
-- Create: `exact/path/to/file.ts`
-- Test: `tests/exact/path/to/file.test.ts`
-
-- [ ] Step 1: Write the failing test
-
-  ```typescript
-  // exact test code
-  ```
-
-- [ ] Step 2: Run test to confirm it fails
-
-  ```bash
-  npm test -- tests/exact/path/to/file.test.ts
-  ```
-  Expected: FAIL with "<expected error>"
-
-- [ ] Step 3: Implement minimum to pass
-
-  ```typescript
-  // exact implementation
-  ```
-
-- [ ] Step 4: Run test to confirm green
-
-  ```bash
-  npm test -- tests/exact/path/to/file.test.ts
-  ```
-  Expected: PASS
-
-- [ ] Step 5: Commit
-
-  ```bash
-  git add <files>
-  git commit -m "feat(<scope>): <short message>"
-  ```
-
-## Task 2: ...
-```
+**Reference ACs.** Every `## Task N:` header must carry an `(AC: 1, 3)` annotation pointing at the spec's ACs. `spec-review` requires every spec AC to appear in at least one plan task.
 
 **Bite-sized step granularity.** Each step is one action (2-5 minutes). Write test → run → implement → run → commit = 5 steps per task. Mechanical and unambiguous.
 
@@ -253,7 +165,25 @@ git commit -m "docs(plan): <feature title>"
 git push
 ```
 
-Mark Phase 3 todo complete. Move to Phase 4. **Do not pause to ask "should I execute this plan?" — that's not what this skill does.** The engine implements the plan. Your job is to file the handoff issue.
+Mark Phase 3 todo complete. Move to Phase 3.5.
+
+## Phase 3.5 — spec-review (adversarial fresh-context audit)
+
+Before filing the handoff issue, run the `dev-agent:spec-review` skill against the just-written spec and plan. This is the gate that catches the class of bugs the spec author missed in Phase 2/3 — wheel reinvention, missing tests, files-to-touch paths that don't resolve, AC ↔ plan mismatches, scope creep.
+
+**Skip if trivial.** If Phase 1 marked the work as trivial (one-liner / typo / copy fix), mark Phase 3.5 todo `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill and the friction isn't worth it.
+
+**Otherwise invoke spec-review:**
+
+Use the `Skill` tool to invoke `dev-agent:spec-review`. Pass the absolute paths to the spec and plan you just wrote. The skill runs in a fresh-context audit pass and writes its verdict to `.dev-agent/spec-review.json` + `.dev-agent/spec-review-summary.md` in the consumer repo, then prints the verdict word (`ok` | `concerns` | `blocker`) on its final stdout line.
+
+**Handle the verdict:**
+
+- **`ok`** — silent pass. Proceed to Phase 4. Reference `.dev-agent/spec-review.json` in the issue body so the dashboard / approver can see the review was clean.
+- **`concerns`** — print the summary from `.dev-agent/spec-review-summary.md` to the user. Ask: "Address the concerns now (return to Phase 2 or 3), or proceed and surface them in the issue body for the approver to consider?" Default to proceeding if no user input within the same turn.
+- **`blocker`** — print the summary. Refuse to advance to Phase 4. Tell the user which sections of the spec or plan to fix. Mark Phase 3.5 todo `in_progress` (still). On the next attempt, re-run spec-review from the top — do NOT cache the previous verdict.
+
+Mark Phase 3.5 todo `completed` only on `ok` or user-acknowledged `concerns`. Move to Phase 4.
 
 ## Phase 4 — Handoff (single bash invocation)
 
@@ -268,6 +198,18 @@ TITLE="<feature title from Phase 1>"
 KIND="feature"  # or "bug" or "improvement" — set per Phase 1's determination
 TLDR="$(awk '/^## /{exit} NR>1 && NF' "$SPEC_PATH" | head -10)"
 
+SPEC_REVIEW_BLOCK=""
+if [ -f .dev-agent/spec-review-summary.md ]; then
+  SPEC_REVIEW_BLOCK=$(cat <<EOF
+
+## Spec review
+
+$(cat .dev-agent/spec-review-summary.md)
+
+EOF
+)
+fi
+
 BODY=$(cat <<EOF
 Spec: ${SPEC_PATH}
 Plan: ${PLAN_PATH}
@@ -275,7 +217,7 @@ Plan: ${PLAN_PATH}
 ## TL;DR
 
 ${TLDR}
-
+${SPEC_REVIEW_BLOCK}
 ---
 
 Brainstormed and planned via the \`start-feature\` skill in Claude Code. Tap **Approve and start implementation** in the dashboard to dispatch the implement workflow.
@@ -316,6 +258,8 @@ Mark Phase 4 todo complete. **Now the skill is done.** No further work. The user
 - **User exits mid-Phase 2 or 3** → spec or plan may be committed but Phase 4 didn't run. **The TodoWrite list still has the open item.** On next invocation, this skill should detect the orphan draft and offer to resume at the correct phase.
 - **`gh issue create` fails** for reasons other than missing labels (rate limit, network, perm change since Phase 0) → print the would-be issue body so the user can file manually via the web UI, surface the gh error verbatim, leave Phase 4 todo `pending`.
 - **Phase 2 or 3 commit fails** (pre-commit hooks, merge conflict, etc.) → surface the error, leave the corresponding todo `pending`. Do NOT skip ahead.
+- **Phase 3.5 spec-review returns `blocker`** → print the summary, refuse to advance, leave Phase 3.5 todo `in_progress`. On re-attempt, fix the cited spec/plan sections then re-run spec-review from the top. Do NOT cache the prior verdict.
+- **spec-review skill fails to invoke** (skill not installed, internal error) → emit a warning, log the error, mark Phase 3.5 todo `completed` with note "spec-review unavailable" and proceed to Phase 4. Do not block on tool failures — the dashboard's approve gate is still in place as a backstop.
 
 ## Resumption
 
