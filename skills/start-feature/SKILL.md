@@ -171,6 +171,12 @@ Mark Phase 3 todo complete. Move to Phase 3.5.
 
 Before filing the handoff issue, run the `dev-agent:spec-review` skill against the just-written spec and plan. This is the gate that catches the class of bugs the spec author missed in Phase 2/3 — wheel reinvention, missing tests, files-to-touch paths that don't resolve, AC ↔ plan mismatches, scope creep.
 
+**Clear stale artifacts first.** Always remove any leftover `.dev-agent/spec-review.json` and `.dev-agent/spec-review-summary.md` from a prior `/develop` run in this clone, BEFORE branching on the verdict path. After this, the files exist only if the current run produced them — Phase 4's "include the summary in the issue body if it exists" check then can't pick up stale review text:
+
+```bash
+rm -f .dev-agent/spec-review.json .dev-agent/spec-review-summary.md
+```
+
 **Skip if trivial.** If Phase 1 marked the work as trivial (one-liner / typo / copy fix), mark Phase 3.5 todo `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill and the friction isn't worth it.
 
 **Otherwise invoke spec-review:**
