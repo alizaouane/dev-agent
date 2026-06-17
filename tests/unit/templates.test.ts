@@ -34,7 +34,10 @@ describe('templates/', () => {
       expect(raw).toContain('# {{feature_title}}');
       expect(raw).toContain('**Date:** {{YYYY-MM-DD}}');
       expect(raw).toContain('**Owner:** {{owner_name_or_email}}');
-      expect(raw).toContain('**Status:** Approved');
+      // Default is Draft — the spec is in progress until Phase 3.5's
+      // adversarial review runs. CodeRabbit flagged that Approved as a
+      // default makes in-progress specs look finalized too early.
+      expect(raw).toContain('**Status:** Draft');
     });
 
     it('contains every section the spec-review skill enforces', () => {

@@ -47,15 +47,30 @@ For each check, record:
 - `verdict` — `pass` | `concern` | `fail`
 - `note` — one sentence; cite the spec/plan section where the issue is
 
-### Step 3: Cross-check Files to Touch against the working tree
+### Step 3: Cross-check Files to Touch against the default branch tree
 
 For each path in the spec's `## Files to Touch` section:
 
-- **Create** entries: confirm the path does NOT already exist (if it does, the spec should say "Modify" instead, or the create will clobber)
+- **Create** entries: confirm the path does NOT already exist on the default branch (if it does, the spec should say "Modify" instead, or the create will clobber)
 - **Modify** entries: confirm the path DOES exist on the default branch
-- **Tests** entries: confirm the directory exists (test files may or may not exist; the directory must)
+- **Tests** entries: confirm the parent directory exists on the default branch (test files may or may not exist; the directory must)
 
-Use `Bash` (`test -f`, `test -d`) — fast, deterministic. Mismatches are gate-failing.
+**Use git tree lookups, not filesystem checks.** The implement agent runs on a fresh checkout of the default branch — a dirty working tree or non-default checkout in `consumer_root` would otherwise let a bad spec sneak past.
+
+```bash
+# Resolve the default branch ref once
+git fetch --quiet origin 2>/dev/null || true
+DEFAULT_REF=$(git symbolic-ref --quiet refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@')
+DEFAULT_REF=${DEFAULT_REF:-origin/main}  # fallback if origin/HEAD is unset
+
+# Existence check (use this for Create-collision and Modify-resolves):
+git cat-file -e "$DEFAULT_REF:$path" 2>/dev/null && echo exists || echo missing
+
+# Directory check (for Tests parent dirs):
+git ls-tree -d --name-only "$DEFAULT_REF" "$path" 2>/dev/null
+```
+
+Mismatches are gate-failing. If `$DEFAULT_REF` cannot be resolved at all (no origin remote, unfetched, etc.), treat that as a validation-cannot-run condition — see Failure modes.
 
 ### Step 4: Cross-check AC ↔ plan tasks
 
@@ -117,8 +132,9 @@ Print the verdict word (`ok` | `concerns` | `blocker`) on the final line of stdo
 
 - **Spec or plan path doesn't exist** → emit `verdict: blocker`, summary "Required input missing: \<path\>".
 - **Spec format unparseable** (e.g. missing `## Acceptance Criteria` header) → emit `verdict: blocker`, summary explaining which sections are missing.
-- **`.dev-agent.yml` missing** → degrade gracefully — skip the pillar-aware checks but run everything else. Note in the summary that pillar coverage couldn't be verified.
-- **`Bash` calls error** (working tree busy, perm denied) → log the error, mark affected checks as `concern` (not `fail`), continue.
+- **`.dev-agent.yml` missing** → degrade gracefully — skip the pillar-aware checks (category G) but run everything else. Note in the summary that pillar coverage couldn't be verified.
+- **Default-branch ref unresolvable** (no `origin` remote, fetch failed, `origin/HEAD` and `origin/main` both missing) → fail closed. Emit `verdict: blocker`, summary "Files-to-Touch validation could not run: \<error\>". An unverified gate is not the same as a passed gate; downgrading to `concern` here would let invalid Create/Modify lists reach the implement agent.
+- **`Bash` calls error** during a check that cannot be retried (working tree busy, perm denied on a path that should exist) → fail closed for the affected check class. Emit `verdict: blocker`, summary stating which check class could not execute and including the original error. Don't degrade unexecuted validation to `concern`.
 
 ## Discipline
 

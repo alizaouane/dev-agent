@@ -2,7 +2,7 @@
 
 **Date:** {{YYYY-MM-DD}}
 **Owner:** {{owner_name_or_email}}
-**Status:** Approved (brainstorm complete; ready for plan)
+**Status:** Draft (brainstorm complete; ready for plan)
 
 <!--
 Spec template used by skills/start-feature Phase 2. The reviewer skill
@@ -58,6 +58,10 @@ declares" (prompts/implement.md). If a path isn't listed here, the agent
 won't touch it. drift-check fires on any out-of-list modification.
 
 Use repo-relative paths. Group by action.
+
+Convention: each "Modify" entry ends with " — <one-line reason>".
+spec-review's `files.reason-per-modify` check flags a concern (soft
+warning, not a blocker) when a Modify entry has no reason suffix.
 -->
 
 **Create:**

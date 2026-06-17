@@ -186,10 +186,10 @@ Use the `Skill` tool to invoke `dev-agent:spec-review`. Pass the absolute paths 
 **Handle the verdict:**
 
 - **`ok`** — silent pass. Proceed to Phase 4. Reference `.dev-agent/spec-review.json` in the issue body so the dashboard / approver can see the review was clean.
-- **`concerns`** — print the summary from `.dev-agent/spec-review-summary.md` to the user. Ask: "Address the concerns now (return to Phase 2 or 3), or proceed and surface them in the issue body for the approver to consider?" Default to proceeding if no user input within the same turn.
+- **`concerns`** — print the summary from `.dev-agent/spec-review-summary.md` to the user. Ask: "Address the concerns now (return to Phase 2 or 3), or proceed and surface them in the issue body for the approver to consider?" Default to proceeding if no user input within the same turn. **Either way, mark Phase 3.5 todo `completed`** — proceeding without acknowledgement still counts as proceeding; leaving the todo open would let Phase 4 advance with the checklist still showing work outstanding.
 - **`blocker`** — print the summary. Refuse to advance to Phase 4. Tell the user which sections of the spec or plan to fix. Mark Phase 3.5 todo `in_progress` (still). On the next attempt, re-run spec-review from the top — do NOT cache the previous verdict.
 
-Mark Phase 3.5 todo `completed` only on `ok` or user-acknowledged `concerns`. Move to Phase 4.
+Mark Phase 3.5 todo `completed` on `ok` or any `concerns` path (acknowledged or default-proceed). Only `blocker` leaves the todo `in_progress`. Move to Phase 4.
 
 ## Phase 4 — Handoff (single bash invocation)
 
@@ -211,6 +211,8 @@ if [ -f .dev-agent/spec-review-summary.md ]; then
 ## Spec review
 
 $(cat .dev-agent/spec-review-summary.md)
+
+_Machine-readable verdict: \`.dev-agent/spec-review.json\` (read by the dashboard to render the verdict pill)._
 
 EOF
 )

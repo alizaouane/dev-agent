@@ -72,9 +72,10 @@ The reviewer skill (skills/spec-review) cross-checks that:
 
 <!--
 Repeat the 5-step TDD pattern per task. Each step is one action
-(2-5 minutes). Every code block is real, copy-pasteable code, not a
-placeholder. The implement agent reads literally — vague steps
-produce vague code.
+(2-5 minutes). The sample blocks above use placeholders so the
+template stays readable; the AUTHORED plan must replace every
+placeholder with real, copy-pasteable code before the task is run.
+The implement agent reads literally — vague steps produce vague code.
 
 For trivial work (single-line fix), one task with 3 steps (edit, test,
 commit) is sufficient. Don't force a multi-task structure where it
