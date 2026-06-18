@@ -22,6 +22,15 @@ export const EXPECTED_SKILLS = [
   'tier2-smoke',
   // User-invocable skill (PM via Claude Code — auto-activates on pitch/bug intents)
   'start-feature',
+  // Adversarial fresh-context audit of spec + plan before issue handoff
+  // (invoked from start-feature Phase 3.5). Templates the spec uses live
+  // at templates/spec.template.md + templates/plan.template.md.
+  'spec-review',
+] as const;
+
+export const EXPECTED_TEMPLATES = [
+  'spec.template.md',
+  'plan.template.md',
 ] as const;
 
 /**
@@ -59,3 +68,4 @@ export const EXPECTED_PROMPTS = [
 export type ExpectedCommand = (typeof EXPECTED_COMMANDS)[number];
 export type ExpectedSkill = (typeof EXPECTED_SKILLS)[number];
 export type ExpectedPrompt = (typeof EXPECTED_PROMPTS)[number];
+export type ExpectedTemplate = (typeof EXPECTED_TEMPLATES)[number];

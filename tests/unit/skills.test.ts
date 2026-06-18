@@ -60,4 +60,34 @@ describe('skills/', () => {
       .sort();
     expect(dirs).toEqual([...EXPECTED_SKILLS].sort());
   });
+
+  describe('/spec-review', () => {
+    // The spec-review skill ships a separate checklist.md alongside its
+    // SKILL.md, modeled on BMAD's bmad-create-story pattern. The skill
+    // delegates the actual review questions to that file so the checklist
+    // can be evolved without rewriting SKILL.md prose.
+    const checklistPath = resolve(skillsDir, 'spec-review', 'checklist.md');
+
+    it('ships checklist.md', () => {
+      expect(existsSync(checklistPath)).toBe(true);
+    });
+
+    it('checklist.md references each required check category', () => {
+      const raw = readFileSync(checklistPath, 'utf8');
+      // Categories the SKILL.md and start-feature Phase 3.5 documentation
+      // promise to enforce. If any of these disappears, the integration
+      // contract is broken.
+      for (const heading of [
+        '## A. Spec structural integrity',
+        '## B. Acceptance Criteria quality',
+        '## C. Files to Touch quality',
+        '## D. Plan ↔ Spec alignment',
+        '## E. Disaster prevention',
+        '## F. Implementation clarity',
+        '## G. Pillar coverage',
+      ]) {
+        expect(raw).toContain(heading);
+      }
+    });
+  });
 });
