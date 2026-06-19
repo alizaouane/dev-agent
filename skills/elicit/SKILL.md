@@ -6,7 +6,7 @@ user-invocable: false
 
 # elicit
 
-Adversarial refinement of a just-written piece of content. Presents a numbered menu of 5 elicitation methods drawn from a 68-method registry, runs the chosen method against the section content, and re-presents the menu until the user types `x` to proceed. Then returns the enhanced content to the caller.
+Adversarial refinement of a just-written piece of content. Presents a numbered menu of 5 elicitation methods drawn from a 69-method registry, runs the chosen method against the section content, and re-presents the menu until the user types `x` to proceed. Then returns the enhanced content to the caller.
 
 **Announce at start:** "Using `elicit` to refine [section name]."
 
@@ -47,7 +47,7 @@ Read `methods.csv` (sibling of this SKILL.md). The CSV has columns:
 
 | column | meaning |
 |---|---|
-| `num` | stable identifier (1..68) |
+| `num` | stable identifier (1..69) |
 | `category` | grouping: advanced / collaboration / competitive / core / creative / framing / learning / philosophical / research / retrospective / risk / technical |
 | `method_name` | human-readable display name |
 | `description` | rich explanation of what the method does, when to use it, why it's valuable |
@@ -77,7 +77,7 @@ Choose a number (1-5), [r] to Reshuffle, [a] List All, or [x] to Proceed:
 4. [Method Name] — [...]
 5. [Method Name] — [...]
 r. Reshuffle (pick 5 new methods)
-a. List all 68 methods
+a. List all 69 methods
 x. Proceed (return enhanced content to caller)
 ```
 
@@ -99,8 +99,8 @@ HALT and wait for the user's input. Do NOT advance on your own.
 - Re-present the menu.
 
 **Case `a` (list all):**
-- Print a compact table of all 68 methods grouped by category, with `num` and `method_name`.
-- Ask: "Choose any number 1-68, or [x] to return to the smart-selected menu."
+- Print a compact table of all 69 methods grouped by category, with `num` and `method_name`.
+- Ask: "Choose any number 1-69, or [x] to return to the smart-selected menu."
 - If the user picks a number, execute that method (Case 1-5 flow). If `x`, return to the smart-selected menu.
 
 **Case `x` (proceed):**
@@ -127,9 +127,9 @@ HALT and wait for the user's input. Do NOT advance on your own.
 
 - One method per round. Don't apply 3 methods to the same content in a single agent turn.
 - Surface the change, don't bury it. If the user accepts, they should be able to see exactly what got added or removed.
-- Don't propose your own enhancements outside the chosen method. The 68 methods exist to discipline your refinement instincts, not bypass them.
+- Don't propose your own enhancements outside the chosen method. The 69 methods exist to discipline your refinement instincts, not bypass them.
 - **Never advance the parent's workflow.** If the user types `x`, you return to the caller. If the user keeps choosing methods, you keep refining. Either is valid; trying to interpret "we should move on" without `x` is not.
 
 ## Attribution
 
-The 68 methods in [methods.csv](methods.csv) are ported verbatim from BMAD-METHOD's [`bmad-advanced-elicitation`](https://github.com/bmad-code-org/BMAD-METHOD/tree/main/src/core-skills/bmad-advanced-elicitation) under its MIT license (© 2025 BMad Code, LLC). dev-agent uses the same registry; the orchestration and integration contract (return-to-caller on `x`, no terminal-state advance) are adapted for dev-agent's `start-feature` workflow.
+The 69 methods in [methods.csv](methods.csv) are ported verbatim from BMAD-METHOD's [`bmad-advanced-elicitation`](https://github.com/bmad-code-org/BMAD-METHOD/tree/main/src/core-skills/bmad-advanced-elicitation) under its MIT license (© 2025 BMad Code, LLC). dev-agent uses the same registry; the orchestration and integration contract (return-to-caller on `x`, no terminal-state advance) are adapted for dev-agent's `start-feature` workflow.

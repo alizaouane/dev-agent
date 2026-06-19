@@ -11,12 +11,17 @@ const elicitDir = resolve(__dirname, '../../skills/elicit');
  * for one fixture file would be overkill. If a future method description
  * ever needs a literal comma, switch this to `csv-parse` or quote the
  * field; the test will fail loudly if a row's column count drifts.
+ *
+ * Handles both LF and CRLF line endings: git on Windows checkouts
+ * with `core.autocrlf=true` would otherwise leave a trailing `\r` in
+ * the last cell of each row, breaking the strict equality assertions
+ * on header / categories / fallback method names.
  */
 function parseCsv(raw: string): string[][] {
   return raw
     .trim()
-    .split('\n')
-    .map((line) => line.split(','));
+    .split(/\r?\n/)
+    .map((line) => line.replace(/\r$/, '').split(','));
 }
 
 describe('skills/elicit', () => {
