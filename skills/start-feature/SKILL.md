@@ -104,6 +104,8 @@ Then run the PM conversation with the user's pitch as the seed:
 2. A "kind" — `feature`, `bug`, or `improvement` (drives the issue label)
 3. A short feature title — used as the issue title and the spec doc filename slug
 
+**Optional elicit pass on the Agreed scope.** Before marking Phase 1 complete, offer one round of `dev-agent:elicit` against the Agreed scope text. The PM agent's first-draft scope often hides assumptions about what's "in" vs "out". Invoke via the `Skill` tool with `section_name="Agreed scope"` and `section_content=<the scope text>`. The skill loops on its menu until the user types `x` and returns the enhanced scope. Replace the draft scope with the returned value. **Skip if trivial** (one-liner, typo, copy fix). Skip if the user declines.
+
 Mark Phase 1 todo complete. Move to Phase 2.
 
 ## Phase 2 — Spec writing (inline brainstorming)
@@ -117,8 +119,9 @@ The brainstorming pattern:
 3. **Propose 2-3 approaches before settling.** For non-trivial work, sketch alternatives with trade-offs and your recommendation.
 4. **Present the design in sections, get approval per section.** Scale each section to its complexity (a sentence for trivial, 200-300 words for nuanced). Don't write the whole spec then ask for approval — chunks make corrections cheap.
 5. **YAGNI ruthlessly.** Remove unnecessary features. The user's pitch is a seed, not a contract.
+6. **Optional elicit pass per major section.** After drafting `## Context`, `## Acceptance Criteria`, `## Architecture`, or `## Edge cases`, offer up to one round of `dev-agent:elicit` on that section (user may decline). Invoke via the `Skill` tool with `section_name=<the H2 header>` and `section_content=<the just-drafted text>`. The skill loops on its menu and returns the enhanced section text on the user's `x`. Replace the draft with the returned value. The skill cannot advance Phase 2 on its own — when it returns, you're back here writing the next section.
 
-**Trivial work shortcut.** If during Phase 1 the PM determined this is a one-liner (typo, color tweak, copy fix), skip the design sections and write a 3-paragraph spec: "what changes, why, acceptance criteria." Do not force a multi-question brainstorm on trivial work.
+**Trivial work shortcut.** If during Phase 1 the PM determined this is a one-liner (typo, color tweak, copy fix), skip the design sections and write a 3-paragraph spec: "what changes, why, acceptance criteria." Do not force a multi-question brainstorm or any elicit pass on trivial work.
 
 **Spec document.** Write to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` where `<topic>` is a 2-4 word slug derived from the feature title.
 
