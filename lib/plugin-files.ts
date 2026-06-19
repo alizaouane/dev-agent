@@ -26,6 +26,12 @@ export const EXPECTED_SKILLS = [
   // (invoked from start-feature Phase 3.5). Templates the spec uses live
   // at templates/spec.template.md + templates/plan.template.md.
   'spec-review',
+  // Section-by-section refinement of just-written content (PM scope,
+  // spec sections, plan tasks). 68-method registry ported from BMAD's
+  // bmad-advanced-elicitation under MIT (see skills/elicit/SKILL.md
+  // Attribution). Invoked from start-feature Phase 1 and Phase 2
+  // per-section; always returns control on the user's `x` choice.
+  'elicit',
 ] as const;
 
 export const EXPECTED_TEMPLATES = [
