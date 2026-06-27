@@ -118,4 +118,52 @@ describe('templates/', () => {
       expect(raw).toContain('Commit');
     });
   });
+
+  describe('quick-spec.template.md', () => {
+    const path = resolve(templatesDir, 'quick-spec.template.md');
+    const raw = existsSync(path) ? readFileSync(path, 'utf8') : '';
+
+    it('exists', () => {
+      expect(existsSync(path)).toBe(true);
+    });
+
+    it('uses the same placeholder names as the full spec template', () => {
+      // skills/quick-dev relies on identical placeholder names so the
+      // fill logic can be shared between the two templates if needed.
+      expect(raw).toContain('# {{feature_title}}');
+      expect(raw).toContain('**Date:** {{YYYY-MM-DD}}');
+      expect(raw).toContain('**Owner:** {{owner_name_or_email}}');
+    });
+
+    it('defaults Status to Draft and tags the quick-dev path', () => {
+      // CodeRabbit's CR-7 on PR #114 established Draft as the right
+      // default; the quick-dev annotation tells the dashboard which
+      // path this spec came from.
+      expect(raw).toContain('**Status:** Draft');
+      expect(raw).toContain('quick-dev');
+    });
+
+    it('omits the heavyweight sections that quick-dev intentionally skips', () => {
+      // Full spec.template.md has Implementation outline + Edge cases
+      // + Testing strategy + Out of scope. Quick-dev's value
+      // proposition is that the implement agent derives these at
+      // runtime. If they leak back in, the template stops being a
+      // "quick" path and the trade-off documented in skills/quick-dev
+      // becomes false.
+      expect(raw).not.toContain('## Implementation outline');
+      expect(raw).not.toContain('## Edge cases');
+      expect(raw).not.toContain('## Testing strategy');
+      expect(raw).not.toContain('## Out of scope');
+    });
+
+    it('keeps Acceptance Criteria + Files to Touch (drift-check still applies)', () => {
+      // Even on the fast path, the implement agent honors "touch
+      // only files the spec declares" and drift-check fires on
+      // out-of-list modifications. Both sections must survive.
+      expect(raw).toContain('## Acceptance Criteria');
+      expect(raw).toMatch(/AC-1:/);
+      expect(raw).toContain('## Files to Touch');
+      expect(raw).toContain('**Modify:**');
+    });
+  });
 });

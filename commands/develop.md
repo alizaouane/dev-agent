@@ -1,6 +1,6 @@
 ---
 description: Start new work (feature, bug, improvement) in a dev-agent-wired repo. Thin wrapper that invokes the `dev-agent:start-feature` skill — the skill auto-activates on most pitch intents, but `/develop` is here for explicit invocation when you want it.
-argument-hint: "<pitch> | --from-issue <#> [--repo owner/name]"
+argument-hint: "<pitch> | --from-issue <#> [--repo owner/name] [--quick]"
 allowed-tools: Bash Read Skill
 ---
 
@@ -11,9 +11,10 @@ Explicit-invocation wrapper. The real flow lives in the `dev-agent:start-feature
 ## What this command does
 
 1. **Parse `--repo owner/name`** (if present). This tells the skill to target a specific consumer repo regardless of `cwd` — required when the user pastes the command from the dashboard's cross-repo `/proposals` button, because issue numbers are repo-scoped and `cwd` may be the wrong repo.
-2. **If `--from-issue <#>`** was passed, load the issue body with `gh issue view <#> [--repo $REPO] --json title,body,labels` and use the title + body + `kind:*` label as the seed.
-3. **Otherwise** pass the user's free-form pitch as the seed.
-4. Invoke the `dev-agent:start-feature` skill via the Skill tool, passing the full arg set (pitch / `--from-issue` / `--repo`) as context. The skill's Phase 0 handles repo resolution (clones if needed, validates `.dev-agent.yml`, checks gh auth + write permission).
+2. **Parse `--quick`** (if present). This signals `start-feature` to route directly to `dev-agent:quick-dev` after Phase 1 PM evaluation, bypassing Phase 2 brainstorm, Phase 3 plan writing, and Phase 3.5 spec-review. Use for typos, copy fixes, one-liners. The PM still classifies effort first — if the scope reads like substantial work, quick-dev will warn before proceeding.
+3. **If `--from-issue <#>`** was passed, load the issue body with `gh issue view <#> [--repo $REPO] --json title,body,labels` and use the title + body + `kind:*` label as the seed.
+4. **Otherwise** pass the user's free-form pitch as the seed.
+5. Invoke the `dev-agent:start-feature` skill via the Skill tool, passing the full arg set (pitch / `--from-issue` / `--repo` / `--quick`) as context. The skill's Phase 0 handles repo resolution (clones if needed, validates `.dev-agent.yml`, checks gh auth + write permission).
 
 ## Why this exists alongside the skill
 
@@ -31,6 +32,7 @@ Both paths converge on the same skill, so behavior is identical. Pick whichever 
 - `/develop --from-issue <#>` — seeded from an existing GitHub issue in the current repo.
 - `/develop --from-issue <#> --repo owner/name` — same, but the issue lives in `owner/name`, not `cwd`. The skill will `gh repo clone` to `~/.dev-agent/clones/<owner>-<name>/` (or fast-forward an existing clone) and work from there. This is the form the dashboard's `/proposals` "Brainstorm in Claude Code" button generates.
 - `/develop "<pitch>" --repo owner/name` — fresh pitch against a specific consumer repo (no source issue). Same clone-or-fast-forward behavior.
+- `/develop "<pitch>" --quick` — fast path for trivial work (typos, copy fixes, one-liners). Phase 1 PM evaluation runs, then `dev-agent:quick-dev` writes a 3-paragraph spec and files the issue — no brainstorming, no separate plan, no spec-review. Can be combined with `--repo` or `--from-issue`.
 - `/develop` — interactive; lists open `state:proposed` issues in the current repo and asks the user to pick one or pitch fresh.
 
 ## Failure modes

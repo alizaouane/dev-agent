@@ -32,11 +32,21 @@ export const EXPECTED_SKILLS = [
   // Attribution). Invoked from start-feature Phase 1 and Phase 2
   // per-section; always returns control on the user's `x` choice.
   'elicit',
+  // Fast path for trivial work — typos, copy fixes, one-liners.
+  // Bypasses Phase 2 brainstorm + Phase 3 plan + Phase 3.5 spec-review.
+  // Invoked from start-feature Phase 1 when the PM classifies the work
+  // as trivial, or when the user passes /develop --quick.
+  'quick-dev',
 ] as const;
 
 export const EXPECTED_TEMPLATES = [
   'spec.template.md',
   'plan.template.md',
+  // 3-paragraph minimal spec used by skills/quick-dev for trivial
+  // work. Skips Implementation outline / Edge cases / Testing
+  // strategy from the full spec.template.md; the implement agent
+  // derives its own task list at runtime.
+  'quick-spec.template.md',
 ] as const;
 
 /**

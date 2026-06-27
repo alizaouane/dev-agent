@@ -90,4 +90,39 @@ describe('skills/', () => {
       }
     });
   });
+
+  describe('/quick-dev', () => {
+    // Fast-path skill for trivial work. The SKILL.md must encode the
+    // bypass contract: phases 2 / 3 / 3.5 are skipped, the implement
+    // agent derives its own task list, and the issue gets the
+    // `quick-dev` label so the dashboard can surface the path.
+    const skillPath = resolve(skillsDir, 'quick-dev', 'SKILL.md');
+    const raw = existsSync(skillPath) ? readFileSync(skillPath, 'utf8') : '';
+
+    it('SKILL.md references the quick-spec template path', () => {
+      // The skill must point at templates/quick-spec.template.md
+      // (not the full spec template) or the fast path leaks into the
+      // heavyweight structure and defeats its own purpose.
+      expect(raw).toContain('templates/quick-spec.template.md');
+    });
+
+    it('declares the "no plan, no spec-review" contract', () => {
+      // The trade-off behind quick-dev is that the engine handles
+      // task derivation. If this contract drifts, the start-feature
+      // routing (Phase 1.5) becomes incoherent and the implement
+      // agent receives ambiguous inputs.
+      expect(raw).toMatch(/no\s+(separate\s+)?plan/i);
+      expect(raw).toContain('spec-review');
+      expect(raw).toMatch(/derives? (its )?own task list/i);
+    });
+
+    it('declares that the filed issue carries the quick-dev label', () => {
+      // The dashboard's state:spec-ready card surfaces the
+      // `quick-dev` label as a "fast path" pill. Without it the
+      // approver has no signal that the heavyweight gates were
+      // intentionally skipped.
+      expect(raw).toContain('quick-dev');
+      expect(raw).toContain('state:spec-ready');
+    });
+  });
 });
