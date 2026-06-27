@@ -2,8 +2,19 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { loadOverrideEvents, __resetCacheForTests } from '../../../lib/dashboard/override-events';
 
+// Test fixtures need timestamps inside loadOverrideEvents's default
+// windowDays (30). Hardcoded ISO strings decay — the test was filed
+// with 2026-05-22 anchors that became stale once the calendar
+// rolled past 2026-06-21, dropping the events out of the window and
+// breaking every assertion that expected non-empty results.
+// Compute relative offsets at test-run time so the fixtures stay
+// "recent" forever.
+const DAY_MS = 86_400_000;
+const RECENT_TS = new Date(Date.now() - 2 * DAY_MS).toISOString();
+const OLDER_TS = new Date(Date.now() - 4 * DAY_MS).toISOString();
+
 const buildEvent = (overrides: Record<string, unknown> = {}) => ({
-  ts: '2026-05-22T10:00:00Z',
+  ts: RECENT_TS,
   run_id: '12345',
   issue: 42,
   phase: 'phase-pr-review',
@@ -56,11 +67,11 @@ describe('loadOverrideEvents', () => {
   beforeEach(() => __resetCacheForTests());
 
   it('returns the most recent override events sorted by ts desc', async () => {
-    const older = buildEvent({ ts: '2026-05-20T10:00:00Z', payload: { override_type: 'swarm-override', actor: 'bob', reason: 'old' } });
-    const newer = buildEvent({ ts: '2026-05-22T10:00:00Z', payload: { override_type: 'swarm-override', actor: 'alice', reason: 'new' } });
+    const older = buildEvent({ ts: OLDER_TS, payload: { override_type: 'swarm-override', actor: 'bob', reason: 'old' } });
+    const newer = buildEvent({ ts: RECENT_TS, payload: { override_type: 'swarm-override', actor: 'alice', reason: 'new' } });
     const octokit = makeMockOctokit([
-      { number: 42, updated_at: '2026-05-22T10:00:00Z', comments: [{ body: wrapAnchor(newer), html_url: 'https://gh.example/42#new' }] },
-      { number: 41, updated_at: '2026-05-20T10:00:00Z', comments: [{ body: wrapAnchor(older), html_url: 'https://gh.example/41#old' }] },
+      { number: 42, updated_at: RECENT_TS, comments: [{ body: wrapAnchor(newer), html_url: 'https://gh.example/42#new' }] },
+      { number: 41, updated_at: OLDER_TS, comments: [{ body: wrapAnchor(older), html_url: 'https://gh.example/41#old' }] },
     ]);
     const events = await loadOverrideEvents(octokit, { owner: 'o', name: 'r' });
     expect(events).toHaveLength(2);
@@ -71,7 +82,7 @@ describe('loadOverrideEvents', () => {
 
   it('skips comments without anchors and PRs without override comments', async () => {
     const octokit = makeMockOctokit([
-      { number: 99, updated_at: '2026-05-22T10:00:00Z', comments: [{ body: 'no anchor here', html_url: 'x' }] },
+      { number: 99, updated_at: RECENT_TS, comments: [{ body: 'no anchor here', html_url: 'x' }] },
     ]);
     const events = await loadOverrideEvents(octokit, { owner: 'o', name: 'r' });
     expect(events).toEqual([]);
@@ -79,7 +90,7 @@ describe('loadOverrideEvents', () => {
 
   it('truncates to the limit and uses the cache on second call', async () => {
     const octokit = makeMockOctokit([
-      { number: 1, updated_at: '2026-05-22T10:00:00Z', comments: [{ body: wrapAnchor(buildEvent()), html_url: 'x' }] },
+      { number: 1, updated_at: RECENT_TS, comments: [{ body: wrapAnchor(buildEvent()), html_url: 'x' }] },
     ]);
     const paginate = (octokit as never as { paginate: { mock: { calls: unknown[] } } }).paginate;
     const first = await loadOverrideEvents(octokit, { owner: 'o', name: 'r' }, { limit: 5 });
@@ -102,7 +113,7 @@ describe('loadOverrideEvents', () => {
     const octokit = makeMockOctokit([
       {
         number: 7,
-        updated_at: '2026-05-22T10:00:00Z',
+        updated_at: RECENT_TS,
         comments: [
           { body: wrapAnchor(forged), html_url: 'x', user: { login: 'eve' } },
         ],
