@@ -36,12 +36,15 @@ instead. Heuristics for trivial:
 ## Acceptance Criteria
 
 <!--
-Typically 1-2 ACs for quick-dev work. Numbered (AC-1, AC-2),
-testable, user-visible. Same format as the full spec template —
-the implement agent runs the same validation either way.
+Typically 1-2 ACs for quick-dev work. Checkbox bullets, testable,
+user-visible. Same format as the full spec template — the implement
+agent runs the same validation either way, and Pillar 1's ACM
+extractor (lib/acm.ts) ONLY matches `- [ ] ...` bullets under this
+heading. Ordered lists (`1. AC-1:`) would leave ACM-gated repos
+with zero extracted criteria.
 -->
 
-1. AC-1: <user-visible outcome — what must be true after this ships>
+- [ ] AC-1: <user-visible outcome — what must be true after this ships>
 
 ## Files to Touch
 

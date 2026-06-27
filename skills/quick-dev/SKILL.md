@@ -70,11 +70,13 @@ Replace each `<…>` block with real content derived from `agreed_scope`:
 
 Keep all section headers — the implement agent's drift-check still keys on `## Files to Touch`.
 
-Save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` where `<topic>` is a 2-4 word slug derived from `feature_title`.
+Save to `${consumer_root}/docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` where `<topic>` is a 2-4 word slug derived from `feature_title`. **All file writes target `consumer_root`**, never the caller's cwd — `start-feature` may resolve a clone path different from where `/develop` was invoked.
 
 ### Step 3 — Commit the spec
 
 ```bash
+cd "$consumer_root"
+
 git add docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
 git commit -m "docs(spec): <feature title>"
 git push
@@ -86,11 +88,25 @@ If `.dev-agent.yml` has `spec_plan_via_pr: true`, branch first (`git checkout -b
 
 Construct the body. Note: `Plan:` line is **deliberately omitted**. `prompts/implement.md` handles the missing-plan case by deriving from the spec.
 
+Capture the consumer repo's slug from inside `consumer_root` and pass it to every `gh` call. The default `gh` behavior follows the cwd's git remote, but `--repo` is the explicit guarantee against filing the issue against the wrong repo when this skill was invoked via `/develop --repo owner/name --quick` from outside the consumer.
+
 ```bash
+cd "$consumer_root"
+REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"
+
 SPEC_PATH=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
 TITLE="<feature title>"
 KIND="<kind>"  # from caller — feature / bug / improvement
-TLDR="$(awk '/^## /{exit} NR>1 && NF' "$SPEC_PATH" | head -10)"
+
+# Extract the TL;DR from the `## What changes` section specifically.
+# Prior implementations stopped at the first `##` heading, which on
+# the quick-spec template captured the Date/Owner/Status preamble
+# and the HTML comment block instead of the scope summary.
+TLDR="$(awk '
+  /^## What changes$/ { in_section=1; next }
+  /^## / && in_section { exit }
+  in_section && NF { print }
+' "$SPEC_PATH" | head -10)"
 
 BODY=$(cat <<EOF
 Spec: ${SPEC_PATH}
@@ -105,7 +121,7 @@ Quick-dev path: 3-paragraph spec, no separate plan, no spec-review. The implemen
 EOF
 )
 
-gh issue create \
+gh issue create --repo "$REPO" \
   --title "$TITLE" \
   --body "$BODY" \
   --label "state:spec-ready,kind:${KIND},quick-dev"
@@ -116,9 +132,9 @@ The `quick-dev` label is informational — surfaces on the dashboard so the appr
 **If `gh issue create` fails** because labels don't exist (the `quick-dev` label is new):
 
 ```bash
-gh label create "quick-dev" --color a2eeef --description "Filed via skills/quick-dev — no separate plan, no spec-review" --force 2>/dev/null
-gh label create "state:spec-ready" --color 0e8a16 --description "Spec written; awaiting approval to implement" --force 2>/dev/null
-gh label create "kind:${KIND}" --color 1d76db --description "<kind> work" --force 2>/dev/null
+gh label create "quick-dev" --repo "$REPO" --color a2eeef --description "Filed via skills/quick-dev — no separate plan, no spec-review" --force 2>/dev/null
+gh label create "state:spec-ready" --repo "$REPO" --color 0e8a16 --description "Spec written; awaiting approval to implement" --force 2>/dev/null
+gh label create "kind:${KIND}" --repo "$REPO" --color 1d76db --description "<kind> work" --force 2>/dev/null
 ```
 
 Then retry.
