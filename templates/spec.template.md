@@ -35,14 +35,21 @@ Don't delete sections. If a section genuinely doesn't apply, write
 ## Acceptance Criteria
 
 <!--
-Numbered, independently testable, user-visible. Each AC should map to
-at least one concrete test (acm, smoke, tier-2-smoke, or a unit test).
-The reviewer will reject ACs that are vague ("works correctly"),
-nested ("X happens, then Y, then Z" — split into three), or untestable.
+Checkbox bullets, independently testable, user-visible. Each AC
+should map to at least one concrete test (acm, smoke, tier-2-smoke,
+or a unit test). spec-review will reject ACs that are vague ("works
+correctly"), nested ("X happens, then Y, then Z" — split into three),
+or untestable.
+
+Use the `- [ ] AC-N: <text>` format. The Pillar 1 ACM extractor
+(lib/acm.ts BULLET_RE = /^\s*-\s+\[([ x])\]\s+(.+)$/) parses these
+checkbox bullets under the `## Acceptance Criteria` heading; ordered
+lists (`1. AC-1:`) and prose bullets without `[ ]` are silently
+ignored and would leave ACM-gated repos with zero extracted criteria.
 -->
 
-1. AC-1: <user-visible outcome — what must be true after this ships>
-2. AC-2: <…>
+- [ ] AC-1: <user-visible outcome — what must be true after this ships>
+- [ ] AC-2: <…>
 
 ## Architecture
 

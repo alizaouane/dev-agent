@@ -79,6 +79,15 @@ Use the TodoWrite tool. Mark each item `in_progress` when starting that phase, `
 
 **Phase 3.5 skip exception:** if Phase 1's PM evaluation classified the work as trivial (one-liner, typo, copy fix), mark Phase 3.5 `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill.
 
+**Quick-dev fast path (replaces the whole list).** If the user passed `--quick` OR if Phase 1's PM evaluation classifies the work as trivial AND `kind` is `bug` or `improvement`, REPLACE the 5-phase checklist above with:
+
+```
+- [ ] Phase 1: PM evaluation → Agreed scope + trivial classification
+- [ ] Phase 1.5: hand off to dev-agent:quick-dev (spec + issue filed in one shot)
+```
+
+Phases 2, 3, 3.5, and 4 are all rolled into quick-dev's flow. See `## Phase 1.5 — quick-dev fast path` below for the routing logic.
+
 ## Phase 1 — PM evaluation
 
 Load the PM persona from `prompts/pm.md` in the dev-agent plugin (path: `${PLUGIN_DIR}/prompts/pm.md`). That document defines how the PM agent thinks. **Internalize its instructions** — you are now acting as the PM.
@@ -106,7 +115,28 @@ Then run the PM conversation with the user's pitch as the seed:
 
 **Optional elicit pass on the Agreed scope.** Before marking Phase 1 complete, offer one round of `dev-agent:elicit` against the Agreed scope text. The PM agent's first-draft scope often hides assumptions about what's "in" vs "out". Invoke via the `Skill` tool with `section_name="Agreed scope"` and `section_content=<the scope text>`. The skill loops on its menu until the user types `x` and returns the enhanced scope. Replace the draft scope with the returned value. **Skip if trivial** (one-liner, typo, copy fix). Skip if the user declines.
 
-Mark Phase 1 todo complete. Move to Phase 2.
+Mark Phase 1 todo complete. Decide the path:
+
+- **If `--quick` was passed OR the PM classified trivial AND kind is `bug` or `improvement`** → go to Phase 1.5 (quick-dev).
+- **Otherwise** → go to Phase 2 (full spec brainstorm).
+
+## Phase 1.5 — quick-dev fast path (conditional)
+
+Only executes when triggered from Phase 1's path decision. Skipped on the full flow.
+
+Invoke `dev-agent:quick-dev` via the `Skill` tool, passing:
+
+- `agreed_scope` — the PM's distilled scope text
+- `kind` — the issue label kind (`bug` / `improvement`; `feature` should NOT auto-route to quick-dev — feature work needs a real spec)
+- `feature_title` — the short title from Phase 1
+- `consumer_root` — the resolved consumer repo working tree
+- `forced_quick` — `true` if `--quick` was passed, `false` if PM auto-routed
+
+Quick-dev fills the `templates/quick-spec.template.md`, commits it, files the `state:spec-ready` + `quick-dev` labeled issue (no `Plan:` line — the implement agent derives its own task list), and returns the issue URL. See [skills/quick-dev/SKILL.md](../quick-dev/SKILL.md) for the full contract.
+
+When quick-dev returns, mark Phase 1.5 todo `completed` and surface the issue URL to the user. **The workflow is done.** Phases 2, 3, 3.5, and 4 are not run on this path.
+
+If quick-dev bails (e.g. `forced_quick=true` but the user declines its "looks substantial" warning), return to the full flow: replace the 2-item TodoWrite list with the 5-phase list, and proceed to Phase 2 normally.
 
 ## Phase 2 — Spec writing (inline brainstorming)
 
