@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   shapeDailyByModel,
+  fetchCostReport,
   type CostBucket,
 } from '@/lib/anthropic-cost';
 
@@ -84,5 +85,54 @@ describe('shapeDailyByModel', () => {
     const out = shapeDailyByModel([]);
     expect(out.days).toEqual([]);
     expect(out.total_usd).toBe(0);
+  });
+});
+
+describe('fetchCostReport', () => {
+  const OLD_ENV = process.env.ANTHROPIC_ADMIN_KEY;
+  afterEach(() => {
+    process.env.ANTHROPIC_ADMIN_KEY = OLD_ENV;
+    vi.restoreAllMocks();
+  });
+
+  it('returns no_key when the admin key is unset', async () => {
+    delete process.env.ANTHROPIC_ADMIN_KEY;
+    const r = await fetchCostReport({ startingAt: 'a', endingAt: 'b' });
+    expect(r).toEqual({ ok: false, reason: 'no_key' });
+  });
+
+  it('returns unauthorized on a 401', async () => {
+    process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 401 })));
+    const r = await fetchCostReport({ startingAt: 'a', endingAt: 'b' });
+    expect(r).toEqual({ ok: false, reason: 'unauthorized' });
+  });
+
+  it('returns fetch_failed on a 500', async () => {
+    process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
+    const r = await fetchCostReport({ startingAt: 'a', endingAt: 'b' });
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe('fetch_failed');
+  });
+
+  it('follows pagination and concatenates buckets', async () => {
+    process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
+    const page1 = { data: [{ starting_at: '2026-07-01T00:00:00Z', ending_at: '2026-07-02T00:00:00Z', results: [] }], has_more: true, next_page: 'PAGE2' };
+    const page2 = { data: [{ starting_at: '2026-07-02T00:00:00Z', ending_at: '2026-07-03T00:00:00Z', results: [] }], has_more: false, next_page: null };
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('PAGE2') ? page2 : page1), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const r = await fetchCostReport({ startingAt: '2026-07-01T00:00:00Z', endingAt: '2026-07-03T00:00:00Z' });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.buckets.map((b) => b.starting_at)).toEqual(['2026-07-01T00:00:00Z', '2026-07-02T00:00:00Z']);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // Auth + query shape on the first call.
+    const [firstUrl, firstInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(firstUrl).toContain('group_by%5B%5D=description'); // group_by[]=description, URL-encoded
+    expect(firstUrl).toContain('bucket_width=1d');
+    expect((firstInit.headers as Record<string, string>)['x-api-key']).toBe('sk-ant-admin01-x');
+    expect((firstInit.headers as Record<string, string>)['anthropic-version']).toBe('2023-06-01');
   });
 });

@@ -131,3 +131,71 @@ export function shapeDailyByModel(buckets: CostBucket[]): DailyCostSummary {
 
   return { days, total_usd, by_series };
 }
+
+/** Result of a Cost Report fetch: shaped buckets, or a typed failure reason. */
+export type CostReportResult =
+  | { ok: true; buckets: CostBucket[] }
+  | { ok: false; reason: 'no_key' | 'unauthorized' | 'fetch_failed'; message?: string };
+
+const COST_REPORT_URL = 'https://api.anthropic.com/v1/organizations/cost_report';
+
+/** Raw pagination envelope returned by the Cost Report API. */
+type CostReportPage = { data: CostBucket[]; has_more: boolean; next_page: string | null };
+
+/**
+ * Fetch org-wide daily cost from the Admin Cost Report API, grouped by
+ * description (so each row carries model + token_type). Reads the admin key
+ * from `ANTHROPIC_ADMIN_KEY`; follows `next_page` to completion. All failures
+ * are mapped to a typed result so callers render an explicit state — never a
+ * silent $0.
+ *
+ * @param opts.startingAt RFC 3339, floored to UTC midnight by the caller.
+ * @param opts.endingAt RFC 3339 upper bound (exclusive).
+ * @returns `{ ok: true, buckets }` or `{ ok: false, reason }`.
+ */
+export async function fetchCostReport(opts: {
+  startingAt: string;
+  endingAt: string;
+}): Promise<CostReportResult> {
+  const key = process.env.ANTHROPIC_ADMIN_KEY;
+  if (!key) return { ok: false, reason: 'no_key' };
+
+  const buckets: CostBucket[] = [];
+  let page: string | undefined;
+
+  try {
+    do {
+      const params = new URLSearchParams({
+        starting_at: opts.startingAt,
+        ending_at: opts.endingAt,
+        bucket_width: '1d',
+      });
+      params.append('group_by[]', 'description');
+      if (page) params.set('page', page);
+
+      const res = await fetch(`${COST_REPORT_URL}?${params.toString()}`, {
+        headers: {
+          'x-api-key': key,
+          'anthropic-version': '2023-06-01',
+        },
+        // ISR data-cache: refresh hourly, matching the page's revalidate.
+        next: { revalidate: 3600 },
+      });
+
+      if (res.status === 401 || res.status === 403) return { ok: false, reason: 'unauthorized' };
+      if (!res.ok) return { ok: false, reason: 'fetch_failed', message: `HTTP ${res.status}` };
+
+      const json = (await res.json()) as CostReportPage;
+      buckets.push(...json.data);
+      page = json.has_more ? json.next_page ?? undefined : undefined;
+    } while (page);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'fetch_failed',
+      message: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  return { ok: true, buckets };
+}
