@@ -71,7 +71,10 @@ export default async function CostPage() {
     }
   } else {
     const summary = shapeDailyByModel(report.buckets);
-    if (summary.days.length === 0 || summary.total_usd === 0) {
+    // Threshold, not exact-zero: any total that would DISPLAY as $0.00 (under
+    // half a cent) must route to the empty state, else we reproduce the very
+    // silent-$0.00 bug this feature exists to kill (spec goal 2 / N1).
+    if (summary.days.length === 0 || summary.total_usd < 0.005) {
       body = (
         <p className="mb-6 text-sm text-muted-foreground">
           No Anthropic spend recorded in the last 30 days.
