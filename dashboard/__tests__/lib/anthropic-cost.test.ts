@@ -120,7 +120,7 @@ describe('fetchCostReport', () => {
     process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
     const page1 = { data: [{ starting_at: '2026-07-01T00:00:00Z', ending_at: '2026-07-02T00:00:00Z', results: [] }], has_more: true, next_page: 'PAGE2' };
     const page2 = { data: [{ starting_at: '2026-07-02T00:00:00Z', ending_at: '2026-07-03T00:00:00Z', results: [] }], has_more: false, next_page: null };
-    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes('PAGE2') ? page2 : page1), { status: 200 }));
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify(url.includes('PAGE2') ? page2 : page1), { status: 200 }));
     vi.stubGlobal('fetch', fetchMock);
 
     const r = await fetchCostReport({ startingAt: '2026-07-01T00:00:00Z', endingAt: '2026-07-03T00:00:00Z' });
