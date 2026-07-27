@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   shapeDailyByModel,
   fetchCostReport,
@@ -89,27 +89,31 @@ describe('shapeDailyByModel', () => {
 });
 
 describe('fetchCostReport', () => {
-  const OLD_ENV = process.env.ANTHROPIC_ADMIN_KEY;
+  // Use Vitest stub helpers so cleanup is real: vi.restoreAllMocks() does NOT
+  // undo vi.stubGlobal('fetch', …), and manually reassigning an originally
+  // absent env var writes the string "undefined". unstubAllEnvs/unstubAllGlobals
+  // restore both to their true pre-stub state, so this suite can't pollute others.
   afterEach(() => {
-    process.env.ANTHROPIC_ADMIN_KEY = OLD_ENV;
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
   it('returns no_key when the admin key is unset', async () => {
-    delete process.env.ANTHROPIC_ADMIN_KEY;
+    vi.stubEnv('ANTHROPIC_ADMIN_KEY', '');
     const r = await fetchCostReport({ startingAt: 'a', endingAt: 'b' });
     expect(r).toEqual({ ok: false, reason: 'no_key' });
   });
 
   it('returns unauthorized on a 401', async () => {
-    process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
+    vi.stubEnv('ANTHROPIC_ADMIN_KEY', 'sk-ant-admin01-x');
     vi.stubGlobal('fetch', vi.fn(async () => new Response('nope', { status: 401 })));
     const r = await fetchCostReport({ startingAt: 'a', endingAt: 'b' });
     expect(r).toEqual({ ok: false, reason: 'unauthorized' });
   });
 
   it('returns fetch_failed on a 500', async () => {
-    process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
+    vi.stubEnv('ANTHROPIC_ADMIN_KEY', 'sk-ant-admin01-x');
     vi.stubGlobal('fetch', vi.fn(async () => new Response('boom', { status: 500 })));
     const r = await fetchCostReport({ startingAt: 'a', endingAt: 'b' });
     expect(r.ok).toBe(false);
@@ -117,7 +121,7 @@ describe('fetchCostReport', () => {
   });
 
   it('follows pagination and concatenates buckets', async () => {
-    process.env.ANTHROPIC_ADMIN_KEY = 'sk-ant-admin01-x';
+    vi.stubEnv('ANTHROPIC_ADMIN_KEY', 'sk-ant-admin01-x');
     const page1 = { data: [{ starting_at: '2026-07-01T00:00:00Z', ending_at: '2026-07-02T00:00:00Z', results: [] }], has_more: true, next_page: 'PAGE2' };
     const page2 = { data: [{ starting_at: '2026-07-02T00:00:00Z', ending_at: '2026-07-03T00:00:00Z', results: [] }], has_more: false, next_page: null };
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => new Response(JSON.stringify(url.includes('PAGE2') ? page2 : page1), { status: 200 }));
