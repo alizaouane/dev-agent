@@ -2,9 +2,15 @@ import { fetchCostReport, shapeDailyByModel } from '@/lib/anthropic-cost';
 import { CostByModelChart } from '@/components/cost-by-model-chart';
 import { PageHeader } from '@/components/ui/page-header';
 
-// Refresh hourly. Rationale is cost/UX, not a hard rate limit — the endpoint
-// tolerates ~1/min and data lags ~5 min. Reading a secret + doing a network
-// call keeps this segment dynamic-with-ISR (never statically prerendered).
+/**
+ * Next.js route-segment ISR revalidation window, in seconds (1 hour).
+ *
+ * Chosen for cost/UX, not a hard rate limit — the Cost Report endpoint tolerates
+ * ~1/min polling and its data lags ~5 min, so hourly is a deliberate freshness vs.
+ * request-cost tradeoff. Because the segment reads a secret and makes a network
+ * call, it stays dynamic-with-ISR (never statically prerendered at build time,
+ * where the key would be absent).
+ */
 export const revalidate = 3600;
 
 /** RFC 3339 timestamp at UTC midnight `days` ago (start of that UTC day). */
