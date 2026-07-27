@@ -1,73 +1,113 @@
-import { getOctokit } from '@/lib/gh';
-import { listAllowedRepos, wiredRepos } from '@/lib/repos';
-import { fetchPipeline } from '@/lib/pipeline';
-import { CostChart, type DailyCost } from '@/components/cost-chart';
-import { parseTelemetry } from '@/lib/telemetry';
+import { fetchCostReport, shapeDailyByModel } from '@/lib/anthropic-cost';
+import { CostByModelChart } from '@/components/cost-by-model-chart';
 import { PageHeader } from '@/components/ui/page-header';
 
-const PHASES = ['implement', 'staging_deploy', 'promote_to_prod', 'smoke_verify', 'rollback'] as const;
-type PhaseKey = (typeof PHASES)[number];
+// Refresh hourly. Rationale is cost/UX, not a hard rate limit — the endpoint
+// tolerates ~1/min and data lags ~5 min. Reading a secret + doing a network
+// call keeps this segment dynamic-with-ISR (never statically prerendered).
+export const revalidate = 3600;
 
-function dayOf(iso: string): string {
-  return iso.slice(0, 10);
+/** RFC 3339 timestamp at UTC midnight `days` ago (start of that UTC day). */
+function utcMidnightDaysAgo(days: number): string {
+  const now = new Date();
+  return new Date(
+    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - days),
+  ).toISOString();
 }
 
-export default async function CostPage() {
-  const octokit = await getOctokit();
-  const repos = await listAllowedRepos(octokit);
-  const items = await fetchPipeline(octokit, wiredRepos(repos), { include_terminal: true });
+/** Amber notice shown when the report can't be produced — never a silent $0. */
+function Notice({ title, body }: { title: string; body: React.ReactNode }) {
+  return (
+    <div className="mb-6 rounded-md border border-amber-500/50 bg-amber-500/10 px-4 py-3 text-sm">
+      <p className="font-medium">{title}</p>
+      <p className="mt-1 text-muted-foreground">{body}</p>
+    </div>
+  );
+}
 
-  const since = Date.now() - 30 * 24 * 60 * 60 * 1000;
-  const sinceIso = new Date(since).toISOString();
-  const buckets: Record<string, Record<PhaseKey, number>> = {};
-  for (const it of items) {
-    const [owner, name] = it.repo.split('/');
-    // Paginate all comments since the 30-day cutoff. listComments returns
-    // a max of 100 per page; without paginate, busy issues would silently
-    // drop recent telemetry past the first page and undercount spend.
-    const comments: Array<{ body?: string; created_at?: string }> = await octokit.paginate(
-      octokit.issues.listComments,
-      {
-        owner,
-        repo: name,
-        issue_number: it.issue_number,
-        since: sinceIso,
-        per_page: 100,
-      },
-    );
-    for (const c of comments) {
-      if (!c.created_at) continue;
-      const ts = new Date(c.created_at).getTime();
-      if (ts < since) continue;
-      const t = parseTelemetry(c.body ?? '');
-      if (!t) continue;
-      const day = dayOf(c.created_at);
-      const phaseKey = t.phase.replace(/-/g, '_') as PhaseKey;
-      if (!PHASES.includes(phaseKey)) continue;
-      buckets[day] ??= { implement: 0, staging_deploy: 0, promote_to_prod: 0, smoke_verify: 0, rollback: 0 };
-      buckets[day][phaseKey] += t.cost_usd;
+/**
+ * Cost page. Shows real, Console-matching Anthropic spend for the last 30 UTC
+ * days (total + daily-by-model chart) from the Admin Cost Report API, or an
+ * explicit not-configured / empty / error state. Per-repo/phase attribution is
+ * Phase 2.
+ */
+export default async function CostPage() {
+  const startingAt = utcMidnightDaysAgo(30);
+  const endingAt = new Date().toISOString();
+  const report = await fetchCostReport({ startingAt, endingAt });
+
+  let body: React.ReactNode;
+
+  if (!report.ok) {
+    if (report.reason === 'no_key') {
+      body = (
+        <Notice
+          title="ANTHROPIC_ADMIN_KEY isn't set on this dashboard yet."
+          body={
+            <>
+              Real Anthropic spend is read from the Admin Cost Report API. Create an
+              admin key in the Anthropic Console (Settings → Admin keys — prefix{' '}
+              <code>sk-ant-admin01-</code>, requires org admin/owner) and set it as{' '}
+              <code>ANTHROPIC_ADMIN_KEY</code> in this dashboard&apos;s environment
+              (e.g. Vercel → Settings → Environment Variables).
+            </>
+          }
+        />
+      );
+    } else if (report.reason === 'unauthorized') {
+      body = (
+        <Notice
+          title="Admin key rejected."
+          body={<>Confirm <code>ANTHROPIC_ADMIN_KEY</code> is a valid <code>sk-ant-admin01-…</code> key with org access.</>}
+        />
+      );
+    } else {
+      body = (
+        <Notice
+          title="Couldn't reach the Anthropic Cost API."
+          body={report.message ?? 'Unknown error — try again shortly.'}
+        />
+      );
+    }
+  } else {
+    const summary = shapeDailyByModel(report.buckets);
+    if (summary.days.length === 0 || summary.total_usd === 0) {
+      body = (
+        <p className="mb-6 text-sm text-muted-foreground">
+          No Anthropic spend recorded in the last 30 days.
+        </p>
+      );
+    } else {
+      body = (
+        <>
+          <p className="mb-6 text-sm text-muted-foreground">
+            Anthropic spend, last 30 UTC days. Total: <strong>${summary.total_usd.toFixed(2)}</strong>.{' '}
+            <span className="text-xs">(matches your Anthropic Console, excl. Priority Tier; data lags ~5 min)</span>
+          </p>
+          <CostByModelChart data={summary.days} />
+        </>
+      );
     }
   }
-  const data: DailyCost[] = Object.keys(buckets)
-    .sort()
-    .map((day) => ({ day, ...buckets[day] }));
-
-  const total = data.reduce(
-    (sum, d) => sum + d.implement + d.staging_deploy + d.promote_to_prod + d.smoke_verify + d.rollback,
-    0,
-  );
 
   return (
     <div>
       <PageHeader
         title="Cost"
-        descriptor="Token and workflow spend, with watchdog status."
+        descriptor="Real Anthropic spend, last 30 days."
         helpTerm="cost-page"
       />
-      <p className="mb-6 text-sm text-muted-foreground">
-        Anthropic spend across all repos, last 30 days. Total: <strong>${total.toFixed(2)}</strong>.
-      </p>
-      <CostChart data={data} />
+      {body}
+
+      <div className="mt-10 border-t pt-6">
+        <h2 className="text-sm font-medium text-muted-foreground">
+          Per-repo &amp; per-phase breakdown — coming in Phase 2
+        </h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Attributing spend to individual repos and pipeline phases requires per-run
+          instrumentation of the phase workflows. Tracked as Phase 2.
+        </p>
+      </div>
     </div>
   );
 }
