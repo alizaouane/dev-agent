@@ -1,0 +1,40 @@
+# standard-conformance — Operating Standard v5 §26.3 enforcement.
+# Kit-owned file: installed/refreshed by `bmad-init --upgrade`. Change it in
+# the kit (~/.bmad/ci/standard-conformance.yml), not per-repo.
+#
+# Add BOTH jobs to branch-protection required checks:
+#   conformance, secrets
+name: standard-conformance
+
+on:
+  pull_request:
+  push:
+    branches: [main, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: Operating Standard conformance check
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: bash .bmad/check.sh
+
+  secrets:
+    name: secrets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - name: gitleaks secret scan
+        uses: gitleaks/gitleaks-action@dcedce43c6f43de0b836d1fe38946645c9c638dc # v2 (v2.3.9)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

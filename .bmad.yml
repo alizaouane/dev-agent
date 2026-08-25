@@ -1,0 +1,5 @@
+# Operating Standard conformance stamp (v5 §26.3). Read by .bmad/check.sh.
+standard: "5.0"
+kit_version: 5.0.1
+track: standard
+initialized: 2026-08-25
