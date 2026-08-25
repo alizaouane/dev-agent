@@ -31,10 +31,16 @@ echo
 if [[ -f .bmad.yml ]]; then
   TRACK="$(sed -n 's/^track:[[:space:]]*//p' .bmad.yml | head -1)"
   KITV="$(sed -n 's/^kit_version:[[:space:]]*//p' .bmad.yml | head -1)"
-  case "$TRACK" in
-    quick|standard|deep) pass ".bmad.yml stamp (track: $TRACK, kit: ${KITV:-unknown})" ;;
-    *) fail ".bmad.yml stamp" "track must be quick|standard|deep, got '${TRACK:-<empty>}'"; TRACK="standard" ;;
-  esac
+  STDV="$(sed -n 's/^standard:[[:space:]]*//p' .bmad.yml | head -1 | tr -d '"')"
+  if [[ "$STDV" != 5.* ]]; then
+    fail ".bmad.yml stamp" "standard must be 5.x (this checker enforces v5), got '${STDV:-<empty>}' — run: bmad-init --upgrade"
+    TRACK="${TRACK:-standard}"
+  else
+    case "$TRACK" in
+      quick|standard|deep) pass ".bmad.yml stamp (standard: $STDV, track: $TRACK, kit: ${KITV:-unknown})" ;;
+      *) fail ".bmad.yml stamp" "track must be quick|standard|deep, got '${TRACK:-<empty>}'"; TRACK="standard" ;;
+    esac
+  fi
 else
   fail ".bmad.yml stamp" "missing — run: ~/.bmad/bin/bmad-init"
   TRACK="standard"
@@ -59,8 +65,10 @@ if [[ -d docs/stories ]]; then
     [[ "$(basename "$sf")" == "README.md" ]] && continue
     STORY_COUNT=$((STORY_COUNT+1))
     # accepts: "Status: X", "**Status**: X", "**Status:** X", list-item and
-    # blockquote prefixes, and "In Progress" spelling
-    if ! grep -qiE '^[[:space:]>-]*\**Status\**:?\**:?[[:space:]]*(Draft|Approved|In ?Progress|Review|Done|Blocked)' "$sf"; then
+    # blockquote prefixes, "In Progress" spelling, and trailing annotation
+    # after whitespace ("Review — code merged"). Bounded so "Doneish" or
+    # "Draft-old" do not pass.
+    if ! grep -qiE '^[[:space:]>-]*\**Status\**:?\**:?[[:space:]]*(Draft|Approved|In ?Progress|Review|Done|Blocked)([[:space:]*]|$)' "$sf"; then
       BAD_STORIES="$BAD_STORIES $sf"
     fi
   done < <(find docs/stories -name '*.md' -type f 2>/dev/null)
@@ -82,7 +90,7 @@ if [[ "$TRACK" != "quick" && $STORY_COUNT -gt 0 ]]; then
   ARCH_FILE=""
   if   [[ -f docs/architecture.md ]];         then ARCH_FILE="docs/architecture.md"
   elif [[ -f docs/architecture/current.md ]]; then ARCH_FILE="docs/architecture/current.md"
-  elif compgen -G 'docs/architecture/*.md' >/dev/null 2>&1; then ARCH_FILE="$(ls docs/architecture/*.md | head -1)"
+  elif [[ -d docs/architecture ]]; then ARCH_FILE="$(find docs/architecture -type f -name '*.md' 2>/dev/null | head -1)"
   fi
   BROWNFIELD=0
   [[ "$ARCH_FILE" == docs/architecture/* ]] && BROWNFIELD=1
@@ -115,23 +123,38 @@ else
   warn "standard-conformance workflow" "not in CI yet — run bmad-init --upgrade, then add it to branch-protection required checks"
 fi
 
-# ---- 6. PR diff mode: stub markers in changed production files (§13.2, §16.4)
+# ---- 6. PR diff mode: stub markers in ADDED production lines (§13.2, §16.4)
 # Runs when BASE_REF is provided (set by the CI workflow on pull_request).
+# Fail-closed: an unresolvable base ref fails the check rather than silently
+# skipping it. Scans only lines the PR adds, so pre-existing markers in a
+# touched file do not block unrelated fixes. Null-delimited paths, so
+# filenames with spaces are scanned correctly. Includes SQL migrations.
 if [[ -n "${BASE_REF:-}" ]]; then
-  git fetch --quiet --depth=1 origin "$BASE_REF" 2>/dev/null || true
-  CHANGED="$(git diff --name-only "origin/$BASE_REF"...HEAD 2>/dev/null | \
-    grep -E '\.(ts|tsx|js|jsx|mjs|py|go|rb|swift)$' | \
-    grep -v -E '(^|/)(__tests__|e2e|tests?|__mocks__|fixtures)/|\.(test|spec)\.' || true)"
-  STUBS=""
-  for f in $CHANGED; do
-    [[ -f "$f" ]] || continue
-    HITS="$(grep -nE '(//|#)[[:space:]]*(TODO|FIXME|HACK|XXX)\b|\bthrow new Error\((["'"'"'])not implemented' "$f" || true)"
-    [[ -n "$HITS" ]] && STUBS="$STUBS\n$f:\n$HITS"
-  done
-  if [[ -z "$STUBS" ]]; then
-    pass "no stub/TODO markers in changed production files"
+  if ! git rev-parse -q --verify "origin/$BASE_REF" >/dev/null 2>&1; then
+    git fetch --quiet origin "+refs/heads/$BASE_REF:refs/remotes/origin/$BASE_REF" 2>/dev/null || true
+  fi
+  if ! git rev-parse -q --verify "origin/$BASE_REF" >/dev/null 2>&1; then
+    fail "PR stub scan" "cannot resolve origin/$BASE_REF — refusing to pass an unrun check (fail-closed, §25)"
   else
-    fail "no stub/TODO markers in changed production files" "$(printf '%b' "$STUBS" | head -20 | tr '\n' ' ')"
+    STUBS=""
+    while IFS= read -r -d '' f; do
+      case "$f" in
+        *__tests__*|*/e2e/*|e2e/*|*/tests/*|tests/*|*/test/*|test/*|*__mocks__*|*fixtures*) continue ;;
+        *.test.*|*.spec.*) continue ;;
+      esac
+      case "$f" in
+        *.ts|*.tsx|*.js|*.jsx|*.mjs|*.py|*.go|*.rb|*.swift|*.sql) ;;
+        *) continue ;;
+      esac
+      HITS="$(git diff -U0 "origin/$BASE_REF"...HEAD -- "$f" 2>/dev/null | grep -E '^\+[^+]' | \
+        grep -ciE '(//|#|--)[[:space:]]*(TODO|FIXME|HACK|XXX)\b|throw new Error\((["'"'"'])not implemented' || true)"
+      [[ "${HITS:-0}" -gt 0 ]] && STUBS="$STUBS $f(+$HITS)"
+    done < <(git diff --name-only -z "origin/$BASE_REF"...HEAD 2>/dev/null)
+    if [[ -z "$STUBS" ]]; then
+      pass "no stub/TODO markers in added production lines"
+    else
+      fail "no stub/TODO markers in added production lines" "added markers in:$STUBS"
+    fi
   fi
 fi
 
