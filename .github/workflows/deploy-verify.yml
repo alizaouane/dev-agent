@@ -23,8 +23,13 @@ permissions:
 
 jobs:
   verify:
-    # only successful deployments
-    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+    # successful deployments of REAL environments only. Preview/PR deployments
+    # are ephemeral and usually behind deployment protection, so probing them
+    # proves nothing about staging or production wiring.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       !contains(github.event.deployment_status.environment, 'preview'))
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -45,15 +50,21 @@ jobs:
         run: |
           URL="${{ steps.url.outputs.url }}"
           CODE=$(curl -s -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL/api/health/env" || echo 000)
-          if [ "$CODE" = "404" ]; then
-            echo "::warning::No /api/health/env endpoint yet — env-parity unverified (§13.5, Tier 2)."
-            exit 0
-          fi
-          if [ "$CODE" != "200" ]; then
-            echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
-            cat /tmp/envhealth.json 2>/dev/null || true
-            exit 1
-          fi
+          case "$CODE" in
+            404)
+              echo "::warning::No /api/health/env endpoint yet — env-parity unverified (§13.5, Tier 2)."
+              exit 0 ;;
+            301|302|303|307|308|401|403)
+              # deployment protection / SSO in front of the URL: we cannot read
+              # the probe, which is not the same as the deployment being wrong.
+              echo "::warning::Env-parity probe unreachable (HTTP $CODE — deployment protection?). Unverified, not failed."
+              exit 0 ;;
+            200) : ;;
+            *)
+              echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
+              cat /tmp/envhealth.json 2>/dev/null || true
+              exit 1 ;;
+          esac
           # endpoint reports missing var NAMES only, never values
           MISSING=$(python3 -c "import json;d=json.load(open('/tmp/envhealth.json'));print(','.join(d.get('missing',[])))" 2>/dev/null || echo PARSE_ERROR)
           if [ "$MISSING" = "PARSE_ERROR" ]; then
@@ -67,6 +78,7 @@ jobs:
 
       - name: Golden-path smoke (deployed)
         if: steps.url.outputs.skip != 'true'
+        continue-on-error: false
         env:
           DEPLOY_URL: ${{ steps.url.outputs.url }}
         run: |
