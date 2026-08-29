@@ -80,7 +80,7 @@ jobs:
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.pr.outputs.skip != 'true'
         with:
           fetch-depth: 0

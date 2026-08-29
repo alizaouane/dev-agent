@@ -58,7 +58,7 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root — agent edits, type-checks, tests against this.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
 
       # Hide workflow-generated paths from the consumer's git state
@@ -104,7 +104,7 @@ jobs:
       # invokes via `.dev-agent-engine/node_modules/.bin/tsx ...`). Pinned
       # to v1 so workflow code and CLI code move together.
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main

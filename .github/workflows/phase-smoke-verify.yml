@@ -61,7 +61,7 @@ jobs:
         with:
           egress-policy: audit
           disable-sudo: true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # actions/checkout above clones the *consumer's* repo — which has no
       # lib/cli tooling. The reusable-workflow YAML ships from dev-agent but
@@ -75,7 +75,7 @@ jobs:
         run: echo '.dev-agent-engine/' >> .git/info/exclude
 
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
