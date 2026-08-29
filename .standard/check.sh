@@ -148,12 +148,21 @@ fi
 # `process.env.*` reads in server code outside the declared module.
 # `env_contract: warn` (default) reports; `enforce` fails. Promote per repo
 # once the module is adopted and the raw reads are migrated (§25).
-# stamp values carry documented inline comments — strip them before use, or
-# `env_contract: enforce  # warn|enforce` never matches "enforce".
+# stamp_value <key>
+# Read one scalar value from the repo's conformance stamp ($STAMP), stripping
+# the documented inline comment, surrounding quotes, and whitespace. Prints the
+# bare value, or nothing when the key is absent. Exists because the stamp keys
+# ship WITH explanatory comments — a naive read of `env_contract: enforce
+# # warn|enforce` yields the whole line and silently never matches "enforce".
 stamp_value() { # $1 = key
   sed -n "s/^$1:[[:space:]]*//p" "${STAMP:-/dev/null}" 2>/dev/null \
     | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs 2>/dev/null || true
 }
+# stamp_mode <key> <default>
+# Read a gate-promotion mode (§25.1) from the stamp and validate it. Prints
+# "warn" or "enforce": the stamp's value when valid, the given default when the
+# key is absent, and the default plus a WARN line when the value is neither —
+# a typo must not silently disable a gate.
 stamp_mode() { # $1 = key, $2 = default — only warn|enforce are valid
   local v; v="$(stamp_value "$1")"
   case "$v" in
@@ -178,7 +187,8 @@ while IFS= read -r f; do
     *.test.*|*.spec.*|*.d.ts) continue ;;
     *.config.*|*/scripts/*|scripts/*|*/supabase/functions/_shared/env*) continue ;;
   esac
-  N="$(grep -c 'process\.env\.' "$f" 2>/dev/null)" || N=0
+  # any access form counts: .X, ["X"], and `= process.env` destructuring
+  N="$(grep -cE 'process\.env' "$f" 2>/dev/null)" || N=0
   [[ "${N:-0}" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
 done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
 

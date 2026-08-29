@@ -57,10 +57,18 @@ jobs:
             BYPASS="-H x-vercel-protection-bypass: ${VERCEL_BYPASS}"
           fi
           # -L: a redirect to the real endpoint is normal; judge the FINAL code
-          CODE=$(curl -sL $BYPASS -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL/api/health/env" || echo 000)
+          CODE=$(curl -sL $BYPASS -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL$EP" || echo 000)
           case "$CODE" in
             404)
-              echo "::warning::No /api/health/env endpoint yet — env-parity unverified (§13.5, Tier 2)."
+              # undeclared: this repo has not adopted the probe yet (dormant).
+              # declared: the repo says the endpoint exists, so a 404 is a real
+              # deployment fault, not a missing feature.
+              if [ "$DECLARED" = "1" ]; then
+                echo "::error::health_endpoint '$EP' is declared in $STAMP but returned 404 on this deployment."
+                exit 1
+              fi
+              echo "::warning::No health endpoint declared — env-parity UNVERIFIED. Add an endpoint and set 'health_endpoint:' in $STAMP (§13.5)."
+              echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
             401|403)
               # an auth wall in front of the URL: we cannot read the probe, which
@@ -85,11 +93,11 @@ jobs:
           # "verified": an absent or non-list key means the endpoint is not
           # honouring the contract, which is itself a failure.
           set +e
-          MISSING=$(python3 -c 'import json,sys; d=json.load(open("/tmp/envhealth.json")); m=d.get("missing"); sys.exit(3) if not isinstance(m,list) else print(",".join(str(x) for x in m))' 2>/dev/null)
+          MISSING=$(python3 -c 'import json,sys; d=json.load(open("/tmp/envhealth.json")); m=d.get("missing"); m=(d.get("data") or {}).get("missing") if m is None and isinstance(d.get("data"),dict) else m; sys.exit(3) if not isinstance(m,list) else print(",".join(str(x) for x in m))' 2>/dev/null)
           RC=$?
           set -e
           if [ $RC -eq 3 ]; then
-            echo "::error::/api/health/env must return a JSON object with a \"missing\" array; got:"
+            echo "::error::/api/health/env must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
             cat /tmp/envhealth.json; exit 1
           elif [ $RC -ne 0 ]; then
             echo "::error::/api/health/env returned unparseable JSON:"
@@ -106,6 +114,10 @@ jobs:
         if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unverified != 'true'
         env:
           DEPLOY_URL: ${{ steps.url.outputs.url }}
+          # playwright configs conventionally read PLAYWRIGHT_BASE_URL; without
+          # it the "deployed" smoke would quietly run against localhost
+          PLAYWRIGHT_BASE_URL: ${{ steps.url.outputs.url }}
+          BASE_URL: ${{ steps.url.outputs.url }}
         run: |
           if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
             echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
