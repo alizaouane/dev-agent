@@ -1,0 +1,79 @@
+# deploy-verify — Operating Standard v5.1 §13.5 (deployment verification).
+# Kit-owned file: installed/refreshed by `standard-init --upgrade`.
+#
+# The test pyramid verifies logic in a curated environment. This verifies the
+# DEPLOYMENT: that the env vars a route reads are actually set there, and that
+# each critical feature's golden path still works against the real URL.
+#
+# Ships dormant: both steps skip with a notice until the repo implements
+# /api/health/env and e2e/smoke/*.deployed.spec.ts (Tier 2 stories). Never
+# add this to required checks — it runs post-deploy, not on PRs.
+name: deploy-verify
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Deployment URL to verify
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # only successful deployments
+    if: github.event_name == 'workflow_dispatch' || github.event.deployment_status.state == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Resolve deployment URL
+        id: url
+        run: |
+          URL="${{ github.event.inputs.url || github.event.deployment_status.environment_url }}"
+          if [ -z "$URL" ]; then
+            echo "::notice::No deployment URL on this event — nothing to verify."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=${URL%/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Env-parity assertion
+        if: steps.url.outputs.skip != 'true'
+        run: |
+          URL="${{ steps.url.outputs.url }}"
+          CODE=$(curl -s -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL/api/health/env" || echo 000)
+          if [ "$CODE" = "404" ]; then
+            echo "::warning::No /api/health/env endpoint yet — env-parity unverified (§13.5, Tier 2)."
+            exit 0
+          fi
+          if [ "$CODE" != "200" ]; then
+            echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
+            cat /tmp/envhealth.json 2>/dev/null || true
+            exit 1
+          fi
+          # endpoint reports missing var NAMES only, never values
+          MISSING=$(python3 -c "import json;d=json.load(open('/tmp/envhealth.json'));print(','.join(d.get('missing',[])))" 2>/dev/null || echo PARSE_ERROR)
+          if [ "$MISSING" = "PARSE_ERROR" ]; then
+            echo "::error::/api/health/env returned unparseable JSON"; cat /tmp/envhealth.json; exit 1
+          fi
+          if [ -n "$MISSING" ]; then
+            echo "::error::Env vars read by server code but NOT set in this deployment: $MISSING"
+            exit 1
+          fi
+          echo "✅ env-parity: every declared var is set in this deployment"
+
+      - name: Golden-path smoke (deployed)
+        if: steps.url.outputs.skip != 'true'
+        env:
+          DEPLOY_URL: ${{ steps.url.outputs.url }}
+        run: |
+          if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
+            echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
+            exit 0
+          fi
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          npx playwright install --with-deps chromium
+          npx playwright test e2e/smoke --reporter=line

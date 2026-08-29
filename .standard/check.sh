@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# bmad-check — conformance check for the AI-Native Development Operating
+# standard-check — conformance check for the AI-Native Development Operating
 # Standard v5 (§26.3). Self-contained: runs identically locally
-# (`bmad-init --check` or `bash .bmad/check.sh`) and in CI
+# (`standard-init --check` or `bash .standard/check.sh`) and in CI
 # (.github/workflows/standard-conformance.yml).
 #
-# Track-aware: reads `track:` from .bmad.yml. Exit 1 on any FAIL; WARNs never
+# Track-aware: reads `track:` from .standard.yml. Exit 1 on any FAIL; WARNs never
 # fail the build. In a PR context (BASE_REF set), also diff-checks changed
 # production files for stub markers.
 #
-# Kit-owned file: refreshed by `bmad-init --upgrade`. Do not hand-edit in
-# consumer repos — change it in the kit (~/.bmad/ci/bmad-check.sh) instead.
+# Kit-owned file: refreshed by `standard-init --upgrade`. Do not hand-edit in
+# consumer repos — change it in the kit (~/.qualiency-dev-standard/ci/check.sh) instead.
 
 set -uo pipefail
 
@@ -17,39 +17,59 @@ CHECK_VERSION="5.0.0"
 FAILS=0
 WARNS=0
 
+# pass <label>
+# Print a green PASS line for the named check. Records nothing; passing
+# checks never affect the exit code.
 pass() { printf '  \033[32mPASS\033[0m  %s\n' "$1"; }
+
+# fail <label> <remediation>
+# Print a red FAIL line for the named check plus a one-line remediation hint,
+# and increment the failure counter that makes the script exit 1 (blocking
+# the CI job). Every call must say how to fix the failure, not just that it
+# failed.
 fail() { printf '  \033[31mFAIL\033[0m  %s\n' "$1"; printf '        └─ %s\n' "$2"; FAILS=$((FAILS+1)); }
+
+# warn <label> <note>
+# Print a yellow WARN line for the named check plus an explanatory note, and
+# increment the warning counter shown in the summary. Warnings never fail
+# the run — they mark items that are acceptable but worth attention (§26.3).
 warn() { printf '  \033[33mWARN\033[0m  %s\n' "$1"; printf '        └─ %s\n' "$2"; WARNS=$((WARNS+1)); }
 
-ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "bmad-check: not a git repository" >&2; exit 1; }
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" || { echo "standard-check: not a git repository" >&2; exit 1; }
 cd "$ROOT"
 
-echo "bmad-check v$CHECK_VERSION — $(basename "$ROOT")"
+echo "standard-check v$CHECK_VERSION — $(basename "$ROOT")"
 echo
 
 # ---- 0. conformance stamp ----------------------------------------------------
-if [[ -f .bmad.yml ]]; then
-  TRACK="$(sed -n 's/^track:[[:space:]]*//p' .bmad.yml | head -1)"
-  KITV="$(sed -n 's/^kit_version:[[:space:]]*//p' .bmad.yml | head -1)"
-  STDV="$(sed -n 's/^standard:[[:space:]]*//p' .bmad.yml | head -1 | tr -d '"')"
+# Transition (kit 5.2): repos initialised before the rename carry .bmad.yml;
+# accept it with a WARN until `standard-init --upgrade` migrates them.
+STAMP=""
+if   [[ -f .standard.yml ]]; then STAMP=".standard.yml"
+elif [[ -f .bmad.yml ]];     then STAMP=".bmad.yml"; warn "legacy .bmad.yml stamp" "pre-rename layout — run: standard-init --upgrade (migrates to .standard.yml + .standard/)"
+fi
+if [[ -n "$STAMP" ]]; then
+  TRACK="$(sed -n 's/^track:[[:space:]]*//p' "$STAMP" | head -1)"
+  KITV="$(sed -n 's/^kit_version:[[:space:]]*//p' "$STAMP" | head -1)"
+  STDV="$(sed -n 's/^standard:[[:space:]]*//p' "$STAMP" | head -1 | tr -d '"')"
   if [[ "$STDV" != 5.* ]]; then
-    fail ".bmad.yml stamp" "standard must be 5.x (this checker enforces v5), got '${STDV:-<empty>}' — run: bmad-init --upgrade"
+    fail "$STAMP stamp" "standard must be 5.x (this checker enforces v5), got '${STDV:-<empty>}' — run: standard-init --upgrade"
     TRACK="${TRACK:-standard}"
   else
     case "$TRACK" in
-      quick|standard|deep) pass ".bmad.yml stamp (standard: $STDV, track: $TRACK, kit: ${KITV:-unknown})" ;;
-      *) fail ".bmad.yml stamp" "track must be quick|standard|deep, got '${TRACK:-<empty>}'"; TRACK="standard" ;;
+      quick|standard|deep) pass "$STAMP stamp (standard: $STDV, track: $TRACK, kit: ${KITV:-unknown})" ;;
+      *) fail "$STAMP stamp" "track must be quick|standard|deep, got '${TRACK:-<empty>}'"; TRACK="standard" ;;
     esac
   fi
 else
-  fail ".bmad.yml stamp" "missing — run: ~/.bmad/bin/bmad-init"
+  fail ".standard.yml stamp" "missing — run: ~/.qualiency-dev-standard/bin/standard-init"
   TRACK="standard"
 fi
 
 # ---- 1. control files (all tracks, §7.1) ------------------------------------
 for f in CLAUDE.md SPEC.md SESSION_LOG.md docs/sprint-status.yaml; do
   if [[ -f "$f" ]]; then pass "$f exists"
-  else fail "$f exists" "required control file (§7.1) — run bmad-init to scaffold"; fi
+  else fail "$f exists" "required control file (§7.1) — run standard-init to scaffold"; fi
 done
 [[ -d docs ]] && pass "docs/ exists" || fail "docs/ exists" "planning artifacts directory (§4.1)"
 
@@ -68,7 +88,7 @@ if [[ -d docs/stories ]]; then
     # blockquote prefixes, "In Progress" spelling, and trailing annotation
     # after whitespace ("Review — code merged"). Bounded so "Doneish" or
     # "Draft-old" do not pass.
-    if ! grep -qiE '^[[:space:]>-]*\**Status\**:?\**:?[[:space:]]*(Draft|Approved|In ?Progress|Review|Done|Blocked)([[:space:]*]|$)' "$sf"; then
+    if ! grep -qiE '^[[:space:]>-]*\**Status\**:?\**:?[[:space:]]*(Draft|Approved|In ?Progress|Review|Done|Blocked)\**([[:space:]]|$)' "$sf"; then
       BAD_STORIES="$BAD_STORIES $sf"
     fi
   done < <(find docs/stories -name '*.md' -type f 2>/dev/null)
@@ -120,7 +140,41 @@ fi
 if [[ -f .github/workflows/standard-conformance.yml ]]; then
   pass "standard-conformance workflow installed"
 else
-  warn "standard-conformance workflow" "not in CI yet — run bmad-init --upgrade, then add it to branch-protection required checks"
+  warn "standard-conformance workflow" "not in CI yet — run standard-init --upgrade, then add it to branch-protection required checks"
+fi
+
+# ---- 5b. env contract (§13.5, facet 2) --------------------------------------
+# The declared env schema and the code must not silently diverge. Counts raw
+# `process.env.*` reads in server code outside the declared module.
+# `env_contract: warn` (default) reports; `enforce` fails. Promote per repo
+# once the module is adopted and the raw reads are migrated (§25).
+ENV_MODULE="$(sed -n 's/^env_module:[[:space:]]*//p' "${STAMP:-/dev/null}" 2>/dev/null | head -1 | tr -d '"'"'"'"')"
+ENV_MODE="$(sed -n 's/^env_contract:[[:space:]]*//p' "${STAMP:-/dev/null}" 2>/dev/null | head -1)"
+ENV_MODE="${ENV_MODE:-warn}"
+
+if [[ -n "$ENV_MODULE" && ! -f "$ENV_MODULE" ]]; then
+  fail "env module exists" "'.standard.yml' declares env_module: $ENV_MODULE but that file is missing"
+fi
+
+RAW_COUNT=0; RAW_LIST=""
+while IFS= read -r f; do
+  [[ -n "$f" ]] || continue
+  [[ -n "$ENV_MODULE" && "$f" == "$ENV_MODULE" ]] && continue
+  case "$f" in
+    *__tests__*|*/e2e/*|e2e/*|*/tests/*|tests/*|*/test/*|test/*|*__mocks__*|*fixtures*) continue ;;
+    *.test.*|*.spec.*|*.d.ts) continue ;;
+    *.config.*|*/scripts/*|scripts/*|*/supabase/functions/_shared/env*) continue ;;
+  esac
+  N="$(grep -c 'process\.env\.' "$f" 2>/dev/null || echo 0)"
+  [[ "$N" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
+done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
+
+if [[ $RAW_COUNT -eq 0 ]]; then
+  pass "env contract (no raw process.env reads outside the module)"
+elif [[ "$ENV_MODE" == "enforce" ]]; then
+  fail "env contract (enforce)" "$RAW_COUNT file(s) read process.env directly:$(echo "$RAW_LIST" | cut -c1-200) — route them through ${ENV_MODULE:-a validated env module}"
+else
+  warn "env contract ($RAW_COUNT file(s) read process.env directly)" "advisory while .standard.yml has 'env_contract: warn'. Adopt a validated env module, migrate the reads, then set 'env_contract: enforce' (§13.5)"
 fi
 
 # ---- 6. PR diff mode: stub markers in ADDED production lines (§13.2, §16.4)
@@ -165,6 +219,6 @@ if [[ $FAILS -eq 0 ]]; then
   exit 0
 else
   echo "❌ NOT CONFORMANT — $FAILS failure(s), $WARNS warning(s)"
-  echo "   Remediation: run ~/.bmad/bin/bmad-init (scaffold gaps) and fix the items above."
+  echo "   Remediation: run ~/.qualiency-dev-standard/bin/standard-init (scaffold gaps) and fix the items above."
   exit 1
 fi

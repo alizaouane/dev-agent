@@ -1,0 +1,11 @@
+# Operating Standard conformance stamp (v5 §26.3). Read by .bmad/check.sh.
+standard: "5.1"
+kit_version: 5.3.0
+track: standard
+initialized: 2026-08-25
+
+# Gate promotion (§25). Both start advisory; flip to 'enforce' per repo once
+# the baseline is clean.
+env_contract: warn    # warn|enforce — raw process.env reads outside env_module
+sast: warn            # warn|enforce — semgrep ERROR-severity findings
+# env_module: lib/env.ts   # the single validated env module, once adopted (§13.5)
