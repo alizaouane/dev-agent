@@ -1,0 +1,128 @@
+# deploy-verify — Operating Standard v5.1 §13.5 (deployment verification).
+# Kit-owned file: installed/refreshed by `standard-init --upgrade`.
+#
+# The test pyramid verifies logic in a curated environment. This verifies the
+# DEPLOYMENT: that the env vars a route reads are actually set there, and that
+# each critical feature's golden path still works against the real URL.
+#
+# Ships dormant: both steps skip with a notice until the repo implements
+# /api/health/env and e2e/smoke/*.deployed.spec.ts (Tier 2 stories). Never
+# add this to required checks — it runs post-deploy, not on PRs.
+name: deploy-verify
+
+on:
+  deployment_status:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: Deployment URL to verify
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # successful deployments of REAL environments only. Preview/PR deployments
+    # are ephemeral and usually behind deployment protection, so probing them
+    # proves nothing about staging or production wiring.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.deployment_status.state == 'success' &&
+       !contains(github.event.deployment_status.environment, 'preview'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - name: Resolve deployment URL
+        id: url
+        run: |
+          URL="${{ github.event.inputs.url || github.event.deployment_status.environment_url }}"
+          if [ -z "$URL" ]; then
+            echo "::notice::No deployment URL on this event — nothing to verify."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "url=${URL%/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Env-parity assertion
+        id: envparity
+        if: steps.url.outputs.skip != 'true'
+        env:
+          VERCEL_BYPASS: ${{ secrets.DEPLOY_VERIFY_BYPASS }}
+        run: |
+          URL="${{ steps.url.outputs.url }}"
+          BYPASS=""
+          if [ -n "${VERCEL_BYPASS:-}" ]; then
+            BYPASS="-H x-vercel-protection-bypass: ${VERCEL_BYPASS}"
+          fi
+          # -L: a redirect to the real endpoint is normal; judge the FINAL code
+          CODE=$(curl -sL $BYPASS -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL$EP" || echo 000)
+          case "$CODE" in
+            404)
+              # undeclared: this repo has not adopted the probe yet (dormant).
+              # declared: the repo says the endpoint exists, so a 404 is a real
+              # deployment fault, not a missing feature.
+              if [ "$DECLARED" = "1" ]; then
+                echo "::error::health_endpoint '$EP' is declared in $STAMP but returned 404 on this deployment."
+                exit 1
+              fi
+              echo "::warning::No health endpoint declared — env-parity UNVERIFIED. Add an endpoint and set 'health_endpoint:' in $STAMP (§13.5)."
+              echo "unverified=true" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+            401|403)
+              # an auth wall in front of the URL: we cannot read the probe, which
+              # is not the same as the deployment being wrong. Close this gap by
+              # adding a DEPLOY_VERIFY_BYPASS secret so the probe authenticates
+              # and any non-200 becomes a genuine failure.
+              if [ -n "${VERCEL_BYPASS:-}" ]; then
+                echo "::error::Env-parity probe returned $CODE even with the bypass secret set."
+                exit 1
+              fi
+              echo "::warning::Env-parity probe blocked (HTTP $CODE). UNVERIFIED — add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
+              echo "unverified=true" >> "$GITHUB_OUTPUT"
+              exit 0 ;;
+            200) : ;;
+            *)
+              echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
+              cat /tmp/envhealth.json 2>/dev/null || true
+              exit 1 ;;
+          esac
+          # The endpoint contract is {"missing": [names...]} — it reports missing
+          # variable NAMES only, never values. A 200 carrying {} must not pass as
+          # "verified": an absent or non-list key means the endpoint is not
+          # honouring the contract, which is itself a failure.
+          set +e
+          MISSING=$(python3 -c 'import json,sys; d=json.load(open("/tmp/envhealth.json")); m=d.get("missing"); m=(d.get("data") or {}).get("missing") if m is None and isinstance(d.get("data"),dict) else m; sys.exit(3) if not isinstance(m,list) else print(",".join(str(x) for x in m))' 2>/dev/null)
+          RC=$?
+          set -e
+          if [ $RC -eq 3 ]; then
+            echo "::error::/api/health/env must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
+            cat /tmp/envhealth.json; exit 1
+          elif [ $RC -ne 0 ]; then
+            echo "::error::/api/health/env returned unparseable JSON:"
+            cat /tmp/envhealth.json; exit 1
+          fi
+          if [ -n "$MISSING" ]; then
+            echo "::error::Env vars read by server code but NOT set in this deployment: $MISSING"
+            exit 1
+          fi
+          echo "✅ env-parity: every declared var is set in this deployment"
+
+      # if the probe could not be read, the smoke would hit the same wall
+      - name: Golden-path smoke (deployed)
+        if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unverified != 'true'
+        env:
+          DEPLOY_URL: ${{ steps.url.outputs.url }}
+          # playwright configs conventionally read PLAYWRIGHT_BASE_URL; without
+          # it the "deployed" smoke would quietly run against localhost
+          PLAYWRIGHT_BASE_URL: ${{ steps.url.outputs.url }}
+          BASE_URL: ${{ steps.url.outputs.url }}
+        run: |
+          if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
+            echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
+            exit 0
+          fi
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+          npx playwright install --with-deps chromium
+          npx playwright test e2e/smoke/*.deployed.spec.* --reporter=line

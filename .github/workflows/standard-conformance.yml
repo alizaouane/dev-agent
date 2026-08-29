@@ -1,6 +1,7 @@
 # standard-conformance — Operating Standard v5 §26.3 enforcement.
-# Kit-owned file: installed/refreshed by `bmad-init --upgrade`. Change it in
-# the kit (~/.bmad/ci/standard-conformance.yml), not per-repo.
+# Kit-owned file: installed/refreshed by `standard-init --upgrade`. Change it in
+# the kit (~/.qualiency-dev-standard/ci/standard-conformance.yml), not per-repo.
+# Runs .standard/check.sh (legacy repos: .bmad/check.sh until migrated).
 #
 # Add BOTH jobs to branch-protection required checks:
 #   conformance, secrets
@@ -25,7 +26,7 @@ jobs:
       - name: Operating Standard conformance check
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: bash .bmad/check.sh
+        run: bash "$([ -f .standard/check.sh ] && echo .standard/check.sh || echo .bmad/check.sh)"
 
   secrets:
     name: secrets
@@ -42,3 +43,31 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITLEAKS_ENABLE_COMMENTS: "false" # enforce-only; PR perms are read-only
+
+  sast:
+    name: sast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.12'
+      # installed from PyPI rather than a third-party action: fewer supply-chain
+      # surfaces, and the version is pinned here (§15.2)
+      - name: Install semgrep
+        run: pip install --quiet semgrep==1.97.0
+      - name: Scan
+        run: |
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          # strip the documented inline comment, or 'enforce' never matches
+          MODE=$(sed -n 's/^sast:[[:space:]]*//p' "$STAMP" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | tr -d "[:space:]")
+          case "$MODE" in enforce|warn) ;; *) MODE=warn ;; esac
+          set +e
+          semgrep scan --config p/default --severity ERROR --error --quiet --metrics off .
+          RC=$?
+          set -e
+          if [ $RC -eq 0 ]; then echo "✅ semgrep: no ERROR-severity findings"; exit 0; fi
+          if [ "$MODE" = "enforce" ]; then
+            echo "::error::semgrep found ERROR-severity issues (sast: enforce in .standard.yml)"; exit $RC
+          fi
+          echo "::warning::semgrep found ERROR-severity issues — advisory while .standard.yml has 'sast: warn'. Fix the baseline, then set 'sast: enforce' (§25)."
