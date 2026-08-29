@@ -1,6 +1,7 @@
 # standard-conformance — Operating Standard v5 §26.3 enforcement.
 # Kit-owned file: installed/refreshed by `standard-init --upgrade`. Change it in
 # the kit (~/.qualiency-dev-standard/ci/standard-conformance.yml), not per-repo.
+# Runs .standard/check.sh (legacy repos: .bmad/check.sh until migrated).
 #
 # Add BOTH jobs to branch-protection required checks:
 #   conformance, secrets
@@ -25,7 +26,7 @@ jobs:
       - name: Operating Standard conformance check
         env:
           BASE_REF: ${{ github.base_ref }}
-        run: bash .standard/check.sh
+        run: bash "$([ -f .standard/check.sh ] && echo .standard/check.sh || echo .bmad/check.sh)"
 
   secrets:
     name: secrets
@@ -57,8 +58,10 @@ jobs:
         run: pip install --quiet semgrep==1.97.0
       - name: Scan
         run: |
-          MODE=$(sed -n 's/^sast:[[:space:]]*//p' .standard.yml 2>/dev/null | head -1)
-          MODE="${MODE:-warn}"
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          # strip the documented inline comment, or 'enforce' never matches
+          MODE=$(sed -n 's/^sast:[[:space:]]*//p' "$STAMP" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '[:space:]')
+          case "$MODE" in enforce|warn) ;; *) MODE=warn ;; esac
           set +e
           semgrep scan --config p/default --severity ERROR --error --quiet --metrics off .
           RC=$?

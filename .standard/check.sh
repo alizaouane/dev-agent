@@ -148,9 +148,22 @@ fi
 # `process.env.*` reads in server code outside the declared module.
 # `env_contract: warn` (default) reports; `enforce` fails. Promote per repo
 # once the module is adopted and the raw reads are migrated (§25).
-ENV_MODULE="$(sed -n 's/^env_module:[[:space:]]*//p' "${STAMP:-/dev/null}" 2>/dev/null | head -1 | tr -d '"'"'"'"')"
-ENV_MODE="$(sed -n 's/^env_contract:[[:space:]]*//p' "${STAMP:-/dev/null}" 2>/dev/null | head -1)"
-ENV_MODE="${ENV_MODE:-warn}"
+# stamp values carry documented inline comments — strip them before use, or
+# `env_contract: enforce  # warn|enforce` never matches "enforce".
+stamp_value() { # $1 = key
+  sed -n "s/^$1:[[:space:]]*//p" "${STAMP:-/dev/null}" 2>/dev/null \
+    | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs 2>/dev/null || true
+}
+stamp_mode() { # $1 = key, $2 = default — only warn|enforce are valid
+  local v; v="$(stamp_value "$1")"
+  case "$v" in
+    warn|enforce) printf '%s' "$v" ;;
+    "") printf '%s' "$2" ;;
+    *) warn "invalid $1: '$v'" "expected warn|enforce — treating as $2"; printf '%s' "$2" ;;
+  esac
+}
+ENV_MODULE="$(stamp_value env_module)"
+ENV_MODE="$(stamp_mode env_contract warn)"
 
 if [[ -n "$ENV_MODULE" && ! -f "$ENV_MODULE" ]]; then
   fail "env module exists" "'.standard.yml' declares env_module: $ENV_MODULE but that file is missing"
@@ -165,8 +178,8 @@ while IFS= read -r f; do
     *.test.*|*.spec.*|*.d.ts) continue ;;
     *.config.*|*/scripts/*|scripts/*|*/supabase/functions/_shared/env*) continue ;;
   esac
-  N="$(grep -c 'process\.env\.' "$f" 2>/dev/null || echo 0)"
-  [[ "$N" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
+  N="$(grep -c 'process\.env\.' "$f" 2>/dev/null)" || N=0
+  [[ "${N:-0}" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
 done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
 
 if [[ $RAW_COUNT -eq 0 ]]; then

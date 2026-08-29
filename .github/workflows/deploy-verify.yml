@@ -46,18 +46,33 @@ jobs:
           fi
 
       - name: Env-parity assertion
+        id: envparity
         if: steps.url.outputs.skip != 'true'
+        env:
+          VERCEL_BYPASS: ${{ secrets.DEPLOY_VERIFY_BYPASS }}
         run: |
           URL="${{ steps.url.outputs.url }}"
-          CODE=$(curl -s -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL/api/health/env" || echo 000)
+          BYPASS=""
+          if [ -n "${VERCEL_BYPASS:-}" ]; then
+            BYPASS="-H x-vercel-protection-bypass: ${VERCEL_BYPASS}"
+          fi
+          # -L: a redirect to the real endpoint is normal; judge the FINAL code
+          CODE=$(curl -sL $BYPASS -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL/api/health/env" || echo 000)
           case "$CODE" in
             404)
               echo "::warning::No /api/health/env endpoint yet — env-parity unverified (§13.5, Tier 2)."
               exit 0 ;;
-            301|302|303|307|308|401|403)
-              # deployment protection / SSO in front of the URL: we cannot read
-              # the probe, which is not the same as the deployment being wrong.
-              echo "::warning::Env-parity probe unreachable (HTTP $CODE — deployment protection?). Unverified, not failed."
+            401|403)
+              # an auth wall in front of the URL: we cannot read the probe, which
+              # is not the same as the deployment being wrong. Close this gap by
+              # adding a DEPLOY_VERIFY_BYPASS secret so the probe authenticates
+              # and any non-200 becomes a genuine failure.
+              if [ -n "${VERCEL_BYPASS:-}" ]; then
+                echo "::error::Env-parity probe returned $CODE even with the bypass secret set."
+                exit 1
+              fi
+              echo "::warning::Env-parity probe blocked (HTTP $CODE). UNVERIFIED — add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
+              echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
             200) : ;;
             *)
@@ -65,10 +80,20 @@ jobs:
               cat /tmp/envhealth.json 2>/dev/null || true
               exit 1 ;;
           esac
-          # endpoint reports missing var NAMES only, never values
-          MISSING=$(python3 -c "import json;d=json.load(open('/tmp/envhealth.json'));print(','.join(d.get('missing',[])))" 2>/dev/null || echo PARSE_ERROR)
-          if [ "$MISSING" = "PARSE_ERROR" ]; then
-            echo "::error::/api/health/env returned unparseable JSON"; cat /tmp/envhealth.json; exit 1
+          # The endpoint contract is {"missing": [names...]} — it reports missing
+          # variable NAMES only, never values. A 200 carrying {} must not pass as
+          # "verified": an absent or non-list key means the endpoint is not
+          # honouring the contract, which is itself a failure.
+          set +e
+          MISSING=$(python3 -c 'import json,sys; d=json.load(open("/tmp/envhealth.json")); m=d.get("missing"); sys.exit(3) if not isinstance(m,list) else print(",".join(str(x) for x in m))' 2>/dev/null)
+          RC=$?
+          set -e
+          if [ $RC -eq 3 ]; then
+            echo "::error::/api/health/env must return a JSON object with a \"missing\" array; got:"
+            cat /tmp/envhealth.json; exit 1
+          elif [ $RC -ne 0 ]; then
+            echo "::error::/api/health/env returned unparseable JSON:"
+            cat /tmp/envhealth.json; exit 1
           fi
           if [ -n "$MISSING" ]; then
             echo "::error::Env vars read by server code but NOT set in this deployment: $MISSING"
@@ -76,9 +101,9 @@ jobs:
           fi
           echo "✅ env-parity: every declared var is set in this deployment"
 
+      # if the probe could not be read, the smoke would hit the same wall
       - name: Golden-path smoke (deployed)
-        if: steps.url.outputs.skip != 'true'
-        continue-on-error: false
+        if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unverified != 'true'
         env:
           DEPLOY_URL: ${{ steps.url.outputs.url }}
         run: |
@@ -88,4 +113,4 @@ jobs:
           fi
           if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
           npx playwright install --with-deps chromium
-          npx playwright test e2e/smoke --reporter=line
+          npx playwright test e2e/smoke/*.deployed.spec.* --reporter=line
