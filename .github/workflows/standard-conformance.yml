@@ -60,7 +60,7 @@ jobs:
         run: |
           STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
           # strip the documented inline comment, or 'enforce' never matches
-          MODE=$(sed -n 's/^sast:[[:space:]]*//p' "$STAMP" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | tr -d "[:space:]")
+          MODE=$(sed -n 's/^sast:[[:space:]]*//p' "$STAMP" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
           case "$MODE" in enforce|warn) ;; *) MODE=warn ;; esac
           set +e
           semgrep scan --config p/default --severity ERROR --error --quiet --metrics off .

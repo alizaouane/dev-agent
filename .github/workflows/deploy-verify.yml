@@ -52,6 +52,15 @@ jobs:
           VERCEL_BYPASS: ${{ secrets.DEPLOY_VERIFY_BYPASS }}
         run: |
           URL="${{ steps.url.outputs.url }}"
+          # The probe path is repo-configurable: many repos already expose an
+          # equivalent endpoint under a different path. Declared as
+          # `health_endpoint:` in the conformance stamp.
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          EP=$(sed -n 's|^health_endpoint:[[:space:]]*||p' "$STAMP" 2>/dev/null \
+                | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
+          DECLARED=1
+          if [ -z "$EP" ]; then EP=/api/health/env; DECLARED=0; fi
+          echo "probing ${URL}${EP} (declared=$DECLARED, stamp=$STAMP)"
           BYPASS=""
           if [ -n "${VERCEL_BYPASS:-}" ]; then
             BYPASS="-H x-vercel-protection-bypass: ${VERCEL_BYPASS}"
