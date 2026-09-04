@@ -156,7 +156,7 @@ fi
 # # warn|enforce` yields the whole line and silently never matches "enforce".
 stamp_value() { # $1 = key
   sed -n "s/^$1:[[:space:]]*//p" "${STAMP:-/dev/null}" 2>/dev/null \
-    | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs 2>/dev/null || true
+    | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs 2>/dev/null || true
 }
 # stamp_mode <key> <default>
 # Read a gate-promotion mode (§25.1) from the stamp and validate it. Prints
@@ -188,7 +188,12 @@ while IFS= read -r f; do
     *.config.*|*/scripts/*|scripts/*|*/supabase/functions/_shared/env*) continue ;;
   esac
   # any access form counts: .X, ["X"], and `= process.env` destructuring
-  N="$(grep -cE 'process\.env' "$f" 2>/dev/null)" || N=0
+  # NODE_ENV is set by the toolchain in every environment, so it can never be
+  # "missing from this deployment" — the failure this gate exists to catch.
+  # Counting it produces false positives that make the gate look noisy.
+  N="$(grep -oE 'process\.env(\.[A-Za-z_0-9]+|\[[[:space:]]*[\"'\'']?[A-Za-z_0-9]+[\"'\'']?[[:space:]]*\])?([^A-Za-z_0-9]|$)' "$f" 2>/dev/null \
+        | grep -vE 'process\.env(\.NODE_ENV|\[[[:space:]]*[\"'\'']?NODE_ENV[\"'\'']?[[:space:]]*\])([^A-Za-z_0-9]|$)' \
+        | grep -c . )" || N=0
   [[ "${N:-0}" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
 done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
 
