@@ -60,13 +60,13 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 0 }
 
       # Engine repo with the dev-agent CLIs + prompt templates this
       # workflow invokes. See phase-implement.yml for rationale.
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main

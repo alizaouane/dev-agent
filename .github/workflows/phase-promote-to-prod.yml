@@ -49,9 +49,9 @@ jobs:
         with:
           egress-policy: audit
           disable-sudo: true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main

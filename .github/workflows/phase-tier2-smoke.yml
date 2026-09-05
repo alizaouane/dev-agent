@@ -88,7 +88,7 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 1 }
 
       - name: Stub-mode — synthesize verification bundle
@@ -141,7 +141,7 @@ jobs:
       #      comment + label.
       - name: Live mode — checkout dev-agent engine
         if: inputs.invocation_mode == 'live'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
