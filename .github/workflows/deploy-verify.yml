@@ -157,8 +157,12 @@ jobs:
                 echo "::error::Env-parity probe returned $CODE even with the bypass secret set."
                 exit 1
               fi
-              echo "::warning::Env-parity probe blocked (HTTP $CODE). UNVERIFIED — add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
-              echo "unreachable=true" >> "$GITHUB_OUTPUT"
+              # A 401/403 says the ENDPOINT is access-controlled — which some
+              # repos do deliberately, so it is not a public config probe. It
+              # says nothing about whether the deployment's public routes are
+              # reachable, so parity is unverified but the smokes still run;
+              # skipping them here would let a broken public login page pass.
+              echo "::warning::Env-parity probe requires auth (HTTP $CODE) — UNVERIFIED. Add a DEPLOY_VERIFY_BYPASS secret, or expose a names-only endpoint, to make this a real gate (§13.5). Golden-path smokes still run."
               exit 0 ;;
             *)
               echo "::error::Env-parity probe failed: HTTP $CODE from ${URL}${EP}"
@@ -193,15 +197,30 @@ jobs:
       - name: Golden-path smoke (deployed)
         if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unreachable != 'true'
         env:
+          # Test runners disagree on the name of "the URL under test", and a
+          # name we fail to export means the "deployed" smoke quietly runs
+          # against localhost and passes — proving nothing. Export the common
+          # spellings; a repo using another can declare `smoke_url_env:` in the
+          # stamp, and every deployed spec should assert it is not on localhost.
           DEPLOY_URL: ${{ steps.url.outputs.url }}
-          # playwright configs conventionally read PLAYWRIGHT_BASE_URL; without
-          # it the "deployed" smoke would quietly run against localhost
           PLAYWRIGHT_BASE_URL: ${{ steps.url.outputs.url }}
           BASE_URL: ${{ steps.url.outputs.url }}
+          E2E_BASE_URL: ${{ steps.url.outputs.url }}
+          TEST_BASE_URL: ${{ steps.url.outputs.url }}
         run: |
           if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
             echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
             exit 0
+          fi
+          # a repo-declared name, for runners that read something else
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          EXTRA=$(sed -n 's|^smoke_url_env:[[:space:]]*||p' "$STAMP" 2>/dev/null \
+                   | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
+          if [ -n "$EXTRA" ]; then
+            case "$EXTRA" in
+              [A-Za-z_][A-Za-z_0-9]*) export "$EXTRA=$DEPLOY_URL"; echo "exported $EXTRA" ;;
+              *) echo "::error::smoke_url_env '$EXTRA' is not a valid variable name"; exit 1 ;;
+            esac
           fi
           if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
           npx playwright install --with-deps chromium
