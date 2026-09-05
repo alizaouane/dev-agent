@@ -186,13 +186,16 @@ fi
 RAW_COUNT=0; RAW_LIST=""; SCOPE_MATCHED=0
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
-  [[ -n "$ENV_MODULE" && "$f" == "$ENV_MODULE" ]] && continue
+  # Scope membership is decided BEFORE the module is skipped: a scope whose
+  # only member is the env module itself has matched, and must not be reported
+  # as a scope that matches nothing.
   if [[ -n "$ENV_SCOPE" ]]; then
     IN_SCOPE=0
     for pfx in $ENV_SCOPE; do [[ "$f" == $pfx* ]] && { IN_SCOPE=1; break; }; done
     [[ $IN_SCOPE -eq 1 ]] || continue
     SCOPE_MATCHED=$((SCOPE_MATCHED+1))
   fi
+  [[ -n "$ENV_MODULE" && "$f" == "$ENV_MODULE" ]] && continue
   case "$f" in
     *__tests__*|*/e2e/*|e2e/*|*/tests/*|tests/*|*/test/*|test/*|*__mocks__*|*fixtures*) continue ;;
     *.test.*|*.spec.*|*.d.ts) continue ;;
