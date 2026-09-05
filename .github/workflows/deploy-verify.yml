@@ -65,8 +65,25 @@ jobs:
           if [ -n "${VERCEL_BYPASS:-}" ]; then
             BYPASS="-H x-vercel-protection-bypass: ${VERCEL_BYPASS}"
           fi
-          # -L: a redirect to the real endpoint is normal; judge the FINAL code
-          CODE=$(curl -sL $BYPASS -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL$EP" || echo 000)
+          # -L: a redirect to the real endpoint is normal; judge the FINAL response.
+          # Capture the final URL and content type too — an SSO login wall answers
+          # 200 with HTML, so the status code alone cannot tell us we were served
+          # the endpoint rather than a sign-in page.
+          READ=$(curl -sL $BYPASS -o /tmp/envhealth.json \
+                   -w '%{http_code}|%{content_type}|%{url_effective}' \
+                   --max-time 30 "$URL$EP" || echo '000||')
+          CODE="${READ%%|*}"
+          REST="${READ#*|}"
+          CTYPE="${REST%%|*}"
+          FINAL="${REST#*|}"
+          PROBE_HOST=$(printf '%s' "$URL"   | sed -E 's|^https?://([^/]+).*|\1|')
+          FINAL_HOST=$(printf '%s' "$FINAL" | sed -E 's|^https?://([^/]+).*|\1|')
+
+          # An auth wall shows up as: redirected off the deployment host, or a
+          # non-JSON body where the endpoint contract promises JSON.
+          WALLED=0
+          case "$CTYPE" in *json*) ;; *) WALLED=1 ;; esac
+          [ "$FINAL_HOST" = "$PROBE_HOST" ] || WALLED=1
           case "$CODE" in
             404)
               # undeclared: this repo has not adopted the probe yet (dormant).
@@ -79,6 +96,17 @@ jobs:
               echo "::warning::No health endpoint declared — env-parity UNVERIFIED. Add an endpoint and set 'health_endpoint:' in $STAMP (§13.5)."
               echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
+            200)
+              if [ "$WALLED" = "1" ]; then
+                if [ -n "${VERCEL_BYPASS:-}" ]; then
+                  echo "::error::Probe reached '$FINAL' (content-type '$CTYPE') rather than the endpoint, even with the bypass secret set."
+                  exit 1
+                fi
+                echo "::warning::Probe was answered by an auth wall — redirected to '$FINAL' (content-type '$CTYPE'), not the endpoint. Env-parity UNVERIFIED; add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
+                echo "unverified=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              ;;
             401|403)
               # an auth wall in front of the URL: we cannot read the probe, which
               # is not the same as the deployment being wrong. Close this gap by
@@ -91,9 +119,8 @@ jobs:
               echo "::warning::Env-parity probe blocked (HTTP $CODE). UNVERIFIED — add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
               echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
-            200) : ;;
             *)
-              echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
+              echo "::error::Env-parity probe failed: HTTP $CODE from ${URL}${EP}"
               cat /tmp/envhealth.json 2>/dev/null || true
               exit 1 ;;
           esac
@@ -106,10 +133,10 @@ jobs:
           RC=$?
           set -e
           if [ $RC -eq 3 ]; then
-            echo "::error::/api/health/env must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
+            echo "::error::${EP} must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
             cat /tmp/envhealth.json; exit 1
           elif [ $RC -ne 0 ]; then
-            echo "::error::/api/health/env returned unparseable JSON:"
+            echo "::error::${EP} returned unparseable JSON:"
             cat /tmp/envhealth.json; exit 1
           fi
           if [ -n "$MISSING" ]; then
