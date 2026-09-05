@@ -120,7 +120,7 @@ jobs:
               echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
             *)
-              echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
+              echo "::error::Env-parity probe failed: HTTP $CODE from ${URL}${EP}"
               cat /tmp/envhealth.json 2>/dev/null || true
               exit 1 ;;
           esac
@@ -133,10 +133,10 @@ jobs:
           RC=$?
           set -e
           if [ $RC -eq 3 ]; then
-            echo "::error::/api/health/env must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
+            echo "::error::${EP} must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
             cat /tmp/envhealth.json; exit 1
           elif [ $RC -ne 0 ]; then
-            echo "::error::/api/health/env returned unparseable JSON:"
+            echo "::error::${EP} returned unparseable JSON:"
             cat /tmp/envhealth.json; exit 1
           fi
           if [ -n "$MISSING" ]; then
