@@ -1,6 +1,6 @@
 # Operating Standard conformance stamp (v5 §26.3). Read by .standard/check.sh.
 standard: "5.1"
-kit_version: 5.4.6
+kit_version: 5.5.0
 track: standard
 initialized: 2026-08-25
 
@@ -9,3 +9,13 @@ initialized: 2026-08-25
 env_contract: warn    # warn|enforce — raw process.env reads outside env_module
 sast: warn            # warn|enforce — semgrep ERROR-severity findings
 # env_module: lib/env.ts   # the single validated env module, once adopted (§13.5)
+env_scope: dashboard/
+
+# Why the env gate is scoped to dashboard/:
+#   The dashboard is this repo's only deployed surface. Everything under lib/
+#   and lib/cli/ is tooling invoked by CI with per-invocation inputs
+#   (BASE_REF, HEAD_REF, MODE, TRIGGER, PROMPT_VARS_JSON, GITHUB_*). Those are
+#   arguments, not deployment configuration — there is no deployment to
+#   mis-wire, so routing them through a validated env module would add
+#   ceremony without catching anything. Counting them also made the gate
+#   report 27 files when only ~10 are actionable (§13.5, kit 5.5.0).
