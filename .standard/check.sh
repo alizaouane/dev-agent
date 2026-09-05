@@ -173,6 +173,11 @@ stamp_mode() { # $1 = key, $2 = default — only warn|enforce are valid
 }
 ENV_MODULE="$(stamp_value env_module)"
 ENV_MODE="$(stamp_mode env_contract warn)"
+# Optional space-separated path prefixes limiting the gate to the DEPLOYED
+# surface. A repo whose CLI tools read per-invocation inputs (BASE_REF, MODE,
+# CI runner vars) has no deployment to mis-wire there — counting those files
+# makes the gate unadoptable, and an unadoptable gate gets switched off.
+ENV_SCOPE="$(stamp_value env_scope)"
 
 if [[ -n "$ENV_MODULE" && ! -f "$ENV_MODULE" ]]; then
   fail "env module exists" "'.standard.yml' declares env_module: $ENV_MODULE but that file is missing"
@@ -182,6 +187,11 @@ RAW_COUNT=0; RAW_LIST=""
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
   [[ -n "$ENV_MODULE" && "$f" == "$ENV_MODULE" ]] && continue
+  if [[ -n "$ENV_SCOPE" ]]; then
+    IN_SCOPE=0
+    for pfx in $ENV_SCOPE; do [[ "$f" == $pfx* ]] && { IN_SCOPE=1; break; }; done
+    [[ $IN_SCOPE -eq 1 ]] || continue
+  fi
   case "$f" in
     *__tests__*|*/e2e/*|e2e/*|*/tests/*|tests/*|*/test/*|test/*|*__mocks__*|*fixtures*) continue ;;
     *.test.*|*.spec.*|*.d.ts) continue ;;
@@ -198,11 +208,11 @@ while IFS= read -r f; do
 done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
 
 if [[ $RAW_COUNT -eq 0 ]]; then
-  pass "env contract (no raw process.env reads outside the module)"
+  pass "env contract${ENV_SCOPE:+ [scope: $ENV_SCOPE]} (no raw process.env reads outside the module)"
 elif [[ "$ENV_MODE" == "enforce" ]]; then
   fail "env contract (enforce)" "$RAW_COUNT file(s) read process.env directly:$(echo "$RAW_LIST" | cut -c1-200) — route them through ${ENV_MODULE:-a validated env module}"
 else
-  warn "env contract ($RAW_COUNT file(s) read process.env directly)" "advisory while .standard.yml has 'env_contract: warn'. Adopt a validated env module, migrate the reads, then set 'env_contract: enforce' (§13.5)"
+  warn "env contract${ENV_SCOPE:+ [scope: $ENV_SCOPE]} ($RAW_COUNT file(s) read process.env directly)" "advisory while .standard.yml has 'env_contract: warn'. Adopt a validated env module, migrate the reads, then set 'env_contract: enforce' (§13.5)"
 fi
 
 # ---- 6. PR diff mode: stub markers in ADDED production lines (§13.2, §16.4)
