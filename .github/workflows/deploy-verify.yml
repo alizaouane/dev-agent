@@ -157,11 +157,17 @@ jobs:
                 echo "::error::Env-parity probe returned $CODE even with the bypass secret set."
                 exit 1
               fi
-              # A 401/403 says the ENDPOINT is access-controlled — which some
-              # repos do deliberately, so it is not a public config probe. It
-              # says nothing about whether the deployment's public routes are
-              # reachable, so parity is unverified but the smokes still run;
-              # skipping them here would let a broken public login page pass.
+              # Where the 401/403 came FROM decides what it means. Answered by
+              # the deployment itself, it says the ENDPOINT is access-controlled
+              # — which some repos do deliberately — and nothing about whether
+              # public routes work, so the smokes must still run. Answered after
+              # a redirect off the deployment host, it is a wall in front of
+              # everything, and the smokes would hit the same wall.
+              if [ "$WALLED" = "1" ]; then
+                echo "::warning::Probe was redirected to '$FINAL' and refused (HTTP $CODE) — a wall in front of the whole deployment. Env-parity UNVERIFIED and golden-path smokes skipped; add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
+                echo "unreachable=true" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
               echo "::warning::Env-parity probe requires auth (HTTP $CODE) — UNVERIFIED. Add a DEPLOY_VERIFY_BYPASS secret, or expose a names-only endpoint, to make this a real gate (§13.5). Golden-path smokes still run."
               exit 0 ;;
             *)
@@ -208,11 +214,8 @@ jobs:
           E2E_BASE_URL: ${{ steps.url.outputs.url }}
           TEST_BASE_URL: ${{ steps.url.outputs.url }}
         run: |
-          if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
-            echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
-            exit 0
-          fi
-          # a repo-declared name, for runners that read something else
+          # Validated before the early exit below: a typo'd name must be caught
+          # now, not lie dormant until the repo adds its first spec.
           STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
           EXTRA=$(sed -n 's|^smoke_url_env:[[:space:]]*||p' "$STAMP" 2>/dev/null \
                    | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
@@ -221,6 +224,10 @@ jobs:
               [A-Za-z_][A-Za-z_0-9]*) export "$EXTRA=$DEPLOY_URL"; echo "exported $EXTRA" ;;
               *) echo "::error::smoke_url_env '$EXTRA' is not a valid variable name"; exit 1 ;;
             esac
+          fi
+          if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
+            echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
+            exit 0
           fi
           if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
           npx playwright install --with-deps chromium
