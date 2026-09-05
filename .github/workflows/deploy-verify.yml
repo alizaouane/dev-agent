@@ -45,10 +45,28 @@ jobs:
 
       - name: Resolve deployment URL
         id: url
+        # client_payload is caller-supplied. Interpolating it into the script
+        # with ${{ }} splices it in BEFORE the shell parses the line, so a
+        # payload carrying shell metacharacters would execute on the runner.
+        # Passed through env: and quoted, it is only ever data.
+        env:
+          IN_URL: ${{ github.event.inputs.url }}
+          CP_URL: ${{ github.event.client_payload.url }}
+          DS_URL: ${{ github.event.deployment_status.environment_url }}
+          CP_FEATURE: ${{ github.event.client_payload.feature }}
         run: |
-          URL="${{ github.event.inputs.url || github.event.client_payload.url || github.event.deployment_status.environment_url }}"
-          FEATURE="${{ github.event.client_payload.feature }}"
-          [ -n "$FEATURE" ] && echo "::notice::flag-flip verification for feature '$FEATURE'"
+          URL="${IN_URL:-${CP_URL:-${DS_URL:-}}}"
+          # Only a plain https URL may reach curl — no credentials, no shell
+          # metacharacters, no alternate schemes.
+          if [ -n "$URL" ] && ! printf '%s' "$URL" | grep -qE '^https://[A-Za-z0-9._-]+(:[0-9]+)?(/[A-Za-z0-9._~%/-]*)?$'; then
+            echo "::error::Refusing to probe a URL that is not a plain https address."
+            exit 1
+          fi
+          FEATURE="$CP_FEATURE"
+          if [ -n "$FEATURE" ]; then
+            # printf %s, never a format string built from caller input
+            printf '::notice::flag-flip verification for feature %s\n' "$FEATURE"
+          fi
           if [ -z "$URL" ]; then
             echo "::notice::No deployment URL on this event — nothing to verify."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -90,11 +108,16 @@ jobs:
           PROBE_HOST=$(printf '%s' "$URL"   | sed -E 's|^https?://([^/]+).*|\1|')
           FINAL_HOST=$(printf '%s' "$FINAL" | sed -E 's|^https?://([^/]+).*|\1|')
 
-          # An auth wall shows up as: redirected off the deployment host, or a
-          # non-JSON body where the endpoint contract promises JSON.
+          # An auth wall is only *confirmed* by being sent somewhere else: a
+          # redirect off the deployment host (Vercel SSO answers 200 + HTML at
+          # vercel.com). A non-JSON body on the deployment's own host is NOT
+          # proof of a wall — the endpoint may simply be missing or broken, and
+          # calling that "unreachable" would skip the smokes and let a broken
+          # deployment pass. Same-host non-JSON is handled below, by declaration.
           WALLED=0
-          case "$CTYPE" in *json*) ;; *) WALLED=1 ;; esac
           [ "$FINAL_HOST" = "$PROBE_HOST" ] || WALLED=1
+          SAME_HOST_NON_JSON=0
+          case "$CTYPE" in *json*) ;; *) [ "$WALLED" = "0" ] && SAME_HOST_NON_JSON=1 ;; esac
           case "$CODE" in
             404)
               # undeclared: this repo has not adopted the probe yet (dormant).
@@ -107,6 +130,14 @@ jobs:
               echo "::warning::No health endpoint declared — env-parity UNVERIFIED. Add an endpoint and set 'health_endpoint:' in $STAMP (§13.5)."
               exit 0 ;;
             200)
+              if [ "$SAME_HOST_NON_JSON" = "1" ]; then
+                if [ "$DECLARED" = "1" ]; then
+                  echo "::error::Declared health_endpoint '$EP' answered 200 with content-type '$CTYPE' instead of JSON — the endpoint is not honouring its contract."
+                  exit 1
+                fi
+                echo "::warning::No health endpoint declared and ${URL}${EP} is not JSON — env-parity UNVERIFIED. The deployment is reachable, so golden-path smokes still run (§13.5)."
+                exit 0
+              fi
               if [ "$WALLED" = "1" ]; then
                 if [ -n "${VERCEL_BYPASS:-}" ]; then
                   echo "::error::Probe reached '$FINAL' (content-type '$CTYPE') rather than the endpoint, even with the bypass secret set."
