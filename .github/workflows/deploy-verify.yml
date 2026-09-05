@@ -17,6 +17,14 @@ on:
       url:
         description: Deployment URL to verify
         required: true
+  # Flag-flip trigger (§13.5). A dark feature's first real execution must not be
+  # a human clicking weeks after merge — that manual step is doing a smoke
+  # test's job, unreliably. Wire the flag-flip path to fire this, e.g.
+  #   gh api repos/:owner/:repo/dispatches -f event_type=flag-flip \
+  #     -F 'client_payload[url]=https://staging.example' \
+  #     -F 'client_payload[feature]=billing-v2'
+  repository_dispatch:
+    types: [flag-flip]
 
 permissions:
   contents: read
@@ -28,6 +36,7 @@ jobs:
     # proves nothing about staging or production wiring.
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'repository_dispatch' ||
       (github.event.deployment_status.state == 'success' &&
        !contains(github.event.deployment_status.environment, 'preview'))
     runs-on: ubuntu-latest
@@ -37,7 +46,9 @@ jobs:
       - name: Resolve deployment URL
         id: url
         run: |
-          URL="${{ github.event.inputs.url || github.event.deployment_status.environment_url }}"
+          URL="${{ github.event.inputs.url || github.event.client_payload.url || github.event.deployment_status.environment_url }}"
+          FEATURE="${{ github.event.client_payload.feature }}"
+          [ -n "$FEATURE" ] && echo "::notice::flag-flip verification for feature '$FEATURE'"
           if [ -z "$URL" ]; then
             echo "::notice::No deployment URL on this event — nothing to verify."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -94,7 +105,6 @@ jobs:
                 exit 1
               fi
               echo "::warning::No health endpoint declared — env-parity UNVERIFIED. Add an endpoint and set 'health_endpoint:' in $STAMP (§13.5)."
-              echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
             200)
               if [ "$WALLED" = "1" ]; then
@@ -103,7 +113,7 @@ jobs:
                   exit 1
                 fi
                 echo "::warning::Probe was answered by an auth wall — redirected to '$FINAL' (content-type '$CTYPE'), not the endpoint. Env-parity UNVERIFIED; add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
-                echo "unverified=true" >> "$GITHUB_OUTPUT"
+                echo "unreachable=true" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
               ;;
@@ -117,7 +127,7 @@ jobs:
                 exit 1
               fi
               echo "::warning::Env-parity probe blocked (HTTP $CODE). UNVERIFIED — add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
-              echo "unverified=true" >> "$GITHUB_OUTPUT"
+              echo "unreachable=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
             *)
               echo "::error::Env-parity probe failed: HTTP $CODE from ${URL}${EP}"
@@ -145,9 +155,12 @@ jobs:
           fi
           echo "✅ env-parity: every declared var is set in this deployment"
 
-      # if the probe could not be read, the smoke would hit the same wall
+      # Skipped only when the deployment itself could not be reached (an auth
+      # wall would answer the smoke the same way). A repo with no health
+      # endpoint has unknown parity but a perfectly reachable deployment, so
+      # golden-path smokes can be adopted independently of the parity probe.
       - name: Golden-path smoke (deployed)
-        if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unverified != 'true'
+        if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unreachable != 'true'
         env:
           DEPLOY_URL: ${{ steps.url.outputs.url }}
           # playwright configs conventionally read PLAYWRIGHT_BASE_URL; without
