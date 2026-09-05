@@ -183,7 +183,7 @@ if [[ -n "$ENV_MODULE" && ! -f "$ENV_MODULE" ]]; then
   fail "env module exists" "'.standard.yml' declares env_module: $ENV_MODULE but that file is missing"
 fi
 
-RAW_COUNT=0; RAW_LIST=""
+RAW_COUNT=0; RAW_LIST=""; SCOPE_MATCHED=0
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
   [[ -n "$ENV_MODULE" && "$f" == "$ENV_MODULE" ]] && continue
@@ -191,6 +191,7 @@ while IFS= read -r f; do
     IN_SCOPE=0
     for pfx in $ENV_SCOPE; do [[ "$f" == $pfx* ]] && { IN_SCOPE=1; break; }; done
     [[ $IN_SCOPE -eq 1 ]] || continue
+    SCOPE_MATCHED=$((SCOPE_MATCHED+1))
   fi
   case "$f" in
     *__tests__*|*/e2e/*|e2e/*|*/tests/*|tests/*|*/test/*|test/*|*__mocks__*|*fixtures*) continue ;;
@@ -207,7 +208,12 @@ while IFS= read -r f; do
   [[ "${N:-0}" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
 done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
 
-if [[ $RAW_COUNT -eq 0 ]]; then
+# A scope that matches nothing silently disables the gate: RAW_COUNT stays 0
+# and `enforce` reports a clean contract without having scanned anything. A
+# typo'd prefix must fail loudly, not pass quietly.
+if [[ -n "$ENV_SCOPE" && $SCOPE_MATCHED -eq 0 ]]; then
+  fail "env contract [scope: $ENV_SCOPE]" "the scope matched no source files — a typo'd or stale prefix silently disables this gate. Fix or remove env_scope in the stamp."
+elif [[ $RAW_COUNT -eq 0 ]]; then
   pass "env contract${ENV_SCOPE:+ [scope: $ENV_SCOPE]} (no raw process.env reads outside the module)"
 elif [[ "$ENV_MODE" == "enforce" ]]; then
   fail "env contract (enforce)" "$RAW_COUNT file(s) read process.env directly:$(echo "$RAW_LIST" | cut -c1-200) — route them through ${ENV_MODULE:-a validated env module}"
