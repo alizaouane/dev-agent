@@ -78,6 +78,17 @@ jobs:
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
 
+      # Corepack is enabled TWICE, deliberately, because two different things
+      # need it at two different moments:
+      #   before — setup-node activates the package.json "packageManager" field
+      #     itself, and fails with "Unable to locate executable file: pnpm" if
+      #     corepack has not already provided the shim;
+      #   after  — the shim must then be re-bound to the Node just installed,
+      #     not the runner's preinstalled one.
+      # Enabling it only before, or only after, fixes one and breaks the other.
+      - name: Enable corepack (for setup-node's packageManager activation)
+        run: corepack enable || true
+
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
           # 22, not 20: this job only runs `npm audit` / `pnpm audit`, never the
@@ -86,11 +97,10 @@ jobs:
           # 20 lacks, and failed here with ERR_UNKNOWN_BUILTIN_MODULE.
           node-version: '22'
 
-      # After setup-node, so this is the corepack of the Node just installed
-      # rather than the runner's preinstalled one. Fails closed: a pnpm repo
-      # whose package manager cannot be provisioned must not silently fall
-      # through to an unaudited pass.
-      - name: Enable corepack
+      # Re-bind to the Node just installed. Fails closed: a pnpm repo whose
+      # package manager cannot be provisioned must not silently fall through to
+      # an unaudited pass.
+      - name: Enable corepack (bind to the installed Node)
         run: |
           if [ -f pnpm-lock.yaml ] || grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json 2>/dev/null; then
             corepack enable || { echo "::error::corepack could not provide pnpm for this repo; the audit would run on nothing."; exit 1; }
