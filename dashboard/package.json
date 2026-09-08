@@ -30,7 +30,7 @@
     "libsodium-wrappers": "^0.8.4",
     "lucide-react": "^1.14.0",
     "next": "^15.0.0",
-    "next-auth": "^5.0.0-beta.25",
+    "next-auth": "^5.0.0-beta.32",
     "postcss": "^8.5.13",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
