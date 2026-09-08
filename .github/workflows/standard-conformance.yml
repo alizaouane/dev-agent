@@ -77,9 +77,27 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
       - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
         with:
-          node-version: '20'
+          # 22, not 20: this job only runs `npm audit` / `pnpm audit`, never the
+          # repo's own build, so it needs a Node new enough for the package
+          # manager rather than one matching the app. pnpm 11 uses builtins Node
+          # 20 lacks, and failed here with ERR_UNKNOWN_BUILTIN_MODULE.
+          node-version: '22'
+
+      # After setup-node, so this is the corepack of the Node just installed
+      # rather than the runner's preinstalled one. Fails closed: a pnpm repo
+      # whose package manager cannot be provisioned must not silently fall
+      # through to an unaudited pass.
+      - name: Enable corepack
+        run: |
+          if [ -f pnpm-lock.yaml ] || grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json 2>/dev/null; then
+            corepack enable || { echo "::error::corepack could not provide pnpm for this repo; the audit would run on nothing."; exit 1; }
+            pnpm --version >/dev/null || { echo "::error::pnpm is unavailable after corepack enable."; exit 1; }
+          else
+            corepack enable || true
+          fi
 
       # A vulnerability RATCHET, not a threshold. §21 says block on
       # high/critical CVEs, but a fleet with an existing backlog cannot adopt a
@@ -93,9 +111,18 @@ jobs:
           # live under apps/* has no root package.json, and auditing only the
           # root would pass silently forever while the vulnerabilities sit in
           # the workspaces — a green gate that checked nothing.
+          # Every directory that owns a LOCKFILE is audited. A workspace member
+          # without its own lockfile is covered by its root and is skipped; an
+          # independent nested project with its own lockfile is not covered by
+          # anything and must be audited separately. Collapsing everything to
+          # "." for a pnpm repo would have skipped exactly those.
           MANIFESTS=$(git ls-files '*package.json' 'package.json' \
-                       | grep -v node_modules | xargs -n1 dirname 2>/dev/null | sort -u)
-          [ -f pnpm-lock.yaml ] && MANIFESTS="."
+                       | grep -v node_modules | xargs -n1 dirname 2>/dev/null | sort -u \
+                       | while read -r d; do
+                           if [ -f "$d/pnpm-lock.yaml" ] || [ -f "$d/package-lock.json" ] || [ -f "$d/yarn.lock" ]; then
+                             echo "$d"
+                           fi
+                         done)
           if [ -z "$MANIFESTS" ]; then
             echo "::warning::No package manifest found anywhere in this repo — the dependency audit checked nothing."
             exit 0
@@ -105,7 +132,6 @@ jobs:
           for dir in $MANIFESTS; do
             ( cd "$dir" || exit 0
               if [ -f pnpm-lock.yaml ]; then
-                corepack enable >/dev/null 2>&1 || true
                 pnpm audit --json > /tmp/audit.json 2>/dev/null || true
               else
                 npm audit --json > /tmp/audit.json 2>/dev/null || true
@@ -121,13 +147,21 @@ jobs:
           COUNT=$TOTAL
           [ "$UNPARSED" = "1" ] && COUNT=-1
 
-          if [ "$COUNT" = "-1" ]; then
-            echo "::warning::Could not parse audit output — skipping the ratchet rather than guessing."
-            exit 0
-          fi
 
           STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
           BASE=$(sed -n 's|^audit_baseline:[[:space:]]*||p' "$STAMP" 2>/dev/null                   | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs)
+
+          # An unparseable audit is not evidence of safety. With a baseline
+          # configured the gate fails closed rather than waving the PR through
+          # on a number it could not read.
+          if [ "$COUNT" = "-1" ]; then
+            if [ -n "$BASE" ]; then
+              echo "::error::Could not parse the audit output for at least one manifest. Refusing to pass a ratchet on an unknown count."
+              exit 1
+            fi
+            echo "::warning::Could not parse audit output, and no audit_baseline is set — nothing to compare against."
+            exit 0
+          fi
 
           echo "high+critical advisories: $COUNT"
           if [ -z "$BASE" ]; then

@@ -121,7 +121,7 @@ jobs:
             printf '%s' "$1" \
               | sed -E 's|^https?://||; s|/.*$||; s|^[^@]*@||' \
               | tr 'A-Z' 'a-z' \
-              | sed -E 's|:443$||; s|\.$||'
+              | sed -E 's|:0*443$||; s|\.$||'
           }
           PROBE_HOST=$(canon_authority "$URL")
           FINAL_HOST=$(canon_authority "$FINAL")
