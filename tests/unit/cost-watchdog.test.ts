@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   aggregateCostFromComments,
+  budgetGateDecision,
   tierFor,
   renderAlertBody,
   dedupeLabels,
@@ -140,5 +141,67 @@ describe('dedupeLabels', () => {
   it('returns the right label set per tier and month', () => {
     expect(dedupeLabels('warning', '2026-05')).toEqual(['cost-watchdog', 'budget-warning', 'month:2026-05']);
     expect(dedupeLabels('exhausted', '2026-05')).toEqual(['cost-watchdog', 'budget-exhausted', 'month:2026-05']);
+  });
+});
+
+describe('budgetGateDecision', () => {
+  // §22.1: the nightly watchdog reports spend that has already happened, which
+  // is monitoring. These cases are the control half — refusing the run.
+
+  it('allows a run comfortably inside the budget', () => {
+    const d = budgetGateDecision({ spentUsd: 10, budgetUsd: 75, phaseCostUsd: 5 });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('within-budget');
+  });
+
+  it('refuses once spend has reached the budget', () => {
+    const d = budgetGateDecision({ spentUsd: 75, budgetUsd: 75, phaseCostUsd: 5 });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('exhausted');
+  });
+
+  it('refuses a phase whose projected cost would cross the budget', () => {
+    // The case alert-only monitoring cannot catch: $2 of headroom against a
+    // $5 phase is an overshoot that is only visible afterwards.
+    const d = budgetGateDecision({ spentUsd: 73, budgetUsd: 75, phaseCostUsd: 5 });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('would-exceed');
+  });
+
+  it('allows a phase that exactly fits the remaining budget', () => {
+    const d = budgetGateDecision({ spentUsd: 70, budgetUsd: 75, phaseCostUsd: 5 });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('within-budget');
+  });
+
+  it('stays out of the way when no budget is configured', () => {
+    const d = budgetGateDecision({ spentUsd: 500, budgetUsd: 0 });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('no-budget-configured');
+    expect(d.message).toMatch(/no cost_caps\.monthly_budget_usd/i);
+  });
+
+  it('records an operator override rather than hiding it', () => {
+    const d = budgetGateDecision({ spentUsd: 200, budgetUsd: 75, override: true });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('override');
+    expect(d.message).toMatch(/operator authorised/i);
+  });
+
+  it('treats missing or nonsensical spend as zero rather than failing open', () => {
+    const d = budgetGateDecision({ spentUsd: Number.NaN, budgetUsd: 75, phaseCostUsd: 5 });
+    expect(d.allow).toBe(true);
+    expect(d.spentUsd).toBe(0);
+  });
+
+  it('ignores a negative phase cost instead of crediting the budget', () => {
+    const d = budgetGateDecision({ spentUsd: 74, budgetUsd: 75, phaseCostUsd: -100 });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('within-budget');
+  });
+
+  it('reports percentage spent for the operator message', () => {
+    const d = budgetGateDecision({ spentUsd: 60, budgetUsd: 75 });
+    expect(Math.round(d.pct)).toBe(80);
   });
 });

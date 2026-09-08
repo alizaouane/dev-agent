@@ -97,6 +97,18 @@ jobs:
         working-directory: .dev-agent-engine
         run: npm ci
 
+      # §22.1 — pre-flight budget gate. Scouts are cron-triggered and unattended,
+      # which is precisely how the June and July 2026 spend incidents happened:
+      # an alert-only cap noticed the drain a day late. This refuses the run.
+      - name: Budget gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+          PHASE: implement
+          BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+
       - name: Convert .dev-agent.yml to JSON
         env:
           CONFIG_PATH: ${{ inputs.config_path }}

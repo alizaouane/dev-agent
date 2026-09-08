@@ -118,6 +118,20 @@ jobs:
         working-directory: .dev-agent-engine
         run: npm ci
 
+      # §22.1 — pre-flight budget gate. The nightly watchdog reports spend
+      # AFTER it happens, which is monitoring; this refuses to start the phase
+      # when the month's budget is gone or this phase would cross it. Placed
+      # before any model call so a refusal costs nothing. Fails closed: if
+      # spend cannot be read while a budget is configured, the run stops.
+      - name: Budget gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          PHASE: implement
+          BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+
       - name: Stub-mode — generate fake reviewer JSONs
         if: inputs.invocation_mode == 'stub'
         env:

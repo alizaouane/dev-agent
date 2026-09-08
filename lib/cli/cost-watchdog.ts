@@ -32,7 +32,7 @@ import {
   type Tier,
 } from '../cost-watchdog';
 
-function startOfMonthUtc(d: Date): Date {
+export function startOfMonthUtc(d: Date): Date {
   return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
 }
 
@@ -101,7 +101,7 @@ async function upsertAlertIssue(
   return { number: created.data.number, created: true };
 }
 
-async function collectIssuesWithComments(
+export async function collectIssuesWithComments(
   octokit: Octokit,
   owner: string,
   repo: string,

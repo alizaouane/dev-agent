@@ -246,6 +246,17 @@ jobs:
           } > /tmp/tier2-probe/author-prompt.md
           echo "prompt rendered ($(wc -l < /tmp/tier2-probe/author-prompt.md) lines)"
 
+      # §22.1 — pre-flight budget gate, before the CLI install and the model
+      # call, so a refusal costs nothing.
+      - name: Budget gate
+        if: inputs.invocation_mode == 'live'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+          PHASE: smoke_verify
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+
       - name: Live mode — install Claude Code CLI
         if: inputs.invocation_mode == 'live'
         run: |
