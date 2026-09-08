@@ -71,3 +71,76 @@ jobs:
             echo "::error::semgrep found ERROR-severity issues (sast: enforce in .standard.yml)"; exit $RC
           fi
           echo "::warning::semgrep found ERROR-severity issues — advisory while .standard.yml has 'sast: warn'. Fix the baseline, then set 'sast: enforce' (§25)."
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: '20'
+
+      # A vulnerability RATCHET, not a threshold. §21 says block on
+      # high/critical CVEs, but a fleet with an existing backlog cannot adopt a
+      # flat gate — it would red-build everything on day one and get switched
+      # off within a week (§25.1). So: the count may never RISE. A PR that
+      # introduces a new high or critical fails; the existing backlog does not
+      # block; and every fix lowers the ceiling permanently.
+      - name: High/critical vulnerability ratchet
+        run: |
+          # Audit every manifest, not just the root. A monorepo whose packages
+          # live under apps/* has no root package.json, and auditing only the
+          # root would pass silently forever while the vulnerabilities sit in
+          # the workspaces — a green gate that checked nothing.
+          MANIFESTS=$(git ls-files '*package.json' 'package.json' \
+                       | grep -v node_modules | xargs -n1 dirname 2>/dev/null | sort -u)
+          [ -f pnpm-lock.yaml ] && MANIFESTS="."
+          if [ -z "$MANIFESTS" ]; then
+            echo "::warning::No package manifest found anywhere in this repo — the dependency audit checked nothing."
+            exit 0
+          fi
+
+          TOTAL=0; UNPARSED=0
+          for dir in $MANIFESTS; do
+            ( cd "$dir" || exit 0
+              if [ -f pnpm-lock.yaml ]; then
+                corepack enable >/dev/null 2>&1 || true
+                pnpm audit --json > /tmp/audit.json 2>/dev/null || true
+              else
+                npm audit --json > /tmp/audit.json 2>/dev/null || true
+              fi ) || true
+            N=$(jq -r 'if .metadata.vulnerabilities then ((.metadata.vulnerabilities.high//0)+(.metadata.vulnerabilities.critical//0)) elif .advisories then ([.advisories[]|select(.severity=="high" or .severity=="critical")]|length) else -1 end' /tmp/audit.json 2>/dev/null || echo -1)
+            [ -n "$N" ] || N=-1
+            if [ "$N" = "-1" ]; then UNPARSED=1; else
+              echo "  $dir: $N high/critical"
+              TOTAL=$((TOTAL + N))
+            fi
+          done
+
+          COUNT=$TOTAL
+          [ "$UNPARSED" = "1" ] && COUNT=-1
+
+          if [ "$COUNT" = "-1" ]; then
+            echo "::warning::Could not parse audit output — skipping the ratchet rather than guessing."
+            exit 0
+          fi
+
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          BASE=$(sed -n 's|^audit_baseline:[[:space:]]*||p' "$STAMP" 2>/dev/null                   | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs)
+
+          echo "high+critical advisories: $COUNT"
+          if [ -z "$BASE" ]; then
+            echo "::warning::No audit_baseline in $STAMP. Set 'audit_baseline: $COUNT' to freeze the ceiling — until then this is advisory and the count can drift upward unnoticed (§21)."
+            exit 0
+          fi
+          echo "baseline: $BASE"
+
+          if [ "$COUNT" -gt "$BASE" ]; then
+            echo "::error::High/critical advisories rose from $BASE to $COUNT. This change introduces new vulnerable dependencies; fix them or justify raising audit_baseline in $STAMP."
+            exit 1
+          fi
+          if [ "$COUNT" -lt "$BASE" ]; then
+            echo "::notice::Advisories fell from $BASE to $COUNT — lower 'audit_baseline' to $COUNT in $STAMP so the gain is locked in."
+          fi
+          echo "✅ no increase in high/critical advisories"
