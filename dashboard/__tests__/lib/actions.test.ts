@@ -56,6 +56,12 @@ vi.mock('@/lib/repos', () => ({
   listAllowedRepos: (...args: unknown[]) => mockListAllowedRepos(...args),
 }));
 
+// wireUpRepo also consults it, to check no other managed repo's name collapses
+// to the same per-repo env var suffix. Default to a single, unambiguous repo.
+beforeEach(() => {
+  mockListAllowedRepos.mockResolvedValue([{ owner: 'x', name: 'y', wired_up: true }]);
+});
+
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 vi.mock('next/navigation', () => ({
   redirect: vi.fn((url: string) => {
@@ -1653,6 +1659,40 @@ describe('pushDashboardSecrets', () => {
       data: { permission: 'read' },
     });
     expect(await push('x/y')).toEqual({ error: expect.stringContaining('lacks write') });
+  });
+
+  it('refuses a per-repo secret when another managed repo reads the same variable', async () => {
+    // `foo-bar` and `foo.bar` both collapse to X__FOO_BAR. Pushing on that
+    // basis could send one repo's database URL to the other, which is the
+    // exact cross-wiring the per-repo scheme exists to prevent.
+    process.env['SUPABASE_DB_URL__X__FOO_BAR'] =
+      'postgresql://postgres.abc:pw@aws-0-eu-west-2.pooler.supabase.com:5432/postgres';
+    mockListAllowedRepos.mockResolvedValue([
+      { owner: 'x', name: 'foo-bar', wired_up: true },
+      { owner: 'x', name: 'foo.bar', wired_up: true },
+    ]);
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    const result = await push('x/foo-bar');
+    expect(result).toEqual({ message: expect.stringContaining('SUPABASE_DB_URL skipped') });
+    expect(result).toEqual({ message: expect.stringContaining('x/foo.bar') });
+    expect(pushRepoSecret).not.toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'SUPABASE_DB_URL' }),
+    );
+    delete process.env['SUPABASE_DB_URL__X__FOO_BAR'];
+  });
+
+  it('still pushes shared secrets when a per-repo one is ambiguous', async () => {
+    // One refused secret must not block the others: the Anthropic key is not
+    // repo-specific, so a name collision says nothing about it.
+    mockListAllowedRepos.mockResolvedValue([
+      { owner: 'x', name: 'foo-bar', wired_up: true },
+      { owner: 'x', name: 'foo.bar', wired_up: true },
+    ]);
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    await push('x/foo-bar');
+    expect(pushRepoSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'ANTHROPIC_API_KEY' }),
+    );
   });
 
   it('revalidates the path the page is actually rendered at', async () => {

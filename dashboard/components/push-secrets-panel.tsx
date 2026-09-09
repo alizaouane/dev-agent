@@ -28,7 +28,14 @@ export function PushSecretsPanel({
 }: {
   repo: string;
   /** One row per secret: the Actions secret name, where it is read from, and why. */
-  sources: Array<{ name: string; envVar: string; purpose: string; perRepo: boolean }>;
+  sources: Array<{
+    name: string;
+    envVar: string;
+    purpose: string;
+    perRepo: boolean;
+    /** Whether a usable value was found. Never the value itself. */
+    configured: boolean;
+  }>;
 }) {
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
@@ -63,9 +70,12 @@ export function PushSecretsPanel({
             <dt className="font-mono text-xs">
               {s.name}
               <span className="ml-2 font-sans text-muted-foreground">
-                reads <code>{s.envVar}</code>
+                {s.configured ? 'reads' : 'needs'} <code>{s.envVar}</code>
                 {s.perRepo ? ' (this repo only)' : ' on the dashboard'}
               </span>
+              {s.configured ? null : (
+                <span className="ml-2 font-sans text-destructive">not set</span>
+              )}
             </dt>
             <dd className="text-xs text-muted-foreground">{s.purpose}</dd>
           </div>

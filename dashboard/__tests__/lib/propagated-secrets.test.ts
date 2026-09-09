@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   PROPAGATED_SECRETS,
+  collidingRepos,
   envSuffixForRepo,
   resolveSecrets,
   summarizePush,
@@ -47,21 +48,41 @@ describe('validatePostgresUrl', () => {
 
 describe('envSuffixForRepo', () => {
   it('makes a repo name usable as an env var suffix', () => {
-    expect(envSuffixForRepo('caliente-booking-app')).toBe('CALIENTE_BOOKING_APP');
-    expect(envSuffixForRepo('whatsapp-console')).toBe('WHATSAPP_CONSOLE');
+    expect(envSuffixForRepo('alizaouane/caliente-booking-app')).toBe('ALIZAOUANE__CALIENTE_BOOKING_APP');
+    expect(envSuffixForRepo('alizaouane/whatsapp-console')).toBe('ALIZAOUANE__WHATSAPP_CONSOLE');
   });
 
   it('collapses any run of non-alphanumerics, so dots and spaces work too', () => {
-    expect(envSuffixForRepo('my.repo name--v2')).toBe('MY_REPO_NAME_V2');
+    expect(envSuffixForRepo('me/my.repo name--v2')).toBe('ME__MY_REPO_NAME_V2');
+  });
+});
+
+describe('collidingRepos', () => {
+  it('finds names that differ only in punctuation', () => {
+    // The readable encoding is lossy on purpose. Two repos reading one
+    // variable is how a per-repo credential reaches the wrong database, so
+    // the collision has to be visible rather than silently resolved.
+    const out = collidingRepos(['me/foo-bar', 'me/foo.bar', 'me/other']);
+    expect([...out.keys()]).toEqual(['ME__FOO_BAR']);
+    expect(out.get('ME__FOO_BAR')).toEqual(['me/foo-bar', 'me/foo.bar']);
+  });
+
+  it('does not treat the same name under two owners as a collision', () => {
+    // The owner is part of the suffix, which is the point of including it.
+    expect(collidingRepos(['acme/api', 'other/api']).size).toBe(0);
+  });
+
+  it('reports nothing when every name is distinct', () => {
+    expect(collidingRepos(['me/a', 'me/b', 'you/a']).size).toBe(0);
   });
 });
 
 describe('resolveSecrets', () => {
   /** Read every secret for one repo, defaulting to the booking app. */
-  const forRepo = (env: Record<string, string | undefined>, repo = 'caliente-booking-app') =>
+  const forRepo = (env: Record<string, string | undefined>, repo = 'alizaouane/caliente-booking-app') =>
     resolveSecrets(env, repo);
 
-  const DB_VAR = 'SUPABASE_DB_URL__CALIENTE_BOOKING_APP';
+  const DB_VAR = 'SUPABASE_DB_URL__ALIZAOUANE__CALIENTE_BOOKING_APP';
 
   it('resolves a configured, valid secret to a pushable value', () => {
     const out = forRepo({ ANTHROPIC_API_KEY: 'sk-ant-x', [DB_VAR]: GOOD_URL });
@@ -115,24 +136,57 @@ describe('resolveSecrets', () => {
     expect(supa.skipReason).toContain(DB_VAR);
   });
 
+  it('reports which variable it actually read', () => {
+    const out = forRepo({ [DB_VAR]: GOOD_URL });
+    expect(out.find((s) => s.name === 'SUPABASE_DB_URL')!.sourceVar).toBe(DB_VAR);
+  });
+
+  it('reports the override variable, not the bare one, when an override is set', () => {
+    // The panel shows this. Re-deriving it in the UI would name the shared
+    // variable while the per-repo override is what is actually in play.
+    const env = {
+      ANTHROPIC_API_KEY: 'shared',
+      ANTHROPIC_API_KEY__ALIZAOUANE__CALIENTE_BOOKING_APP: 'special',
+    };
+    const key = forRepo(env).find((s) => s.name === 'ANTHROPIC_API_KEY')!;
+    expect(key.value).toBe('special');
+    expect(key.sourceVar).toBe('ANTHROPIC_API_KEY__ALIZAOUANE__CALIENTE_BOOKING_APP');
+  });
+
+  it('names the variable to create when nothing is set', () => {
+    const out = forRepo({});
+    expect(out.find((s) => s.name === 'SUPABASE_DB_URL')!.sourceVar).toBe(DB_VAR);
+    expect(out.find((s) => s.name === 'ANTHROPIC_API_KEY')!.sourceVar).toBe('ANTHROPIC_API_KEY');
+  });
+
+  it('does not distinguish two repos whose names differ only in punctuation', () => {
+    // Documents the limit the collision check exists to cover: resolution
+    // alone cannot tell these apart, so `collidingRepos` must refuse them.
+    const env = { [DB_VAR]: GOOD_URL };
+    const dbOf = (repo: string) =>
+      resolveSecrets(env, repo).find((s) => s.name === 'SUPABASE_DB_URL')!.value;
+    expect(dbOf('alizaouane/caliente-booking-app')).toBe(GOOD_URL);
+    expect(dbOf('alizaouane/caliente.booking.app')).toBe(GOOD_URL);
+  });
+
   it('gives two repos two different database URLs', () => {
     const env = {
-      SUPABASE_DB_URL__CALIENTE_BOOKING_APP: GOOD_URL,
-      SUPABASE_DB_URL__WHATSAPP_CONSOLE: OTHER_URL,
+      SUPABASE_DB_URL__ALIZAOUANE__CALIENTE_BOOKING_APP: GOOD_URL,
+      SUPABASE_DB_URL__ALIZAOUANE__WHATSAPP_CONSOLE: OTHER_URL,
     };
     const dbOf = (repo: string) =>
       resolveSecrets(env, repo).find((s) => s.name === 'SUPABASE_DB_URL')!.value;
-    expect(dbOf('caliente-booking-app')).toBe(GOOD_URL);
-    expect(dbOf('whatsapp-console')).toBe(OTHER_URL);
-    expect(dbOf('caliente-gym')).toBeUndefined();
+    expect(dbOf('alizaouane/caliente-booking-app')).toBe(GOOD_URL);
+    expect(dbOf('alizaouane/whatsapp-console')).toBe(OTHER_URL);
+    expect(dbOf('alizaouane/caliente-gym')).toBeUndefined();
   });
 
   it('lets a shared secret be overridden for one repo without touching the rest', () => {
-    const env = { ANTHROPIC_API_KEY: 'shared', ANTHROPIC_API_KEY__WHATSAPP_CONSOLE: 'special' };
+    const env = { ANTHROPIC_API_KEY: 'shared', ANTHROPIC_API_KEY__ALIZAOUANE__WHATSAPP_CONSOLE: 'special' };
     const keyOf = (repo: string) =>
       resolveSecrets(env, repo).find((s) => s.name === 'ANTHROPIC_API_KEY')!.value;
-    expect(keyOf('whatsapp-console')).toBe('special');
-    expect(keyOf('caliente-booking-app')).toBe('shared');
+    expect(keyOf('alizaouane/whatsapp-console')).toBe('special');
+    expect(keyOf('alizaouane/caliente-booking-app')).toBe('shared');
   });
 });
 

@@ -23,7 +23,7 @@ import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PushSecretsPanel } from '@/components/push-secrets-panel';
-import { PROPAGATED_SECRETS, envVarForRepo } from '@/lib/propagated-secrets';
+import { resolveSecrets } from '@/lib/propagated-secrets';
 import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
@@ -344,11 +344,16 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             </div>
             <PushSecretsPanel
               repo={name}
-              sources={PROPAGATED_SECRETS.map((s) => ({
+              // Resolved, not re-derived: a shared secret can be overridden per
+              // repo, so the variable in play is not always the bare name, and
+              // a panel that guessed would send the operator to the wrong one.
+              // Only names and whether a value was found cross to the client.
+              sources={resolveSecrets(process.env, name).map((s) => ({
                 name: s.name,
-                envVar: s.perRepo ? envVarForRepo(s, repo.name) : s.envVar,
+                envVar: s.sourceVar,
                 purpose: s.purpose,
-                perRepo: s.perRepo === true,
+                perRepo: s.perRepo,
+                configured: s.value !== undefined,
               }))}
             />
             <div className="rounded-md border border-border bg-card p-5">

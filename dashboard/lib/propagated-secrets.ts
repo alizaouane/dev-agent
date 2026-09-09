@@ -100,33 +100,72 @@ export const PROPAGATED_SECRETS: readonly PropagatedSecret[] = [
 ];
 
 /**
- * Turn a repo name into the suffix used for its per-repo env var.
+ * Turn a repo's full `owner/name` into the suffix for its per-repo env var.
  *
- * Env var names cannot contain a hyphen, so `caliente-booking-app` becomes
- * `CALIENTE_BOOKING_APP`, giving `SUPABASE_DB_URL__CALIENTE_BOOKING_APP`.
+ * Includes the owner because the dashboard discovers repos across a personal
+ * account and several orgs, where two repos can share a name: `acme/api` and
+ * `other/api` would otherwise read the same variable, which is the exact
+ * cross-wiring this per-repo scheme exists to prevent.
  *
- * @param repoName - The repository name, without the owner.
+ * The encoding is deliberately readable rather than injective — env var names
+ * allow only letters, digits and underscores, so `foo-bar` and `foo.bar` both
+ * become `FOO_BAR`. Escaping to guarantee uniqueness would produce names
+ * nobody can type. `collidingRepos` covers that gap instead, by refusing to
+ * push when two managed repos land on the same suffix.
+ *
+ * @param repoFullName - `owner/name`.
  * @returns The uppercase, underscore-separated suffix.
  */
-export function envSuffixForRepo(repoName: string): string {
-  return repoName.toUpperCase().replace(/[^A-Z0-9]+/g, '_');
+export function envSuffixForRepo(repoFullName: string): string {
+  return repoFullName.toUpperCase().replace(/\//g, '__').replace(/[^A-Z0-9_]+/g, '_');
 }
 
 /**
  * The env var name a secret is read from for one repo.
  *
  * @param secret - The secret being resolved.
- * @param repoName - The repository name, without the owner.
+ * @param repoFullName - `owner/name`.
  * @returns The per-repo variable name.
  */
-export function envVarForRepo(secret: PropagatedSecret, repoName: string): string {
-  return `${secret.envVar}__${envSuffixForRepo(repoName)}`;
+export function envVarForRepo(secret: PropagatedSecret, repoFullName: string): string {
+  return `${secret.envVar}__${envSuffixForRepo(repoFullName)}`;
+}
+
+/**
+ * Find managed repos whose names collapse to the same env var suffix.
+ *
+ * The readable encoding is lossy, so `acme/foo-bar` and `acme/foo.bar` both
+ * resolve to `ACME__FOO_BAR`. Two repos reading one variable is how a per-repo
+ * credential reaches the wrong database — the failure this scheme was built to
+ * remove. Rather than making names unreadable to guarantee uniqueness, detect
+ * the collision and refuse.
+ *
+ * @param repoFullNames - Every `owner/name` the dashboard manages.
+ * @returns Suffix to the repos sharing it, for suffixes shared by more than one.
+ */
+export function collidingRepos(repoFullNames: string[]): Map<string, string[]> {
+  const bySuffix = new Map<string, string[]>();
+  for (const full of repoFullNames) {
+    const suffix = envSuffixForRepo(full);
+    bySuffix.set(suffix, [...(bySuffix.get(suffix) ?? []), full]);
+  }
+  return new Map([...bySuffix].filter(([, repos]) => repos.length > 1));
 }
 
 /** A secret resolved against the dashboard's environment. */
 export interface ResolvedSecret {
   name: string;
   purpose: string;
+  /** True when no shared value is accepted for this secret. */
+  perRepo: boolean;
+  /**
+   * The variable this resolution used, or the one to set when it found none.
+   *
+   * Reported rather than re-derived by the caller: a shared secret can be
+   * overridden per repo, so the variable actually in play is not always the
+   * bare name, and a panel that guessed would name the wrong one.
+   */
+  sourceVar: string;
   /** Present and usable. */
   value?: string;
   /** Why it will not be pushed: absent, or the validation failure. */
@@ -141,26 +180,30 @@ export interface ResolvedSecret {
  * the gate that depends on it will not tell them.
  *
  * @param env - The environment to read, normally `process.env`.
- * @param repoName - The repository name, without the owner.
+ * @param repoFullName - `owner/name`.
  * @returns One entry per known secret, in declaration order.
  */
 export function resolveSecrets(
   env: Record<string, string | undefined>,
-  repoName: string,
+  repoFullName: string,
 ): ResolvedSecret[] {
   return PROPAGATED_SECRETS.map((secret) => {
-    const perRepoVar = envVarForRepo(secret, repoName);
+    const perRepo = secret.perRepo === true;
+    const perRepoVar = envVarForRepo(secret, repoFullName);
     // A shared secret prefers the per-repo variable so one repo can be given a
     // different value without disturbing the rest. A per-repo secret has no
     // fallback, because the fallback is the mistake.
-    const names = secret.perRepo ? [perRepoVar] : [perRepoVar, secret.envVar];
+    const names = perRepo ? [perRepoVar] : [perRepoVar, secret.envVar];
     const usedName = names.find((n) => (env[n] ?? '').trim() !== '');
+    const base = { name: secret.name, purpose: secret.purpose, perRepo };
 
     if (usedName === undefined) {
+      // Nothing is set, so name the variable to create: the per-repo one when
+      // that is the only accepted source, the shared one otherwise.
       return {
-        name: secret.name,
-        purpose: secret.purpose,
-        skipReason: secret.perRepo
+        ...base,
+        sourceVar: perRepo ? perRepoVar : secret.envVar,
+        skipReason: perRepo
           ? `not set — this one is per-repo, so set ${perRepoVar} on the dashboard. A shared value would point this repo's gate at another repo's database.`
           : `not set on the dashboard (${secret.envVar})`,
       };
@@ -169,13 +212,9 @@ export function resolveSecrets(
     const raw = env[usedName] as string;
     const problem = secret.validate(raw);
     if (problem) {
-      return {
-        name: secret.name,
-        purpose: secret.purpose,
-        skipReason: `${usedName} is set but unusable: ${problem}`,
-      };
+      return { ...base, sourceVar: usedName, skipReason: `${usedName} is set but unusable: ${problem}` };
     }
-    return { name: secret.name, purpose: secret.purpose, value: raw };
+    return { ...base, sourceVar: usedName, value: raw };
   });
 }
 

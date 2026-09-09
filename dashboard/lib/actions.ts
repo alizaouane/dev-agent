@@ -15,7 +15,12 @@ import {
 } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
 import { listAllowedRepos } from './repos';
-import { resolveSecrets, summarizePush } from './propagated-secrets';
+import {
+  collidingRepos,
+  envSuffixForRepo,
+  resolveSecrets,
+  summarizePush,
+} from './propagated-secrets';
 import {
   parseRepoFromProposalId,
   snoozeProposalPersistent,
@@ -320,7 +325,15 @@ export async function wireUpRepo(
     // hand and miss one. Failures (e.g. write but not admin — secrets need
     // admin) are non-fatal: we log and continue, and the workflow that needs
     // the secret fails loudly on its first run.
-    await pushDashboardSecretsTo(octokit, owner, repo);
+    //
+    // A per-repo secret whose variable name is shared with another managed
+    // repo is refused rather than guessed at; see `collidingRepos`.
+    await pushDashboardSecretsTo(
+      octokit,
+      owner,
+      repo,
+      await otherReposSharingEnvSuffix(octokit, owner, repo),
+    );
 
     // Direct-commit each template file to the default branch. Without a
     // `branch` arg, createOrUpdateFileContents targets the repo's default
@@ -450,6 +463,35 @@ export async function installWorkflow(
 }
 
 /**
+ * Other managed repos whose names collapse to the same env var suffix.
+ *
+ * Fails closed: if the allowlist cannot be read, it reports an unverifiable
+ * collision rather than an empty one. The alternative is pushing a per-repo
+ * credential on the unchecked assumption that its variable name is unambiguous,
+ * and an unpushed secret is a loud failure while a wrongly-pushed one is silent.
+ *
+ * @param octokit - Authenticated client.
+ * @param owner - Repo owner.
+ * @param repo - Repo name.
+ * @returns The other repos sharing this repo's suffix; empty when unique.
+ */
+async function otherReposSharingEnvSuffix(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+): Promise<string[]> {
+  const full = `${owner}/${repo}`;
+  try {
+    const allowed = await listAllowedRepos(octokit);
+    const groups = collidingRepos(allowed.map((r) => `${r.owner}/${r.name}`));
+    return (groups.get(envSuffixForRepo(full)) ?? []).filter((r) => r !== full);
+  } catch (err) {
+    console.warn(`otherReposSharingEnvSuffix: allowlist unavailable for ${full}:`, err);
+    return ['(could not verify — the dashboard could not list its repos)'];
+  }
+}
+
+/**
  * Push every configured dashboard secret into one repo.
  *
  * Non-fatal by design: pushing secrets needs admin permission, which a user
@@ -460,20 +502,36 @@ export async function installWorkflow(
  * @param octokit - Authenticated client.
  * @param owner - Repo owner.
  * @param repo - Repo name.
+ * @param collidesWith - Other managed repos whose names collapse to the same
+ *   env var suffix as this one, from `otherReposSharingEnvSuffix`. Non-empty
+ *   refuses every per-repo secret, because two repos reading one variable is
+ *   how a per-repo credential reaches the wrong database.
  * @returns Which secrets landed and which did not, for the caller to surface.
  */
 async function pushDashboardSecretsTo(
   octokit: Octokit,
   owner: string,
   repo: string,
+  collidesWith: string[] = [],
 ): Promise<{ pushed: string[]; skipped: Array<{ name: string; skipReason: string }> }> {
   const pushed: string[] = [];
   const skipped: Array<{ name: string; skipReason: string }> = [];
+  const full = `${owner}/${repo}`;
 
   // eslint-disable-next-line no-restricted-syntax -- each push re-fetches the
   // repo public key; running them in parallel gains nothing and muddles which
   // secret a failure belonged to.
-  for (const secret of resolveSecrets(process.env, repo)) {
+  for (const secret of resolveSecrets(process.env, full)) {
+    if (secret.perRepo && collidesWith.length > 0) {
+      skipped.push({
+        name: secret.name,
+        skipReason:
+          `${secret.sourceVar} is shared with ${collidesWith.join(', ')}, whose name differs only ` +
+          'in punctuation. Refusing rather than risk pushing another repo’s credential; ' +
+          'rename one repo, or set this secret on the repo directly.',
+      });
+      continue;
+    }
     if (secret.value === undefined) {
       skipped.push({ name: secret.name, skipReason: secret.skipReason ?? 'not configured' });
       continue;
@@ -544,7 +602,14 @@ export async function pushDashboardSecrets(
     }
     await assertWritePermission(octokit, target.owner, target.name, session_username);
 
-    const { pushed, skipped } = await pushDashboardSecretsTo(octokit, target.owner, target.name);
+    const collidesWith = collidingRepos(allowed.map((r) => `${r.owner}/${r.name}`));
+    const full = `${target.owner}/${target.name}`;
+    const { pushed, skipped } = await pushDashboardSecretsTo(
+      octokit,
+      target.owner,
+      target.name,
+      (collidesWith.get(envSuffixForRepo(full)) ?? []).filter((r) => r !== full),
+    );
     // The route segment is the URL-encoded FULL name (`/repos/acme%2Fweb`),
     // not the bare repo name — the page decodes it and matches on
     // `owner/name`. Revalidating `/repos/<name>` names a path that is never
