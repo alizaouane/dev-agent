@@ -1,0 +1,84 @@
+name: dev-agent · pr-review
+run-name: ${{ github.event_name }} → pr-review
+
+# The fixer. When a reviewer — a person, a review bot, or the pr-autopilot
+# sweep — mentions `@claude` on a dev-agent PR, this reads the comment,
+# addresses it on the same branch, and pushes.
+#
+# Without this file in your repo, `@claude` on a PR does nothing: the reusable
+# workflow it calls only carries comment triggers inside dev-agent's own
+# repository. That was the gap that left consumer PRs to be driven by hand.
+#
+# Triggers:
+#   - issue_comment.created           — top-level PR comments
+#   - pull_request_review_comment     — inline file comments
+#   - pull_request_review.submitted   — a review with a body
+#
+# Only PRs on dev-agent-owned branches proceed; the reusable workflow enforces
+# that itself and exits quietly on anything else.
+#
+# SECURITY: comment, review and branch text are never interpolated into a
+# `run:` block here — this wrapper has no run blocks, and the only value it
+# passes through is a PR number, which is an integer.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  pr-review:
+    # Two guards, for two different problems.
+    #
+    # `claude[bot]` is excluded so the fixer's own comments cannot wake it
+    # again — that loop would spend the budget cap in an afternoon.
+    #
+    # `author_association` authorizes the person. Mentioning the fixer starts
+    # a model run that edits and pushes to a branch, so it cannot be something
+    # any passer-by can trigger by commenting. Bot reviewers (CodeRabbit,
+    # Codex) and the autopilot report as NONE, so they are allowed by login
+    # rather than by association; every other actor must be an owner, member,
+    # or collaborator. Same allowlist the /swarm-override handler uses.
+    if: |
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '@claude') &&
+        github.event.comment.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)
+        )
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        github.event.comment.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)
+        )
+      ) ||
+      (
+        github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        github.event.review.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.review.user.login)
+        )
+      )
+    uses: alizaouane/dev-agent/.github/workflows/phase-pr-review.yml@v1
+    with:
+      pr_number: ${{ github.event.issue.number || github.event.pull_request.number }}
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

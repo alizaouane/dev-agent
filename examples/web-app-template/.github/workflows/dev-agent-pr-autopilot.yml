@@ -1,0 +1,49 @@
+name: dev-agent · pr-autopilot
+run-name: ${{ github.event_name }} → pr-autopilot sweep
+
+# Keeps dev-agent's pull requests moving without anyone watching them.
+#
+# Every 20 minutes it looks at the open PRs on dev-agent-owned branches and
+# asks the question the operator would otherwise have to remember to ask: is
+# anything red, unreviewed, or unresolved? When something is, it wakes the
+# fixer by posting `@claude` on that PR, which is the trigger
+# `dev-agent-pr-review.yml` already listens for.
+#
+# It touches only `feat/dev-agent-issue-*` and `dev-agent/spec-*` branches,
+# never a draft, and never a PR labelled `autopilot:off`. It makes no model
+# call of its own; the fixer it wakes runs the usual pre-flight budget gate.
+# After four attempts on an unchanged set of blockers it stands down and says
+# so on the PR, so a stuck PR stops costing anything and is not silently
+# abandoned.
+#
+# To pause it: disable this workflow in the Actions tab, or label the PR
+# `autopilot:off`.
+#
+# Requires: `dev-agent-pr-review.yml` in this repo (the fixer this wakes).
+
+on:
+  schedule:
+    - cron: '*/20 6-20 * * 1-5'
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Triage only this PR (blank sweeps every open PR)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Report what would be posted, without posting'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  autopilot:
+    uses: alizaouane/dev-agent/.github/workflows/pr-autopilot.yml@v1
+    with:
+      pr_number: ${{ inputs.pr_number }}
+      dry_run: ${{ inputs.dry_run || false }}
