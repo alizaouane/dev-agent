@@ -246,6 +246,10 @@ Also: NODE_ENV exempted from the env lint (false positives); matcher made token-
 ---
 
 
+## 2026-08-25 UTC — interactive — Standard v5.0 authored: enforcement matrix, conformance, AI run governance
+
+_Recovered from an uncommitted working copy; the exact date was not recorded, so it is filed with the v5 work it produced._
+
 **Trigger:** Follow-on from the v4 audit: user asked to update the standard and define how to enforce it across all GitHub repos' CI.
 
 **What changed:** (all in `~/.bmad`, now a git repo, commit `9411f66`, `KIT_VERSION` 5.0.0 — no dev-agent code changed)
@@ -260,6 +264,10 @@ Also: NODE_ENV exempted from the env lint (false positives); matcher made token-
 
 ---
 
+
+## 2026-08-25 UTC — interactive — Audit of Operating Standard v4 against industry practice
+
+_Recovered from an uncommitted working copy; the exact date was not recorded, so it is filed with the v5 work it produced._
 
 **Trigger:** User asked for a thorough review of `AI_Dev_Operating_Standard_v4.docx` against industry best practice in AI coding, plus a mechanism to make the standard apply to all repos.
 
