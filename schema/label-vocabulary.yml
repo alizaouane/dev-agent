@@ -23,3 +23,10 @@ priorities:
   - priority:p1
   - priority:p2
   - priority:p3
+
+# Gate labels. Not part of the state machine — each one records a deliberate
+# human decision to let a run past a check that refused it. They are named
+# `<gate>:override` so a reviewer scanning an issue can see at a glance which
+# gate was bypassed and go read why.
+gates:
+  - spec-approval:override

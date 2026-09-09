@@ -22,6 +22,7 @@ import {
 import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
+import { evaluateSpecApproval } from './spec-approval-gate';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -551,6 +552,30 @@ export async function dispatchExistingIssue(
     );
     const default_branch = repoData.data.default_branch;
 
+    // The approval gate. `state:spec-ready` only records which stage the
+    // issue reached — it says nothing about whether the spec was reviewed,
+    // whether the review passed, or whether the text still matches what the
+    // user approved. Specs are approved in the Claude Code intake session,
+    // after the independent review comes back clean; this button starts
+    // approved work rather than approving it, so it refuses anything it
+    // cannot tie back to a hash-matched approval on `default_branch`.
+    const gate = await wrapStep('checking spec approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: issue.data.body,
+        labels,
+      }),
+    );
+    if (!gate.allow) {
+      return {
+        error: `work cannot start — ${gate.message}`,
+        issue_url: issue.data.html_url,
+      };
+    }
+
     await wrapStep('dispatching implement workflow', () =>
       octokit.actions.createWorkflowDispatch({
         owner,
@@ -675,6 +700,26 @@ export async function dispatchFromSpec(
       '',
       'Filed from the dashboard "Start from existing spec" panel.',
     ].join('\n');
+
+    // Same approval gate as `dispatchExistingIssue`, run BEFORE the issue
+    // is created so a refusal doesn't leave an orphan `state:spec-ready`
+    // issue behind. This panel files and dispatches in one step, which
+    // would otherwise be the one route into the implement workflow that
+    // never passes an approval check. There is no issue yet and therefore
+    // no override label: an unapproved spec has to go back through intake.
+    const gate = await wrapStep('checking spec approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: body,
+        labels: [],
+      }),
+    );
+    if (!gate.allow) {
+      return { error: `work cannot start — ${gate.message}` };
+    }
 
     const created = await wrapStep('creating spec-ready issue', () =>
       octokit.issues.create({
@@ -1186,6 +1231,10 @@ export async function getLatestScanRun(
  *  - `issue`           — issue number
  *  - `phase`           — implement | staging-deploy | promote-to-prod | rollback
  *  - `invocation_mode` — live | stub (default 'live')
+ *
+ * `implement` re-runs pass the spec-approval gate first; see
+ * `evaluateSpecApproval`. The later phases operate on work that already has a
+ * PR and are not gated here.
  */
 export async function redispatchPhase(
   formData: FormData,
@@ -1212,6 +1261,28 @@ export async function redispatchPhase(
 
     const repoData = await octokit.repos.get({ owner, repo });
     const default_branch = repoData.data.default_branch;
+
+    // Re-running `implement` starts implementation work, so it goes through
+    // the same approval gate as the Start work button. This panel is rendered
+    // for an issue in ANY state and defaults its phase select to `implement`,
+    // which makes it a first-dispatch route as much as a retry one — leaving
+    // it ungated would be a second front door standing next to a locked one.
+    // The other phases act on work that already shipped a PR and are not
+    // gated here.
+    if (phase === 'implement') {
+      const issue = await octokit.issues.get({ owner, repo, issue_number });
+      const gate = await evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: issue.data.body,
+        labels: issue.data.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))),
+      });
+      if (!gate.allow) {
+        return { error: `work cannot start — ${gate.message}` };
+      }
+    }
 
     await octokit.actions.createWorkflowDispatch({
       owner,

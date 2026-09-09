@@ -451,6 +451,53 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-implement.yml — spec approval gate', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+    const stepIndex = (name: string) => raw.indexOf(`- name: ${name}`);
+
+    it('verifies the approval before anything spends a model call', () => {
+      // An unapproved spec should cost nothing. If the gate ever lands
+      // after the prompt render or the agent run, a refused issue still
+      // burns budget on its way to being refused.
+      expect(stepIndex('Verify spec approval')).toBeGreaterThan(-1);
+      expect(stepIndex('Verify spec approval')).toBeLessThan(stepIndex('Render system prompt'));
+      expect(stepIndex('Verify spec approval')).toBeLessThan(stepIndex('Run Claude Code (live agent)'));
+    });
+
+    it('reads the approval from the default branch, not the agent-written branch', () => {
+      // `Prefetch feature branch` checks out feat/dev-agent-issue-<n> when it
+      // exists, and that branch is written by the agent. Verifying against the
+      // working tree would let a previous run commit its own approval file and
+      // authorize itself.
+      expect(stepIndex('Prefetch feature branch (for ACM manifest)')).toBeLessThan(
+        stepIndex('Verify spec approval'),
+      );
+      const step = raw.slice(
+        stepIndex('Verify spec approval'),
+        stepIndex('Render system prompt'),
+      );
+      expect(step).toMatch(/git show "origin\/\$BASE:\$REL"/);
+      expect(step).toMatch(/REPO_ROOT="\$BASE_ROOT"/);
+      // It must refuse rather than guess when the base ref is unknowable.
+      expect(step).toMatch(/Cannot determine the default branch/);
+    });
+
+    it('refuses when the working tree differs from the approved copies', () => {
+      // Verifying the base-ref copies proves those are approved. The agent is
+      // handed the working-tree copies, which live on the branch the agent
+      // itself writes — approved text on one branch and different text on the
+      // other would put the binding back where it started.
+      const step = raw.slice(
+        stepIndex('Verify spec approval'),
+        stepIndex('Render system prompt'),
+      );
+      expect(step).toMatch(/cmp -s "\$BASE_ROOT\/\$REL" "\$REL"/);
+      expect(step).toMatch(/differs between \$\{BASE\} and the working branch/);
+      // The override label has to release the whole gate, not half of it.
+      expect(step).toMatch(/OVERRIDE/);
+    });
+  });
+
   describe('phase-implement.yml — agent-no-pr salvage', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 

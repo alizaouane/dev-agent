@@ -193,9 +193,86 @@ jobs:
           # PLAN_PATH stays empty if no plan link present — that's valid
           # for legacy issues filed via the old dashboard chat.
 
+          LABELS=$(jq -r '[.labels[].name] | join(",")' issue.json)
+
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
           echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+          echo "labels=$LABELS" >> "$GITHUB_OUTPUT"
+
+      # The enforcing half of the spec-approval gate. The dashboard runs the
+      # same check before it dispatches, but that is a courtesy to the
+      # operator, not enforcement: `gh workflow run`, a consumer's own
+      # wrapper, and a re-run from the Actions tab all reach this workflow
+      # without passing it. This step also runs against the spec path the
+      # step above ACTUALLY resolved, which is derived by different code than
+      # the dashboard's — so a drift between those two resolvers can no
+      # longer approve one file while the agent implements another.
+      #
+      # Placed before the prompt render, so an unapproved spec costs nothing.
+      - name: Verify spec approval
+        env:
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
+          ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          # The same escape hatch the verifier honours, applied to the
+          # working-tree comparison below so one label releases the whole gate
+          # rather than half of it.
+          OVERRIDE=false
+          case ",${ISSUE_LABELS}," in
+            *,spec-approval:override,*) OVERRIDE=true ;;
+          esac
+
+          # Read the spec, plan and approval from the DEFAULT BRANCH, never
+          # from the working tree. The prefetch step above checks out
+          # `feat/dev-agent-issue-<n>` when it exists, and that branch is
+          # written by the agent — so verifying against the working tree would
+          # let a previous run's agent commit its own approval file and
+          # authorize itself. Materialize the three files out of the protected
+          # ref with `git show` and verify those copies.
+          BASE="${DEFAULT_BRANCH:-}"
+          if [ -z "$BASE" ]; then
+            BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
+          fi
+          if [ -z "$BASE" ]; then
+            echo "::error::Cannot determine the default branch, so the approval cannot be read from a protected ref. Refusing." >&2
+            exit 1
+          fi
+          git fetch --quiet origin "$BASE"
+
+          BASE_ROOT=$(mktemp -d)
+          APPROVAL_PATH="${SPEC_PATH%.md}.approval.json"
+          for REL in "$SPEC_PATH" "$APPROVAL_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
+            mkdir -p "$BASE_ROOT/$(dirname "$REL")"
+            # A path absent from the base ref stays absent in BASE_ROOT; the
+            # verifier refuses on a missing spec, plan, or approval.
+            git show "origin/$BASE:$REL" > "$BASE_ROOT/$REL" 2>/dev/null \
+              || rm -f "$BASE_ROOT/$REL"
+          done
+
+          if ! REPO_ROOT="$BASE_ROOT" .dev-agent-engine/node_modules/.bin/tsx \
+              .dev-agent-engine/lib/cli/verify-approval.ts; then
+            echo "::error::Refusing to implement a spec with no matching human approval on ${BASE}. Approve it in the Claude Code intake session (start-feature Phase 3.6), or apply the spec-approval:override label to proceed on the record." >&2
+            exit 1
+          fi
+
+          # The check above proved the DEFAULT BRANCH copies are approved. The
+          # agent, however, is handed the WORKING TREE copies — which sit on
+          # the agent-written feature branch. Approved text on one branch and
+          # different text on the other would put the whole binding back where
+          # it started, so the two must be identical.
+          if [ "${OVERRIDE:-}" != "true" ]; then
+            for REL in "$SPEC_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
+              if ! cmp -s "$BASE_ROOT/$REL" "$REL"; then
+                echo "::error::${REL} differs between ${BASE} and the working branch. The approval covers the ${BASE} copy; the agent would read the other one. Push the approved text, or re-approve the current one." >&2
+                exit 1
+              fi
+            done
+          fi
 
       - name: Render system prompt
         id: prompt

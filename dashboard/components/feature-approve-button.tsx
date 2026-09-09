@@ -3,28 +3,37 @@
 import { useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { dispatchExistingIssue } from '@/lib/actions';
+import type { DispatchGateDecision } from '@/lib/spec-approval';
 
 /**
- * Inline "Approve and start implementation" button on the feature page
- * for issues already at `state:spec-ready` (the path used when the
- * issue was filed via `/develop` in the consumer repo's Claude Code
- * session — spec + plan + issue land server-side, and the user lands
- * here to approve dispatch).
+ * The "Start work" control on the feature page, shown for issues at
+ * `state:spec-ready`.
  *
- * Wraps `dispatchExistingIssue`, which validates the state label,
- * fires `phase=implement` on the consumer's default branch, and flips
- * `state:spec-ready` → `state:implementing`. On success the action
- * redirects (NEXT_REDIRECT), so we let that throw through. On failure
- * the action returns `{ error, issue_url? }` (production-mask-resistant
- * contract — Next.js otherwise replaces server-action errors with a
- * generic string).
+ * This button does not approve anything. Approval happens in the Claude Code
+ * intake session, after an independent review has run and the spec has been
+ * corrected until that review comes back clean — the user approves the
+ * reviewed result there, and the session records it as an artifact bound to a
+ * hash of the spec and plan. All this button does is start approved work.
+ *
+ * The `gate` prop is the server's decision about whether that approval exists
+ * and still matches the current text. It drives presentation only: the button
+ * is disabled and the reason shown when the gate refuses, but
+ * `dispatchExistingIssue` re-runs the same check server-side, so a stale page
+ * or a hand-crafted POST is refused there too.
+ *
+ * On success the action redirects (NEXT_REDIRECT), so we let that throw
+ * through. On failure it returns `{ error, issue_url? }` rather than throwing,
+ * because Next.js replaces server-action errors with a generic string in
+ * production and would otherwise strand the user with nothing actionable.
  */
 export function FeatureApproveButton({
   repo,
   issue,
+  gate,
 }: {
   repo: string;
   issue: number;
+  gate: DispatchGateDecision;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -47,15 +56,27 @@ export function FeatureApproveButton({
           }
         });
       }}
-      className="flex flex-col gap-1"
+      className="flex flex-col gap-2"
     >
       <input type="hidden" name="repo" value={repo} />
       <input type="hidden" name="issue" value={String(issue)} />
-      <Button type="submit" disabled={pending}>
-        {pending ? 'Starting…' : 'Approve and start implementation'}
-      </Button>
+      <div className="flex items-center gap-3">
+        <Button type="submit" disabled={pending || !gate.allow}>
+          {pending ? 'Starting…' : 'Start work'}
+        </Button>
+        <span
+          className={
+            gate.allow
+              ? 'text-xs text-muted-foreground'
+              : 'text-xs font-medium text-destructive'
+          }
+        >
+          {gate.allow ? 'Spec approved' : 'Not approved for implementation'}
+        </span>
+      </div>
+      <p className="max-w-2xl text-xs text-muted-foreground">{gate.message}</p>
       {error ? (
-        <span className="max-w-md text-xs text-destructive">{error}</span>
+        <span className="max-w-2xl text-xs text-destructive">{error}</span>
       ) : null}
     </form>
   );

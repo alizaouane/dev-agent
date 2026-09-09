@@ -84,6 +84,44 @@ git push
 
 If `.dev-agent.yml` has `spec_plan_via_pr: true`, branch first (`git checkout -b dev-agent/spec-<topic>`) and open a PR via `gh pr create` instead of pushing to default. Otherwise direct-to-default — these are docs, not code.
 
+### Step 3.5 — Get the user's approval and record it
+
+The dashboard will not start work on a spec it cannot tie back to a recorded
+human approval, and the quick route is no exception — an unguarded fast path
+would be the one way into the implement workflow that skips the gate entirely.
+Quick-dev skips the adversarial review, not the approval.
+
+Show the user the spec's `## What changes` section and ask: **"Approve this so
+the dashboard can start work on it?"** Wait for an explicit answer; there is no
+default, and silence is not approval. If they want changes, edit the spec,
+commit, and ask again.
+
+When they approve, record it. `REVIEW_ROUNDS=1` and `REVIEW_VERDICT=ok` state
+the truth about this route: one pass, nothing blocking found, no independent
+review run. `PLAN_PATH` is omitted because quick-dev writes no plan.
+
+```bash
+cd "$consumer_root"
+SPEC_PATH=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md \
+REVIEW_VERDICT=ok \
+REVIEW_ROUNDS=1 \
+"${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/approve-spec.ts"
+
+git add "docs/superpowers/specs/YYYY-MM-DD-<topic>-design.approval.json"
+git commit -m "docs(spec): record approval for <feature title>"
+git push
+```
+
+`npx` is deliberately not used here: on a cache miss it resolves `tsx` from the
+network at approval time, which is the wrong moment to pull an unpinned package.
+The plugin ships its own pinned binary. If `${PLUGIN_DIR}/node_modules/.bin/tsx`
+is missing, run `npm ci` in `${PLUGIN_DIR}` once rather than
+reaching for `npx`.
+
+**Never run this on the user's behalf.** The record carries a human's identity
+against work they authorized; writing it without them makes every gate
+downstream meaningless.
+
 ### Step 4 — File the issue
 
 Construct the body. Note: `Plan:` line is **deliberately omitted**. `prompts/implement.md` handles the missing-plan case by deriving from the spec.
@@ -117,7 +155,7 @@ ${TLDR}
 
 ---
 
-Quick-dev path: 3-paragraph spec, no separate plan, no spec-review. The implement agent reads the spec directly and derives its own task list. Tap **Approve and start implementation** in the dashboard to dispatch.
+Quick-dev path: 3-paragraph spec, no separate plan, no spec-review. The implement agent reads the spec directly and derives its own task list. Approved by the user in Claude Code; tap **Start work** in the dashboard to dispatch.
 EOF
 )
 

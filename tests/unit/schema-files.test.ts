@@ -9,6 +9,7 @@ const labelVocabularySchema = z.object({
   states: z.array(z.string().regex(/^state:[a-z-]+$/)).nonempty(),
   kinds: z.array(z.string().regex(/^kind:[a-z-]+$/)).nonempty(),
   priorities: z.array(z.string().regex(/^priority:p[0-3]$/)).length(4),
+  gates: z.array(z.string().regex(/^[a-z-]+:override$/)).nonempty(),
 });
 
 describe('schema/label-vocabulary.yml', () => {
@@ -47,6 +48,16 @@ describe('schema/label-vocabulary.yml', () => {
     expect(parsed.kinds).toEqual(
       expect.arrayContaining(['kind:user-intent', 'kind:scout-proposal', 'kind:scout-digest', 'kind:hotfix'])
     );
+  });
+
+  it('lists the spec-approval override as a gate label, not a state', () => {
+    // The override is a recorded human decision to dispatch past a refused
+    // gate. Listing it under `states` would put it in the state machine and
+    // let a state-label reader treat it as a stage.
+    const content = readFileSync(resolve(__dirname, '../../schema/label-vocabulary.yml'), 'utf8');
+    const parsed = yaml.load(content) as { states: string[]; gates: string[] };
+    expect(parsed.gates).toContain('spec-approval:override');
+    expect(parsed.states).not.toContain('spec-approval:override');
   });
 });
 
