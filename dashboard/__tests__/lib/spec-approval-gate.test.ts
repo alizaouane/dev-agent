@@ -85,6 +85,22 @@ describe('parseSpecRefs', () => {
     expect(parseSpecRefs(body)?.spec_path).toBe(SPEC);
   });
 
+  it('still finds the Spec line after an unclosed fence', () => {
+    // A stray opener pasted into a TL;DR would otherwise swallow the rest of
+    // the body and refuse an issue that is properly approved.
+    const body = ['```', 'some pasted output, never closed', `Spec: ${SPEC}`, `Plan: ${PLAN}`].join(
+      '\n',
+    );
+    expect(parseSpecRefs(body)).toEqual({ spec_path: SPEC, plan_path: PLAN });
+  });
+
+  it('reads a body with Windows line endings', () => {
+    expect(parseSpecRefs(`Spec: ${SPEC}\r\nPlan: ${PLAN}\r\n`)).toEqual({
+      spec_path: SPEC,
+      plan_path: PLAN,
+    });
+  });
+
   it('ignores a path inside an inline backtick span', () => {
     const body = [`Example: \`Spec: docs/old.md\``, `Spec: ${SPEC}`, `Plan: ${PLAN}`].join('\n');
     expect(parseSpecRefs(body)?.spec_path).toBe(SPEC);

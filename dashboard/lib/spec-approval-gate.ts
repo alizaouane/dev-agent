@@ -44,17 +44,18 @@ export interface SpecRefs {
  */
 export function parseSpecRefs(body: string | null | undefined): SpecRefs | null {
   if (!body) return null;
-  const cleaned = body
-    .split('\n')
-    .reduce<{ out: string[]; skip: boolean }>(
-      (acc, line) => {
-        if (/^ {0,3}(```|~~~)/.test(line)) return { out: acc.out, skip: !acc.skip };
-        if (!acc.skip) acc.out.push(line);
-        return acc;
-      },
-      { out: [], skip: false },
-    )
-    .out.join('\n')
+  const lines = body.split(/\r?\n/);
+  const fences = lines.flatMap((line, i) => (/^ {0,3}(```|~~~)/.test(line) ? [i] : []));
+  // Only strip fences that actually close. A stray or pasted-in opener with no
+  // partner would otherwise swallow the rest of the body — including the real
+  // `Spec:` line — and refuse a properly approved issue.
+  const stripped = new Set<number>();
+  for (let i = 0; i + 1 < fences.length; i += 2) {
+    for (let n = fences[i]; n <= fences[i + 1]; n++) stripped.add(n);
+  }
+  const cleaned = lines
+    .filter((_line, i) => !stripped.has(i))
+    .join('\n')
     .replace(/`[^`]*`/g, '');
 
   const spec = cleaned.match(/^\s*Spec:\s*(\S+\.md)\s*$/m)?.[1];
