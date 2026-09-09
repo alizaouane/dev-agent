@@ -193,9 +193,35 @@ jobs:
           # PLAN_PATH stays empty if no plan link present — that's valid
           # for legacy issues filed via the old dashboard chat.
 
+          LABELS=$(jq -r '[.labels[].name] | join(",")' issue.json)
+
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
           echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+          echo "labels=$LABELS" >> "$GITHUB_OUTPUT"
+
+      # The enforcing half of the spec-approval gate. The dashboard runs the
+      # same check before it dispatches, but that is a courtesy to the
+      # operator, not enforcement: `gh workflow run`, a consumer's own
+      # wrapper, and a re-run from the Actions tab all reach this workflow
+      # without passing it. This step also runs against the spec path the
+      # step above ACTUALLY resolved, which is derived by different code than
+      # the dashboard's — so a drift between those two resolvers can no
+      # longer approve one file while the agent implements another.
+      #
+      # Placed before the prompt render, so an unapproved spec costs nothing.
+      - name: Verify spec approval
+        env:
+          SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
+          ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+        run: |
+          set -euo pipefail
+          if ! .dev-agent-engine/node_modules/.bin/tsx \
+              .dev-agent-engine/lib/cli/verify-approval.ts; then
+            echo "::error::Refusing to implement a spec with no matching human approval. Approve it in the Claude Code intake session (start-feature Phase 3.6), or apply the spec-approval:override label to proceed on the record." >&2
+            exit 1
+          fi
 
       - name: Render system prompt
         id: prompt

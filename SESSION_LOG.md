@@ -15,10 +15,14 @@
 - **[skills/quick-dev/SKILL.md](skills/quick-dev/SKILL.md)** — new Step 3.5: quick-dev skips the adversarial review, not the approval.
 - **[schema/label-vocabulary.yml](schema/label-vocabulary.yml)** — new `gates:` section for `spec-approval:override`, deliberately not a `state:` label.
 
-**Tests:** 44 new engine tests + 15 dashboard gate tests + 3 wiring guards in the actions suite. Engine 852 passed, dashboard 490 passed, both typechecks clean.
+- **[lib/cli/verify-approval.ts](lib/cli/verify-approval.ts)** + a new step in **[.github/workflows/phase-implement.yml](.github/workflows/phase-implement.yml)** — the enforcing half, found by the second review pass. The dashboard check is a courtesy to the operator; `gh workflow run`, a consumer wrapper, and an Actions-tab re-run all reach the workflow without it. Worse, the dashboard and the workflow resolve the spec path with different code — the dashboard anchors on the `Spec:` line after stripping fences, the workflow greps the raw body for the first path that exists on disk — so a drift between the two resolvers could approve one file while the agent implemented another. The workflow now verifies the approval against the path it actually resolved, before any model spend.
+
+**Tests:** 59 new engine tests + 15 dashboard gate tests + 3 wiring guards in the actions suite. Engine 867 passed, dashboard 493 passed, both typechecks clean.
 
 **Deferred / Next:**
 
+- `phase-acm.yml` resolves the spec with the same loose grep and is not gated; it spends on test-stub generation but ships no code.
+- The wire-up template still defaults `artifacts.specs_dir` to `docs/specs` while the skills write to `docs/superpowers/specs`, so the workflow's fallback branch is what runs in practice. Harmless now that the workflow verifies whatever it resolved, but worth aligning.
 - The `spec-review` skill still writes a repo-global `.dev-agent/spec-review.json`; the approval record carries the verdict instead, so the gate does not depend on that file. Worth keying the review artifact by spec too.
 - Consumer repos need the `spec-approval:override` label created before it can be applied.
 
