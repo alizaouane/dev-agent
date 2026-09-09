@@ -1,5 +1,124 @@
 # Session Log
 
+## 2026-09-09 16:20 UTC — interactive — Repo onboarding: probe readiness instead of tracking milestones
+
+**Trigger:** User: *"I will need some sort of repo onboarding in Dev Agent dashboard for when I start adding new project."*
+
+**What was there.** A five-item `SetupChecklist` tracking milestones — wired, pm.md present, scout configured, first proposal, first feature shipped. Three of those are outcomes rather than configuration, and none of the things that actually stall a new repo were checked at all: no labels check, no secrets check, no fixer-workflow check. The one item that overlapped, `pm_md_present`, only tested existence, so a repo carrying the untouched wire-up placeholder ticked the box while the PM agent still had nothing to reason with.
+
+**What changed (branch `feat/repo-onboarding-checklist`):**
+
+- **[dashboard/lib/onboarding.ts](dashboard/lib/onboarding.ts)** — seven requirements, each carrying the consequence of its absence and the remedy. Every item is drawn from something that has genuinely failed: labels the intake skill files issues with, the fixer workflow whose absence made mentioning the agent silent, the database URL whose absence leaves the drift gate reporting and passing. `unknown` is a distinct state from `missing` and it blocks — listing secrets needs admin, and reporting a repo ready because a check could not run is a guess presented as a fact.
+- **[dashboard/lib/onboarding-probe.ts](dashboard/lib/onboarding-probe.ts)** — every field looked up rather than inferred. A permission failure resolves to null with a reason, never to an empty list, because an empty list reads as "nothing configured".
+- **[dashboard/components/repo-readiness.tsx](dashboard/components/repo-readiness.tsx)** — outstanding rows carry their consequence and remedy in full; settled rows collapse to one line. A row reading "PR fixer workflow ☐" gets skipped; one saying mentioning the agent currently does nothing gets acted on.
+- Removed `setup-checklist.tsx` and its tests, superseded.
+
+**Tests:** 25 new dashboard tests. Dashboard 554 passed, typecheck clean.
+
+**What the review caught.** Eight findings, several of them the same defect: the module header stated that a read the dashboard may not be permitted to make must never resolve to absence, and `exists` did exactly that for every non-404 error. A rate-limited read would have reported the fixer workflow as missing and told the operator to install one that was already there; an unreadable `supabase/migrations` would have marked the database check not-applicable, reporting a repo ready at the moment the check could not run. Presence is now tri-state throughout. Also: labels were checked by prefix, so a repo carrying only `state:done` and `kind:bug` passed while `dispatchFromSpec` still failed on the labels it uses; the pm.md check looked for angle-bracketed prose the template does not contain, so every freshly wired repo passed — reproducing the exact false positive it was written to remove; secrets were unpaginated; and two remedies pointed at install controls that did not exist on the page.
+
+**Deferred / Next:** branch protection is not checked. A repo can be fully green here and still merge PRs with the required checks unset.
+
+**Next session should start with:** opening the PR for `feat/repo-onboarding-checklist`.
+
+---
+
+## 2026-09-09 15:10 UTC — interactive — Database URLs are per-repo, not shared
+
+**Trigger:** User asked where to maintain `SUPABASE_DB_URL` and which URL to use. Checking the repos to answer accurately surfaced a defect in what shipped yesterday in PR #150.
+
+**The defect.** `caliente-booking-app`, `social-media-content` and `whatsapp-console` each point at a **different** Supabase project (`sgtlkemm…`, `wmkgptlj…`, `ztkhjmot…`). The propagation read one dashboard-wide `SUPABASE_DB_URL` and pushed it to every repo, so whichever value was pasted would have gone everywhere — leaving two of the three drift gates comparing their migrations against a database they have nothing to do with. A gate failing for an unrelated reason is the same family of problem as a gate passing without checking: the signal no longer means what it says.
+
+**What changed (branch `fix/per-repo-supabase-url`):**
+
+- **[dashboard/lib/propagated-secrets.ts](dashboard/lib/propagated-secrets.ts)** — a secret can now declare `perRepo`. Such a secret is read only from `<NAME>__<REPO_SUFFIX>` (`SUPABASE_DB_URL__CALIENTE_BOOKING_APP`) with **no shared fallback**, because the fallback is the mistake. Shared secrets like the Anthropic key still work from the bare name, and now accept a per-repo override so one repo can differ without disturbing the others.
+- **[dashboard/components/push-secrets-panel.tsx](dashboard/components/push-secrets-panel.tsx)** — the panel names the exact variable each secret reads for that repo, before the button is pressed. "Which variable, and does it need a suffix" is what stalls this setup, and a variable set under the wrong name looks identical to one never set.
+
+**Which connection string.** The gate runs `supabase db diff --db-url`, so it needs the **session pooler** string (port 5432), not the transaction pooler (6543): GitHub runners are IPv4-only, and transaction mode does not support the session state a schema diff needs. A read-only role is sufficient — the gate only reads.
+
+**Tests:** 5 new dashboard tests, including one that two repos resolve to two different URLs and one that a bare `SUPABASE_DB_URL` is never used as a fallback. Dashboard 522 passed, typecheck clean.
+
+**Next session should start with:** opening the PR for `fix/per-repo-supabase-url`.
+
+---
+
+## 2026-09-09 14:15 UTC — interactive — Propagate dashboard secrets to every wired repo
+
+**Trigger:** User: *"find a way to automate this SUPABASE_DB_URL"* — it was a manual paste into four separate repos' settings pages, and a repo that was missed left the schema-drift gate reporting instead of failing.
+
+**What is and is not automatable.** The connection string's host and user are derivable from the Supabase project ref, but the database password is not: Supabase never exposes it through its API. So the value itself has to be supplied once by a human. What was worth removing is the per-repo repetition, not the one-time paste.
+
+**What changed (branch `feat/propagate-dashboard-secrets`):**
+
+- **[dashboard/lib/propagated-secrets.ts](dashboard/lib/propagated-secrets.ts)** — a declared set of secrets the dashboard holds once and pushes everywhere: `ANTHROPIC_API_KEY` (already done ad hoc) and `SUPABASE_DB_URL`. Each declares what a usable value looks like. That validation is the substance, not decoration: a malformed connection string makes `schema-drift` treat the secret as absent and pass, so a pushed-but-unusable value is worse than an unset one — the operator believes it is configured. A Supabase project URL pasted in place of the connection string, or a string with no password, is refused with the reason.
+- **[dashboard/lib/actions.ts](dashboard/lib/actions.ts)** — `wireUpRepo` now pushes every configured secret rather than just the Anthropic key, and a new `pushDashboardSecrets` action backfills a repo wired before a secret existed. Non-fatal per secret (pushing needs admin), but never silent: every skip carries its reason.
+- **[dashboard/components/push-secrets-panel.tsx](dashboard/components/push-secrets-panel.tsx)** — the button, on the repo page. Values never render.
+
+**Also this session, outside this branch:** the repo had no `.claude-plugin/marketplace.json`, so the install command the README documents failed with "not found in any configured marketplace". Added on `feat/pr-autopilot`; the plugin is now installed and enabled locally.
+
+**What the review caught (critical).** The backfill action checked only write permission, like every other action in the file. But those act on the target repo with the *user's* authority; this one copies the *dashboard's* credentials into whatever repo the form names. A signed-in user could point it at any repo they can write to and walk away with the Anthropic key and the database URL. The target must now be a wired repo in the dashboard's own allowlist. Two smaller ones: `revalidatePath` named a route that never renders (the segment is the URL-encoded full name), so the page kept serving its pre-push cache; and the redaction test used a value that passed validation, so it exercised the pushable path and could not have caught a leak.
+
+**Tests:** 22 new dashboard tests. Dashboard 517 passed, typecheck clean.
+
+**Deferred / Next:** the operator still pastes `SUPABASE_DB_URL` once into the dashboard's environment. Deriving it would require the database password, which Supabase does not expose.
+
+**Next session should start with:** opening the PR for `feat/propagate-dashboard-secrets`, and checking PR #149 (pr-autopilot) to green.
+## 2026-09-09 13:30 UTC — interactive — PR autopilot: drive dev-agent PRs to green with nobody watching
+
+**Trigger:** User, after the spec-approval gate landed: *"this PR must be checked and any CI failure and Code review need to be addressed, I need this to be automated as well without me having to check the PR and find that there are unresolved code review and CI failures"*.
+
+**What was actually broken.** The loop existed three times and worked none of the times it mattered. It was prose in the standard; a Stop hook on the laptop, which only runs while a session is open and the machine awake — the automation depended on the attention it was written to replace; and `phase-pr-review.yml`, which fires only when a human types `@claude` and, until now, rejected any branch not named `feat/dev-agent-issue-<n>`. Two further gaps found while building: **no consumer repo has a pr-review wrapper at all**, so `@claude` on a PR in booking-app or whatsapp-console triggered nothing; and `spec_plan_via_pr` was documented in three skill files but was never a real config key, so the doc-PR path could not be turned on.
+
+**What changed (branch `feat/pr-autopilot`):**
+
+- **[lib/pr-blockers.ts](lib/pr-blockers.ts)** — the Stop hook's rules as pure, tested functions: failing checks, unresolved threads counted across all pages, bot reviews stale against HEAD, `CHANGES_REQUESTED`. A check merely running is reported and left alone rather than spending a model call to learn CI is still going. Plus the anti-wedge: re-wake on an unchanged blocker set, but stand down after four attempts and say so on the PR, because a set that has not moved in four tries is not one attempt from moving.
+- **[lib/cli/pr-triage.ts](lib/cli/pr-triage.ts)** — sweeps a repo and wakes the fixer by posting `@claude`. Deliberately the existing manual trigger rather than a workflow dispatch: it works unchanged in every wired repo, cannot drift from the manual path because it is the manual path, and the comment is the audit trail.
+- **[.github/workflows/pr-autopilot.yml](.github/workflows/pr-autopilot.yml)** — scheduled sweep, `workflow_call`-able so consumers get it too. No model call of its own; `contents: read` only.
+- **Two new consumer wrappers**, both wired into `WIRE_UP_FILES` and installable from `/repos`: `dev-agent-pr-review.yml` (the fixer, which consumers never had) and `dev-agent-pr-autopilot.yml` (the sweep).
+- **[phase-pr-review.yml](.github/workflows/phase-pr-review.yml)** — branch filter widened to the spec doc shape, still an anchored allowlist.
+- **`spec_plan_via_pr` is now a real key** in the zod schema, the JSON schema, and defaults.
+
+**Tests:** 44 new engine tests. Engine 927 passed, dashboard 495 passed, both typechecks clean. The wire-up file count assertion now derives from `WIRE_UP_FILES.length` instead of a hardcoded 10.
+
+**Deferred / Next:**
+
+- The autopilot only wakes the fixer; it does not verify the fixer succeeded. A PR that the fixer cannot move gets four attempts then a stand-down comment, which is the intended floor, not a silent failure.
+- `SUPABASE_DB_URL` is still hand-set per repo. The dashboard already pushes `ANTHROPIC_API_KEY` at wire-up and could prompt for this the same way.
+
+**Next session should start with:** opening the PR for `feat/pr-autopilot` and running its own review loop to green.
+
+---
+
+## 2026-09-09 11:45 UTC — interactive — Spec approval gate: review until clean, approve once, then Start work
+
+**Trigger:** User: *"I need the spec independently reviewed and corrected until I approve it, then it can move to Dev agent dashboard where the button is not to approve but to start the work"*. The existing flow contradicted this in two places: `start-feature` Phase 3.5 **defaulted to proceeding** on a `concerns` verdict if the user did not answer within the turn, and `dispatchExistingIssue` validated only the `state:spec-ready` label — nothing anywhere read the review verdict.
+
+**What changed (branch `feat/spec-approval-gate`):**
+
+- **[lib/spec-approval.ts](lib/spec-approval.ts)** — new. The approval record and the pure gate decision. An approval names the verdict it was given against and carries a sha256 over the spec and plan together, so an approval cannot be harvested from a blocked run and cannot survive an edit to either document. Fails closed on a missing, malformed, or too-new record. `spec-approval:override` on the issue dispatches anyway and states in the message what it overrode. The plan is optional so the `quick-dev` route stays inside the gate rather than being exempted from it.
+- **[lib/cli/approve-spec.ts](lib/cli/approve-spec.ts)** — new. Writes `<spec>.approval.json` next to the spec. Refuses to record an approval against a `blocker` verdict.
+- **[dashboard/lib/spec-approval-gate.ts](dashboard/lib/spec-approval-gate.ts)** — new. Fetches spec, plan, and approval from the consumer repo and hands them to the pure decision. An API error refuses rather than reading as "no approval".
+- **[dashboard/lib/actions.ts](dashboard/lib/actions.ts)** — all three dispatch paths now run the gate. In `dispatchFromSpec` it runs *before* `issues.create`, so a refusal leaves no orphan `state:spec-ready` issue. The pre-PR review caught the third one: `redispatchPhase` renders for an issue in any state and defaults its phase select to `implement`, so it was a first-dispatch route as much as a retry one — a second front door standing beside a locked one.
+- **[dashboard/components/feature-approve-button.tsx](dashboard/components/feature-approve-button.tsx)** — the button reads **Start work** and is disabled when the gate refuses, with the reason underneath. The server action re-checks, so the disable is presentation, not enforcement.
+- **[skills/start-feature/SKILL.md](skills/start-feature/SKILL.md)** — Phase 3.5 is now a review → correct → re-review loop that terminates only on `ok`, with a four-round cap that stops and reports instead of shipping. New Phase 3.6 asks the user once, waits for an explicit answer, and records the approval. Both phases carry an explicit "never run `approve-spec` on the user's behalf".
+- **[skills/quick-dev/SKILL.md](skills/quick-dev/SKILL.md)** — new Step 3.5: quick-dev skips the adversarial review, not the approval.
+- **[schema/label-vocabulary.yml](schema/label-vocabulary.yml)** — new `gates:` section for `spec-approval:override`, deliberately not a `state:` label.
+
+- **[lib/cli/verify-approval.ts](lib/cli/verify-approval.ts)** + a new step in **[.github/workflows/phase-implement.yml](.github/workflows/phase-implement.yml)** — the enforcing half, found by the second review pass. The dashboard check is a courtesy to the operator; `gh workflow run`, a consumer wrapper, and an Actions-tab re-run all reach the workflow without it. Worse, the dashboard and the workflow resolve the spec path with different code — the dashboard anchors on the `Spec:` line after stripping fences, the workflow greps the raw body for the first path that exists on disk — so a drift between the two resolvers could approve one file while the agent implemented another. The workflow now verifies the approval against the path it actually resolved, before any model spend.
+
+**Tests:** 59 new engine tests + 15 dashboard gate tests + 3 wiring guards in the actions suite. Engine 867 passed, dashboard 493 passed, both typechecks clean.
+
+**Deferred / Next:**
+
+- `phase-acm.yml` resolves the spec with the same loose grep and is not gated; it spends on test-stub generation but ships no code.
+- The wire-up template still defaults `artifacts.specs_dir` to `docs/specs` while the skills write to `docs/superpowers/specs`, so the workflow's fallback branch is what runs in practice. Harmless now that the workflow verifies whatever it resolved, but worth aligning.
+- The `spec-review` skill still writes a repo-global `.dev-agent/spec-review.json`; the approval record carries the verdict instead, so the gate does not depend on that file. Worth keying the review artifact by spec too.
+- Consumer repos need the `spec-approval:override` label created before it can be applied.
+
+**Next session should start with:** opening the PR for `feat/spec-approval-gate` and running the review loop on it to green.
+
+---
+
 ## 2026-09-05 UTC — interactive — §13.5 goes from distributed to actually verifying
 
 **Trigger:** "continue with the work" across several turns, after v5.1's enforcement half was already live.
@@ -149,6 +268,21 @@ Also: NODE_ENV exempted from the env lint (false positives); matcher made token-
 **Deferred / Next:** The 7-step roadmap in the artifact — starts with writing `architect-checklist` + `pm-checklist`, then drafting v5 as a consolidation release (md as source of truth, docx generated).
 
 **Next session should start with:** Read the audit artifact; decide whether to begin roadmap step 1 (missing checklists) or step 2 (v5 consolidation draft).
+
+---
+
+## 2026-07-27 01:53 UTC — interactive — Emergency kill switch: disabled all Anthropic-spending workflows
+
+**Trigger:** User: "stop all anthropic API cost immediately."
+
+**What changed:** No spend runs locally (launchd = Claude Desktop only) and no in-flight Actions runs. Disabled every workflow that can invoke the agent, via `gh workflow disable` (all reversible with `gh workflow enable`):
+- **dev-agent (10):** `orch-sweep` (cron */10 + daily — the autonomous scheduler), `phase-pr-review` (fired on every PR/issue comment), and the 8 `claude-code-action` callers: `phase-implement`, `phase-bug-scout`, `phase-cleanup-scout`, `phase-unfinished-work-scout`, `phase-swarm-review`, `phase-tier2-smoke`, `phase-staging-deploy`, `phase-acm`.
+- **consumer repos:** `dev-agent` wrappers on whatsapp-console / caliente-booking-app / social-media-content (were active, dispatch-only) + whatsapp-console `Real-LLM Evals`.
+- **Left active (verified no live Anthropic spend):** `phase-evidence-collector` (no Anthropic ref), and `phase-promote-to-prod` / `phase-rollback` / `phase-smoke-verify` — SDK/stub path only, `workflow_call`-only, every caller now disabled.
+
+**Deferred / Next:** The consumer-repo scouts were already `disabled_manually` from 2026-06-27. Lasting fix still deferred: real pre-flight dollar budget gate (wire `CostCapTracker`/`monthly_budget_usd`), lower 500-turn/6h caps.
+
+**Next session should start with:** Anthropic spend is fully OFF. To resume dev-agent operation, re-enable workflows with `gh workflow enable <id> -R alizaouane/<repo>` — start with `orch-sweep` + `phase-pr-review` on dev-agent. Do NOT re-enable without the budget gate if cost is the concern.
 
 ---
 

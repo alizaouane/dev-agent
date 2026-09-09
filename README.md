@@ -77,9 +77,23 @@ claude plugin install superpowers@5.1.0
 
 Newer versions should work as long as the brainstorming skill writes specs to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and writing-plans writes to `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` (or `docs/plans/`).
 
+## Status: Spec approval gate (2026-09-09)
+
+Approval moved out of the dashboard. A spec is reviewed by an independent
+adversarial pass in Claude Code and corrected until that review comes back
+clean; the user then approves the clean result there, and the session records
+it as `<spec>.approval.json` next to the spec — the verdict, the round count,
+the approver, and a sha256 over the spec and plan together.
+
+The dashboard button is now **Start work**, not "Approve and start". It refuses
+to dispatch anything it cannot tie back to a hash-matched approval, so editing
+a spec after approval takes the button dead rather than shipping text nobody
+reviewed. `spec-approval:override` on the issue dispatches anyway and says in
+the UI what it overrode. See [lib/spec-approval.ts](lib/spec-approval.ts).
+
 ## Status: PM via Claude Code (2026-05-26)
 
-Retires the dashboard's in-browser PM chat. Brainstorming, spec writing, and plan writing now run in Claude Code via `/develop` and the superpowers skill chain. The dashboard keeps proposals, the approval gate (`Approve and start implementation` on `state:spec-ready` issues), status, cost, and engine orchestration. Engine reads optional `plan_path` alongside the existing `spec_path` so the implementation agent gets both. See [docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md](docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md) and [docs/superpowers/plans/2026-05-26-pm-via-claude-code.md](docs/superpowers/plans/2026-05-26-pm-via-claude-code.md).
+Retires the dashboard's in-browser PM chat. Brainstorming, spec writing, and plan writing now run in Claude Code via `/develop` and the superpowers skill chain. The dashboard keeps proposals, the dispatch gate (**Start work** on `state:spec-ready` issues; see the 2026-09-09 entry above), status, cost, and engine orchestration. Engine reads optional `plan_path` alongside the existing `spec_path` so the implementation agent gets both. See [docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md](docs/superpowers/specs/2026-05-26-pm-via-claude-code-design.md) and [docs/superpowers/plans/2026-05-26-pm-via-claude-code.md](docs/superpowers/plans/2026-05-26-pm-via-claude-code.md).
 
 ## Status: v0.3.0 (Real implement step)
 

@@ -28,6 +28,16 @@ name: dev-agent · phase-swarm-review
 on:
   workflow_call:
     inputs:
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       pr_number:
         required: true
         type: number
@@ -52,6 +62,16 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       pr_number:
         required: true
         type: number
@@ -117,6 +137,20 @@ jobs:
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
+
+      # §22.1 — pre-flight budget gate. The nightly watchdog reports spend
+      # AFTER it happens, which is monitoring; this refuses to start the phase
+      # when the month's budget is gone or this phase would cross it. Placed
+      # before any model call so a refusal costs nothing. Fails closed: if
+      # spend cannot be read while a budget is configured, the run stops.
+      - name: Budget gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          PHASE: swarm_review
+          BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Stub-mode — generate fake reviewer JSONs
         if: inputs.invocation_mode == 'stub'
@@ -317,12 +351,30 @@ jobs:
       - name: Live mode — run spec-compliance reviewer
         if: inputs.invocation_mode == 'live'
         continue-on-error: true
+        id: agent
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: /tmp/swarm-prompts/spec-compliance.md
           claude_args: '--max-turns 30 --model claude-haiku-4-5 --allowedTools Read Glob Grep Write Bash(git diff:*) Bash(rg:*) Bash(grep:*) Bash(jq:*) Bash(cat:*) Bash(head:*) Bash(tail:*) Bash(wc:*)'
           show_full_output: 'false'
+
+      # Record what this run actually cost. Before this existed the only
+      # telemetry any workflow posted was a stub with `Cost: $0`, so
+      # month-to-date spend always read zero and both the nightly watchdog and
+      # the budget gate were decorative. always() so a failed or timed-out run
+      # still records the spend it incurred.
+      - name: Emit telemetry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PHASE: swarm_review
+          MODEL: claude-haiku-4-5
+          AGENT_STATUS: ${{ steps.agent.outcome == 'success' && 'success' || 'blocked' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Live mode — run regression-guard reviewer
         if: inputs.invocation_mode == 'live'

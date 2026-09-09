@@ -13,6 +13,7 @@ import {
   type IssueCommentRow,
 } from '@/lib/feature-timeline';
 import { fetchActiveRunsForIssue } from '@/lib/active-runs';
+import { evaluateSpecApproval } from '@/lib/spec-approval-gate';
 import { fetchRecentFailuresForIssue } from '@/lib/run-failures';
 import { fetchFeaturePR } from '@/lib/feature-pr';
 import { outcomesForFeature } from '@/lib/verification/aggregate';
@@ -44,6 +45,7 @@ export default async function FeaturePage(props: {
     failedRuns,
     featurePR,
     outcomes,
+    defaultBranchOrNull,
   ] = await Promise.all([
     octokit.issues.get({ owner, repo: name, issue_number }),
     octokit.issues.listComments({ owner, repo: name, issue_number, per_page: 100 }),
@@ -52,15 +54,50 @@ export default async function FeaturePage(props: {
     fetchRecentFailuresForIssue(octokit, owner, name, issue_number),
     fetchFeaturePR(octokit, owner, name, issue_number),
     outcomesForFeature(octokit, `${owner}/${name}`, issue_number),
+    // Needed by the approval gate below. A failure here must not take the
+    // page down, so it resolves to null and the gate refuses with a reason.
+    octokit.repos
+      .get({ owner, repo: name })
+      .then((r) => r.data.default_branch)
+      .catch(() => null),
   ]);
   const expandedPillar: PillarId | null =
     tab === 'verification' && pillar && (PILLAR_IDS as readonly string[]).includes(pillar)
       ? (pillar as PillarId)
       : null;
-  const stateLabel =
-    (issueData.labels.map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean) as string[]).find((l) =>
-      l.startsWith('state:'),
-    ) ?? 'state:unknown';
+  // An unreadable default branch is not a reason to render an enabled button:
+  // the gate below refuses on the sentinel, the same as any other unknown.
+  const defaultBranch = defaultBranchOrNull ?? '<default-branch-unavailable>';
+
+  const labels = issueData.labels
+    .map((l) => (typeof l === 'string' ? l : l.name))
+    .filter(Boolean) as string[];
+  const stateLabel = labels.find((l) => l.startsWith('state:')) ?? 'state:unknown';
+
+  // Evaluate the approval gate up front so the operator sees whether the
+  // spec is startable BEFORE clicking, rather than learning it from an
+  // error after a round trip. The server action re-checks on submit —
+  // this is presentation, not enforcement.
+  const approvalGate =
+    stateLabel === 'state:spec-ready'
+      ? await evaluateSpecApproval({
+          octokit,
+          repo: name,
+          owner,
+          ref: defaultBranch,
+          issueBody: issueData.body,
+          labels,
+        }).catch((err) => ({
+          // A thrown decision would take the whole feature page down. Refuse
+          // instead: the operator keeps the page, and sees a disabled Start
+          // work button carrying the reason.
+          allow: false as const,
+          reason: 'malformed' as const,
+          message: `the approval could not be checked: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        }))
+      : null;
 
   // Octokit v22 returns `{ data: T[] }` — we destructured only the issue
   // fetch above; `commentsResp` keeps its envelope so we can normalize.
@@ -127,8 +164,12 @@ export default async function FeaturePage(props: {
         prUrl={prUrl}
         verification={{ outcomes, expandedPillar }}
       />
-      {stateLabel === 'state:spec-ready' ? (
-        <FeatureApproveButton repo={`${owner}/${name}`} issue={issue_number} />
+      {stateLabel === 'state:spec-ready' && approvalGate ? (
+        <FeatureApproveButton
+          repo={`${owner}/${name}`}
+          issue={issue_number}
+          gate={approvalGate}
+        />
       ) : null}
       <ActiveRunsPanel runs={activeRuns} repo={`${owner}/${name}`} />
       <FailedRunsPanel runs={failedRuns} />

@@ -14,6 +14,13 @@ import {
   type WorkflowKey,
 } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
+import { listAllowedRepos } from './repos';
+import {
+  collidingRepos,
+  envSuffixForRepo,
+  resolveSecrets,
+  summarizePush,
+} from './propagated-secrets';
 import {
   parseRepoFromProposalId,
   snoozeProposalPersistent,
@@ -22,6 +29,7 @@ import {
 import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
+import { evaluateSpecApproval } from './spec-approval-gate';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -312,25 +320,20 @@ export async function wireUpRepo(
       );
     }
 
-    // Push the dashboard's ANTHROPIC_API_KEY into the consumer repo's Actions
-    // secrets so the user doesn't have to paste it manually. Failures (e.g.,
-    // user has write but not admin perm — secrets require admin) are non-
-    // fatal; we log and continue. The user will see a workflow run fail later
-    // with a missing-secret error if push didn't succeed.
-    const dashboardKey = process.env.ANTHROPIC_API_KEY;
-    if (dashboardKey) {
-      try {
-        await pushRepoSecret({
-          octokit,
-          owner,
-          repo,
-          name: 'ANTHROPIC_API_KEY',
-          value: dashboardKey,
-        });
-      } catch (err) {
-        console.warn(`wireUpRepo: pushRepoSecret failed for ${owner}/${repo}:`, err);
-      }
-    }
+    // Push every secret the dashboard holds into the consumer repo's Actions
+    // secrets, so the user doesn't paste the same value into four repos by
+    // hand and miss one. Failures (e.g. write but not admin — secrets need
+    // admin) are non-fatal: we log and continue, and the workflow that needs
+    // the secret fails loudly on its first run.
+    //
+    // A per-repo secret whose variable name is shared with another managed
+    // repo is refused rather than guessed at; see `collidingRepos`.
+    await pushDashboardSecretsTo(
+      octokit,
+      owner,
+      repo,
+      await otherReposSharingEnvSuffix(octokit, owner, repo),
+    );
 
     // Direct-commit each template file to the default branch. Without a
     // `branch` arg, createOrUpdateFileContents targets the repo's default
@@ -460,6 +463,167 @@ export async function installWorkflow(
 }
 
 /**
+ * Other managed repos whose names collapse to the same env var suffix.
+ *
+ * Fails closed: if the allowlist cannot be read, it reports an unverifiable
+ * collision rather than an empty one. The alternative is pushing a per-repo
+ * credential on the unchecked assumption that its variable name is unambiguous,
+ * and an unpushed secret is a loud failure while a wrongly-pushed one is silent.
+ *
+ * @param octokit - Authenticated client.
+ * @param owner - Repo owner.
+ * @param repo - Repo name.
+ * @returns The other repos sharing this repo's suffix; empty when unique.
+ */
+async function otherReposSharingEnvSuffix(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+): Promise<string[]> {
+  const full = `${owner}/${repo}`;
+  try {
+    const allowed = await listAllowedRepos(octokit);
+    const groups = collidingRepos(allowed.map((r) => `${r.owner}/${r.name}`));
+    return (groups.get(envSuffixForRepo(full)) ?? []).filter((r) => r !== full);
+  } catch (err) {
+    console.warn(`otherReposSharingEnvSuffix: allowlist unavailable for ${full}:`, err);
+    return ['(could not verify — the dashboard could not list its repos)'];
+  }
+}
+
+/**
+ * Push every configured dashboard secret into one repo.
+ *
+ * Non-fatal by design: pushing secrets needs admin permission, which a user
+ * with write access may not have, and that must not block a wire-up. What it
+ * must not do is fail silently — an unpushed secret leaves a gate reporting
+ * instead of failing, so each skip is logged with its reason.
+ *
+ * @param octokit - Authenticated client.
+ * @param owner - Repo owner.
+ * @param repo - Repo name.
+ * @param collidesWith - Other managed repos whose names collapse to the same
+ *   env var suffix as this one, from `otherReposSharingEnvSuffix`. Non-empty
+ *   refuses every per-repo secret, because two repos reading one variable is
+ *   how a per-repo credential reaches the wrong database.
+ * @returns Which secrets landed and which did not, for the caller to surface.
+ */
+async function pushDashboardSecretsTo(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+  collidesWith: string[] = [],
+): Promise<{ pushed: string[]; skipped: Array<{ name: string; skipReason: string }> }> {
+  const pushed: string[] = [];
+  const skipped: Array<{ name: string; skipReason: string }> = [];
+  const full = `${owner}/${repo}`;
+
+  // eslint-disable-next-line no-restricted-syntax -- each push re-fetches the
+  // repo public key; running them in parallel gains nothing and muddles which
+  // secret a failure belonged to.
+  for (const secret of resolveSecrets(process.env, full)) {
+    if (secret.perRepo && collidesWith.length > 0) {
+      skipped.push({
+        name: secret.name,
+        skipReason:
+          `${secret.sourceVar} is shared with ${collidesWith.join(', ')}, whose name differs only ` +
+          'in punctuation. Refusing rather than risk pushing another repo’s credential; ' +
+          'rename one repo, or set this secret on the repo directly.',
+      });
+      continue;
+    }
+    if (secret.value === undefined) {
+      skipped.push({ name: secret.name, skipReason: secret.skipReason ?? 'not configured' });
+      continue;
+    }
+    try {
+      await pushRepoSecret({ octokit, owner, repo, name: secret.name, value: secret.value });
+      pushed.push(secret.name);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.warn(`pushDashboardSecretsTo: ${secret.name} failed for ${owner}/${repo}:`, err);
+      skipped.push({ name: secret.name, skipReason: `push failed (${detail})` });
+    }
+  }
+  return { pushed, skipped };
+}
+
+/**
+ * Server Action: push the dashboard's secrets into an already-wired repo.
+ *
+ * Wire-up does this automatically, but a repo wired before a secret existed
+ * never got it — and the gate that needs it has been passing without checking
+ * anything ever since. This is the backfill.
+ *
+ * The target must be a wired repo in this dashboard's allowlist. Write
+ * permission alone would let a signed-in user name any repo they can write to
+ * and have the dashboard deposit its own credentials there.
+ *
+ * Form fields:
+ *  - `repo` — `owner/name`
+ *
+ * @param formData - The submitted form.
+ * @returns A message naming what was pushed and what was skipped, or an error.
+ */
+export async function pushDashboardSecrets(
+  formData: FormData,
+): Promise<{ error: string } | { message: string }> {
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string | null) ?? '').trim();
+    const parts = repoFull.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error('repo must be in owner/name format');
+    }
+    const [owner, repo] = parts;
+
+    // Write permission is NOT sufficient here, unlike every other action in
+    // this file. Those act on the target repo with the user's own authority;
+    // this one copies the DASHBOARD's secrets into whatever repo the form
+    // names. A signed-in user could point it at any repo they can write to —
+    // a personal fork, a repo in another org — and walk away with the
+    // dashboard's Anthropic key and database URL. So the target has to be a
+    // repo this dashboard already manages, not merely one the caller can
+    // write to.
+    const allowed = await listAllowedRepos(octokit);
+    const target = allowed.find(
+      (r) => r.owner.toLowerCase() === owner.toLowerCase() && r.name.toLowerCase() === repo.toLowerCase(),
+    );
+    if (!target) {
+      throw new Error(
+        `${repoFull} is not in this dashboard's allowlist. Secrets are only pushed to repos the dashboard manages.`,
+      );
+    }
+    if (!target.wired_up) {
+      throw new Error(
+        `${repoFull} is not wired up yet. Wire it up first — that pushes these secrets as part of the setup.`,
+      );
+    }
+    await assertWritePermission(octokit, target.owner, target.name, session_username);
+
+    const collidesWith = collidingRepos(allowed.map((r) => `${r.owner}/${r.name}`));
+    const full = `${target.owner}/${target.name}`;
+    const { pushed, skipped } = await pushDashboardSecretsTo(
+      octokit,
+      target.owner,
+      target.name,
+      (collidesWith.get(envSuffixForRepo(full)) ?? []).filter((r) => r !== full),
+    );
+    // The route segment is the URL-encoded FULL name (`/repos/acme%2Fweb`),
+    // not the bare repo name — the page decodes it and matches on
+    // `owner/name`. Revalidating `/repos/<name>` names a path that is never
+    // rendered, leaving the page serving its pre-push cached render.
+    revalidatePath(`/repos/${encodeURIComponent(`${target.owner}/${target.name}`)}`);
+    return { message: summarizePush(pushed, skipped) };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[pushDashboardSecrets] failed', { message, raw: e });
+    return { error: message };
+  }
+}
+
+/**
  * Returned (not thrown) when a step in `dispatchExistingIssue` fails.
  * Returning the error keeps the message visible to the user even in
  * production — Next.js masks any error thrown out of a server action with
@@ -550,6 +714,30 @@ export async function dispatchExistingIssue(
       octokit.repos.get({ owner, repo }),
     );
     const default_branch = repoData.data.default_branch;
+
+    // The approval gate. `state:spec-ready` only records which stage the
+    // issue reached — it says nothing about whether the spec was reviewed,
+    // whether the review passed, or whether the text still matches what the
+    // user approved. Specs are approved in the Claude Code intake session,
+    // after the independent review comes back clean; this button starts
+    // approved work rather than approving it, so it refuses anything it
+    // cannot tie back to a hash-matched approval on `default_branch`.
+    const gate = await wrapStep('checking spec approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: issue.data.body,
+        labels,
+      }),
+    );
+    if (!gate.allow) {
+      return {
+        error: `work cannot start — ${gate.message}`,
+        issue_url: issue.data.html_url,
+      };
+    }
 
     await wrapStep('dispatching implement workflow', () =>
       octokit.actions.createWorkflowDispatch({
@@ -675,6 +863,26 @@ export async function dispatchFromSpec(
       '',
       'Filed from the dashboard "Start from existing spec" panel.',
     ].join('\n');
+
+    // Same approval gate as `dispatchExistingIssue`, run BEFORE the issue
+    // is created so a refusal doesn't leave an orphan `state:spec-ready`
+    // issue behind. This panel files and dispatches in one step, which
+    // would otherwise be the one route into the implement workflow that
+    // never passes an approval check. There is no issue yet and therefore
+    // no override label: an unapproved spec has to go back through intake.
+    const gate = await wrapStep('checking spec approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: body,
+        labels: [],
+      }),
+    );
+    if (!gate.allow) {
+      return { error: `work cannot start — ${gate.message}` };
+    }
 
     const created = await wrapStep('creating spec-ready issue', () =>
       octokit.issues.create({
@@ -1186,6 +1394,10 @@ export async function getLatestScanRun(
  *  - `issue`           — issue number
  *  - `phase`           — implement | staging-deploy | promote-to-prod | rollback
  *  - `invocation_mode` — live | stub (default 'live')
+ *
+ * `implement` re-runs pass the spec-approval gate first; see
+ * `evaluateSpecApproval`. The later phases operate on work that already has a
+ * PR and are not gated here.
  */
 export async function redispatchPhase(
   formData: FormData,
@@ -1212,6 +1424,28 @@ export async function redispatchPhase(
 
     const repoData = await octokit.repos.get({ owner, repo });
     const default_branch = repoData.data.default_branch;
+
+    // Re-running `implement` starts implementation work, so it goes through
+    // the same approval gate as the Start work button. This panel is rendered
+    // for an issue in ANY state and defaults its phase select to `implement`,
+    // which makes it a first-dispatch route as much as a retry one — leaving
+    // it ungated would be a second front door standing next to a locked one.
+    // The other phases act on work that already shipped a PR and are not
+    // gated here.
+    if (phase === 'implement') {
+      const issue = await octokit.issues.get({ owner, repo, issue_number });
+      const gate = await evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: issue.data.body,
+        labels: issue.data.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))),
+      });
+      if (!gate.allow) {
+        return { error: `work cannot start — ${gate.message}` };
+      }
+    }
 
     await octokit.actions.createWorkflowDispatch({
       owner,

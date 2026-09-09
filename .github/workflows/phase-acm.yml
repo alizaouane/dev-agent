@@ -23,6 +23,11 @@ name: dev-agent · phase-acm
 on:
   workflow_call:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         required: true
         type: number
@@ -39,6 +44,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         description: 'Issue number'
         required: true
@@ -96,6 +106,18 @@ jobs:
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
+
+      # §22.1 — pre-flight budget gate. Scouts are cron-triggered and unattended,
+      # which is precisely how the June and July 2026 spend incidents happened:
+      # an alert-only cap noticed the drain a day late. This refuses the run.
+      - name: Budget gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+          PHASE: acm
+          BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Convert .dev-agent.yml to JSON
         env:
@@ -325,6 +347,23 @@ jobs:
           # any test files that the implement-agent would later mutate.
           claude_args: '--max-turns 80 --model claude-sonnet-4-6 --allowedTools Read Write Edit Glob Grep Bash(npm test:*) Bash(npx vitest:*) Bash(pytest:*) Bash(git add tests/acm/*) Bash(git add .dev-agent/*) Bash(sha256sum:*) Bash(node:*)'
           show_full_output: 'true'
+
+      # Record what this run actually cost. Before this existed the only
+      # telemetry any workflow posted was a stub with `Cost: $0`, so
+      # month-to-date spend always read zero and both the nightly watchdog and
+      # the budget gate were decorative. always() so a failed or timed-out run
+      # still records the spend it incurred.
+      - name: Emit telemetry
+        if: always() && inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PHASE: acm
+          MODEL: claude-sonnet-4-6
+          AGENT_STATUS: ${{ steps.agent.outcome == 'success' && 'success' || 'blocked' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Live mode — verify ACM manifest + tests are red
         if: inputs.invocation_mode == 'live' && steps.extract.outputs.ok == 'true'

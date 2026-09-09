@@ -894,6 +894,155 @@ export const TEMPLATE_SESSION_LOG_MD = `# Session Log
 `;
 
 /**
+ * The fixer. Without it, `@claude` on a consumer PR triggers nothing — the reusable workflow carries comment triggers only inside dev-agent itself.
+ *
+ * Embedded copy of `examples/web-app-template/.github/workflows/dev-agent-pr-review.yml`; the drift test in
+ * `tests/unit/wire-up-template-drift.test.ts` keeps the two byte-aligned.
+ */
+export const TEMPLATE_PR_REVIEW_WORKFLOW_YML = `name: dev-agent · pr-review
+run-name: \${{ github.event_name }} → pr-review
+
+# The fixer. When a reviewer — a person, a review bot, or the pr-autopilot
+# sweep — mentions \`@claude\` on a dev-agent PR, this reads the comment,
+# addresses it on the same branch, and pushes.
+#
+# Without this file in your repo, \`@claude\` on a PR does nothing: the reusable
+# workflow it calls only carries comment triggers inside dev-agent's own
+# repository. That was the gap that left consumer PRs to be driven by hand.
+#
+# Triggers:
+#   - issue_comment.created           — top-level PR comments
+#   - pull_request_review_comment     — inline file comments
+#   - pull_request_review.submitted   — a review with a body
+#
+# Only PRs on dev-agent-owned branches proceed; the reusable workflow enforces
+# that itself and exits quietly on anything else.
+#
+# SECURITY: comment, review and branch text are never interpolated into a
+# \`run:\` block here — this wrapper has no run blocks, and the only value it
+# passes through is a PR number, which is an integer.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request_review:
+    types: [submitted]
+  pull_request_review_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  pr-review:
+    # Two guards, for two different problems.
+    #
+    # \`claude[bot]\` is excluded so the fixer's own comments cannot wake it
+    # again — that loop would spend the budget cap in an afternoon.
+    #
+    # \`author_association\` authorizes the person. Mentioning the fixer starts
+    # a model run that edits and pushes to a branch, so it cannot be something
+    # any passer-by can trigger by commenting. Bot reviewers (CodeRabbit,
+    # Codex) and the autopilot report as NONE, so they are allowed by login
+    # rather than by association; every other actor must be an owner, member,
+    # or collaborator. Same allowlist the /swarm-override handler uses.
+    if: |
+      (
+        github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request != null &&
+        contains(github.event.comment.body, '@claude') &&
+        github.event.comment.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)
+        )
+      ) ||
+      (
+        github.event_name == 'pull_request_review_comment' &&
+        contains(github.event.comment.body, '@claude') &&
+        github.event.comment.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)
+        )
+      ) ||
+      (
+        github.event_name == 'pull_request_review' &&
+        contains(github.event.review.body, '@claude') &&
+        github.event.review.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.review.user.login)
+        )
+      )
+    uses: alizaouane/dev-agent/.github/workflows/phase-pr-review.yml@v1
+    with:
+      pr_number: \${{ github.event.issue.number || github.event.pull_request.number }}
+    secrets:
+      ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
+`;
+
+/**
+ * The sweep that wakes the fixer, so a red check or an unread review does not wait for someone to notice it.
+ *
+ * Embedded copy of `examples/web-app-template/.github/workflows/dev-agent-pr-autopilot.yml`; the drift test in
+ * `tests/unit/wire-up-template-drift.test.ts` keeps the two byte-aligned.
+ */
+export const TEMPLATE_PR_AUTOPILOT_WORKFLOW_YML = `name: dev-agent · pr-autopilot
+run-name: \${{ github.event_name }} → pr-autopilot sweep
+
+# Keeps dev-agent's pull requests moving without anyone watching them.
+#
+# Every 20 minutes it looks at the open PRs on dev-agent-owned branches and
+# asks the question the operator would otherwise have to remember to ask: is
+# anything red, unreviewed, or unresolved? When something is, it wakes the
+# fixer by posting \`@claude\` on that PR, which is the trigger
+# \`dev-agent-pr-review.yml\` already listens for.
+#
+# It touches only \`feat/dev-agent-issue-*\` and \`dev-agent/spec-*\` branches,
+# never a draft, and never a PR labelled \`autopilot:off\`. It makes no model
+# call of its own; the fixer it wakes runs the usual pre-flight budget gate.
+# After four attempts on an unchanged set of blockers it stands down and says
+# so on the PR, so a stuck PR stops costing anything and is not silently
+# abandoned.
+#
+# To pause it: disable this workflow in the Actions tab, or label the PR
+# \`autopilot:off\`.
+#
+# Requires: \`dev-agent-pr-review.yml\` in this repo (the fixer this wakes).
+
+on:
+  schedule:
+    - cron: '*/20 6-20 * * 1-5'
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Triage only this PR (blank sweeps every open PR)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Report what would be posted, without posting'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  autopilot:
+    uses: alizaouane/dev-agent/.github/workflows/pr-autopilot.yml@v1
+    with:
+      pr_number: \${{ inputs.pr_number }}
+      dry_run: \${{ inputs.dry_run || false }}
+`;
+
+/**
  * Files to drop into a target repo when wiring it up. Order doesn't matter
  * for the GitHub API, but is significant for human review of the resulting
  * PR — we put `.dev-agent.yml` first so reviewers see the config before
@@ -931,6 +1080,14 @@ export const WIRE_UP_FILES: Array<{ path: string; content: string }> = [
   {
     path: '.github/workflows/dev-agent-swarm-override.yml',
     content: TEMPLATE_SWARM_OVERRIDE_WORKFLOW_YML,
+  },
+  {
+    path: '.github/workflows/dev-agent-pr-review.yml',
+    content: TEMPLATE_PR_REVIEW_WORKFLOW_YML,
+  },
+  {
+    path: '.github/workflows/dev-agent-pr-autopilot.yml',
+    content: TEMPLATE_PR_AUTOPILOT_WORKFLOW_YML,
   },
   { path: '.dev-agent/pm.md', content: TEMPLATE_PM_MD },
   { path: 'SESSION_LOG.md', content: TEMPLATE_SESSION_LOG_MD },
@@ -974,6 +1131,16 @@ export const INSTALLABLE_WORKFLOWS = {
     path: '.github/workflows/dev-agent-swarm-override.yml',
     content: TEMPLATE_SWARM_OVERRIDE_WORKFLOW_YML,
     label: 'swarm-override comment handler (per-repo escape hatch)',
+  },
+  'pr-review': {
+    path: '.github/workflows/dev-agent-pr-review.yml',
+    content: TEMPLATE_PR_REVIEW_WORKFLOW_YML,
+    label: 'PR fixer (@claude on a PR addresses review findings and CI)',
+  },
+  'pr-autopilot': {
+    path: '.github/workflows/dev-agent-pr-autopilot.yml',
+    content: TEMPLATE_PR_AUTOPILOT_WORKFLOW_YML,
+    label: 'PR autopilot (wakes the fixer on red CI or unread review)',
   },
 } as const;
 

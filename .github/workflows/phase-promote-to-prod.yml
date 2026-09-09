@@ -3,6 +3,11 @@ name: dev-agent · phase-promote-to-prod
 on:
   workflow_call:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         required: true
         type: number
@@ -19,6 +24,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         description: 'Issue number'
         required: true
@@ -62,6 +72,20 @@ jobs:
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
+
+      # §22.1 — pre-flight budget gate. The nightly watchdog reports spend
+      # AFTER it happens, which is monitoring; this refuses to start the phase
+      # when the month's budget is gone or this phase would cross it. Placed
+      # before any model call so a refusal costs nothing. Fails closed: if
+      # spend cannot be read while a budget is configured, the run stops.
+      - name: Budget gate
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path }}
+          PHASE: promote_to_prod
+          BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Run prod promote chain (stub)
         env:

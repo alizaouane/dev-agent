@@ -17,6 +17,14 @@ on:
       url:
         description: Deployment URL to verify
         required: true
+  # Flag-flip trigger (§13.5). A dark feature's first real execution must not be
+  # a human clicking weeks after merge — that manual step is doing a smoke
+  # test's job, unreliably. Wire the flag-flip path to fire this, e.g.
+  #   gh api repos/:owner/:repo/dispatches -f event_type=flag-flip \
+  #     -F 'client_payload[url]=https://staging.example' \
+  #     -F 'client_payload[feature]=billing-v2'
+  repository_dispatch:
+    types: [flag-flip]
 
 permissions:
   contents: read
@@ -28,6 +36,7 @@ jobs:
     # proves nothing about staging or production wiring.
     if: >-
       github.event_name == 'workflow_dispatch' ||
+      github.event_name == 'repository_dispatch' ||
       (github.event.deployment_status.state == 'success' &&
        !contains(github.event.deployment_status.environment, 'preview'))
     runs-on: ubuntu-latest
@@ -36,8 +45,28 @@ jobs:
 
       - name: Resolve deployment URL
         id: url
+        # client_payload is caller-supplied. Interpolating it into the script
+        # with ${{ }} splices it in BEFORE the shell parses the line, so a
+        # payload carrying shell metacharacters would execute on the runner.
+        # Passed through env: and quoted, it is only ever data.
+        env:
+          IN_URL: ${{ github.event.inputs.url }}
+          CP_URL: ${{ github.event.client_payload.url }}
+          DS_URL: ${{ github.event.deployment_status.environment_url }}
+          CP_FEATURE: ${{ github.event.client_payload.feature }}
         run: |
-          URL="${{ github.event.inputs.url || github.event.deployment_status.environment_url }}"
+          URL="${IN_URL:-${CP_URL:-${DS_URL:-}}}"
+          # Only a plain https URL may reach curl — no credentials, no shell
+          # metacharacters, no alternate schemes.
+          if [ -n "$URL" ] && ! printf '%s' "$URL" | grep -qE '^https://[A-Za-z0-9._-]+(:[0-9]+)?(/[A-Za-z0-9._~%/-]*)?$'; then
+            echo "::error::Refusing to probe a URL that is not a plain https address."
+            exit 1
+          fi
+          FEATURE="$CP_FEATURE"
+          if [ -n "$FEATURE" ]; then
+            # printf %s, never a format string built from caller input
+            printf '::notice::flag-flip verification for feature %s\n' "$FEATURE"
+          fi
           if [ -z "$URL" ]; then
             echo "::notice::No deployment URL on this event — nothing to verify."
             echo "skip=true" >> "$GITHUB_OUTPUT"
@@ -52,12 +81,75 @@ jobs:
           VERCEL_BYPASS: ${{ secrets.DEPLOY_VERIFY_BYPASS }}
         run: |
           URL="${{ steps.url.outputs.url }}"
+          # The probe path is repo-configurable: many repos already expose an
+          # equivalent endpoint under a different path. Declared as
+          # `health_endpoint:` in the conformance stamp.
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          EP=$(sed -n 's|^health_endpoint:[[:space:]]*||p' "$STAMP" 2>/dev/null \
+                | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
+          DECLARED=1
+          if [ -z "$EP" ]; then EP=/api/health/env; DECLARED=0; fi
+          echo "probing ${URL}${EP} (declared=$DECLARED, stamp=$STAMP)"
           BYPASS=""
           if [ -n "${VERCEL_BYPASS:-}" ]; then
             BYPASS="-H x-vercel-protection-bypass: ${VERCEL_BYPASS}"
           fi
-          # -L: a redirect to the real endpoint is normal; judge the FINAL code
-          CODE=$(curl -sL $BYPASS -o /tmp/envhealth.json -w '%{http_code}' --max-time 30 "$URL$EP" || echo 000)
+          # -L: a redirect to the real endpoint is normal; judge the FINAL response.
+          # Capture the final URL and content type too — an SSO login wall answers
+          # 200 with HTML, so the status code alone cannot tell us we were served
+          # the endpoint rather than a sign-in page.
+          READ=$(curl -sL $BYPASS -o /tmp/envhealth.json \
+                   -w '%{http_code}|%{content_type}|%{url_effective}' \
+                   --max-time 30 "$URL$EP" || echo '000||')
+          CODE="${READ%%|*}"
+          REST="${READ#*|}"
+          CTYPE="${REST%%|*}"
+          FINAL="${REST#*|}"
+          # A transport failure never reached a host at all: curl reports 000
+          # and may leave url_effective empty or unchanged. That is a broken
+          # probe, not a redirect, and must not be dressed up as an auth wall.
+          if [ "$CODE" = "000" ]; then
+            echo "::error::Could not reach ${URL}${EP} at all (connection failed or timed out). This is a transport failure, not deployment protection."
+            exit 1
+          fi
+
+          # Compare authorities, not raw strings: an https URL is the same host
+          # whether or not it spells out the default port, differs in case, or
+          # carries a trailing dot. Treating those as "redirected elsewhere"
+          # would report a wall that does not exist and skip the smokes.
+          canon_authority() {
+            printf '%s' "$1" \
+              | sed -E 's|^https?://||; s|/.*$||; s|^[^@]*@||' \
+              | tr 'A-Z' 'a-z' \
+              | sed -E 's|:0*443$||; s|\.$||'
+          }
+          PROBE_HOST=$(canon_authority "$URL")
+          FINAL_HOST=$(canon_authority "$FINAL")
+
+          # An auth wall is only *confirmed* by being sent somewhere else: a
+          # redirect off the deployment host (Vercel SSO answers 200 + HTML at
+          # vercel.com). A non-JSON body on the deployment's own host is NOT
+          # proof of a wall — the endpoint may simply be missing or broken, and
+          # calling that "unreachable" would skip the smokes and let a broken
+          # deployment pass. Same-host non-JSON is handled below, by declaration.
+          WALLED=0
+          [ "$FINAL_HOST" = "$PROBE_HOST" ] || WALLED=1
+          SAME_HOST_NON_JSON=0
+          case "$CTYPE" in *json*) ;; *) [ "$WALLED" = "0" ] && SAME_HOST_NON_JSON=1 ;; esac
+          # Classify BEFORE branching on status. A wall answers with whatever
+          # status it likes — 200 on a login page, 401, even 404 — so reading
+          # the status first mislabels every one of those. Being sent off the
+          # deployment host is the signal that survives all of them.
+          if [ "$WALLED" = "1" ]; then
+            if [ -n "${VERCEL_BYPASS:-}" ]; then
+              echo "::error::Probe was redirected to '$FINAL' even with the bypass secret set."
+              exit 1
+            fi
+            echo "::warning::Probe was redirected off the deployment to '$FINAL' (HTTP $CODE) — a wall in front of the whole deployment. Env-parity UNVERIFIED and golden-path smokes skipped; add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
+            echo "unreachable=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           case "$CODE" in
             404)
               # undeclared: this repo has not adopted the probe yet (dormant).
@@ -68,8 +160,17 @@ jobs:
                 exit 1
               fi
               echo "::warning::No health endpoint declared — env-parity UNVERIFIED. Add an endpoint and set 'health_endpoint:' in $STAMP (§13.5)."
-              echo "unverified=true" >> "$GITHUB_OUTPUT"
               exit 0 ;;
+            200)
+              if [ "$SAME_HOST_NON_JSON" = "1" ]; then
+                if [ "$DECLARED" = "1" ]; then
+                  echo "::error::Declared health_endpoint '$EP' answered 200 with content-type '$CTYPE' instead of JSON — the endpoint is not honouring its contract."
+                  exit 1
+                fi
+                echo "::warning::No health endpoint declared and ${URL}${EP} is not JSON — env-parity UNVERIFIED. The deployment is reachable, so golden-path smokes still run (§13.5)."
+                exit 0
+              fi
+              ;;
             401|403)
               # an auth wall in front of the URL: we cannot read the probe, which
               # is not the same as the deployment being wrong. Close this gap by
@@ -79,12 +180,14 @@ jobs:
                 echo "::error::Env-parity probe returned $CODE even with the bypass secret set."
                 exit 1
               fi
-              echo "::warning::Env-parity probe blocked (HTTP $CODE). UNVERIFIED — add a DEPLOY_VERIFY_BYPASS secret to make this a real gate (§13.5)."
-              echo "unverified=true" >> "$GITHUB_OUTPUT"
+              # Reaching here means the deployment ITSELF refused: the
+              # endpoint is access-controlled, which some repos do deliberately.
+              # That says nothing about whether public routes work, so the
+              # smokes must still run — an off-host wall was already handled.
+              echo "::warning::Env-parity probe requires auth (HTTP $CODE) — UNVERIFIED. Add a DEPLOY_VERIFY_BYPASS secret, or expose a names-only endpoint, to make this a real gate (§13.5). Golden-path smokes still run."
               exit 0 ;;
-            200) : ;;
             *)
-              echo "::error::Env-parity probe failed: HTTP $CODE from $URL/api/health/env"
+              echo "::error::Env-parity probe failed: HTTP $CODE from ${URL}${EP}"
               cat /tmp/envhealth.json 2>/dev/null || true
               exit 1 ;;
           esac
@@ -97,10 +200,10 @@ jobs:
           RC=$?
           set -e
           if [ $RC -eq 3 ]; then
-            echo "::error::/api/health/env must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
+            echo "::error::${EP} must return a JSON object with a \"missing\" array (top-level or under \"data\"); got:"
             cat /tmp/envhealth.json; exit 1
           elif [ $RC -ne 0 ]; then
-            echo "::error::/api/health/env returned unparseable JSON:"
+            echo "::error::${EP} returned unparseable JSON:"
             cat /tmp/envhealth.json; exit 1
           fi
           if [ -n "$MISSING" ]; then
@@ -109,16 +212,35 @@ jobs:
           fi
           echo "✅ env-parity: every declared var is set in this deployment"
 
-      # if the probe could not be read, the smoke would hit the same wall
+      # Skipped only when the deployment itself could not be reached (an auth
+      # wall would answer the smoke the same way). A repo with no health
+      # endpoint has unknown parity but a perfectly reachable deployment, so
+      # golden-path smokes can be adopted independently of the parity probe.
       - name: Golden-path smoke (deployed)
-        if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unverified != 'true'
+        if: steps.url.outputs.skip != 'true' && steps.envparity.outputs.unreachable != 'true'
         env:
+          # Test runners disagree on the name of "the URL under test", and a
+          # name we fail to export means the "deployed" smoke quietly runs
+          # against localhost and passes — proving nothing. Export the common
+          # spellings; a repo using another can declare `smoke_url_env:` in the
+          # stamp, and every deployed spec should assert it is not on localhost.
           DEPLOY_URL: ${{ steps.url.outputs.url }}
-          # playwright configs conventionally read PLAYWRIGHT_BASE_URL; without
-          # it the "deployed" smoke would quietly run against localhost
           PLAYWRIGHT_BASE_URL: ${{ steps.url.outputs.url }}
           BASE_URL: ${{ steps.url.outputs.url }}
+          E2E_BASE_URL: ${{ steps.url.outputs.url }}
+          TEST_BASE_URL: ${{ steps.url.outputs.url }}
         run: |
+          # Validated before the early exit below: a typo'd name must be caught
+          # now, not lie dormant until the repo adds its first spec.
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          EXTRA=$(sed -n 's|^smoke_url_env:[[:space:]]*||p' "$STAMP" 2>/dev/null \
+                   | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
+          if [ -n "$EXTRA" ]; then
+            case "$EXTRA" in
+              [A-Za-z_][A-Za-z_0-9]*) export "$EXTRA=$DEPLOY_URL"; echo "exported $EXTRA" ;;
+              *) echo "::error::smoke_url_env '$EXTRA' is not a valid variable name"; exit 1 ;;
+            esac
+          fi
           if ! ls e2e/smoke/*.deployed.spec.* >/dev/null 2>&1; then
             echo "::warning::No e2e/smoke/*.deployed.spec.* yet — golden paths unverified (§13.5, Tier 2)."
             exit 0

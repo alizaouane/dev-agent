@@ -5,7 +5,28 @@ export type PhaseName =
   | 'promote_to_prod'
   | 'smoke_verify'
   | 'scout_digest'
-  | 'rollback';
+  | 'rollback'
+  // Phases that ship as workflows but had no name here, so their spend was
+  // attributed to `implement` and projected against its much larger cap.
+  | 'swarm_review'
+  | 'acm'
+  | 'tier2_smoke';
+
+/** Every phase name, for runtime validation of an untrusted string. */
+export const PHASE_NAMES: readonly PhaseName[] = [
+  'spec_brainstorm', 'implement', 'staging_deploy', 'promote_to_prod',
+  'smoke_verify', 'scout_digest', 'rollback', 'swarm_review', 'acm', 'tier2_smoke',
+] as const;
+
+/**
+ * Narrow an arbitrary string to a {@link PhaseName}.
+ *
+ * @param v - Candidate phase name, typically from an env var.
+ * @returns The phase name, or undefined when it is not one.
+ */
+export function asPhaseName(v: string): PhaseName | undefined {
+  return (PHASE_NAMES as readonly string[]).includes(v) ? (v as PhaseName) : undefined;
+}
 
 export type PhaseStatus = 'success' | 'blocked' | 'aborted';
 

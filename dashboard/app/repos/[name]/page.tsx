@@ -20,8 +20,12 @@ import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { StartFromSpecPanel } from '@/components/start-from-spec-panel';
 import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
-import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
+import { RepoReadiness } from '@/components/repo-readiness';
+import { assessRepo, summarizeReadiness } from '@/lib/onboarding';
+import { probeRepoReadiness } from '@/lib/onboarding-probe';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
+import { PushSecretsPanel } from '@/components/push-secrets-panel';
+import { resolveSecrets } from '@/lib/propagated-secrets';
 import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
@@ -45,20 +49,6 @@ async function isWorkflowInstalled(
   }
 }
 
-async function probeFile(
-  octokit: Awaited<ReturnType<typeof getOctokit>>,
-  owner: string,
-  repo: string,
-  path: string,
-  ref: string,
-): Promise<boolean> {
-  try {
-    await octokit.repos.getContent({ owner, repo, path, ref });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export default async function RepoPage(props: { params: Promise<{ name: string }> }) {
   const { name: rawName } = await props.params;
@@ -111,22 +101,23 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       : Promise.resolve({ specs: [], plans: [] }),
   ]);
 
-  const [pmMdPresent] = await Promise.all([
-    repo.wired_up
-      ? probeFile(octokit, repo.owner, repo.name, '.dev-agent/pm.md', repo.default_branch)
-      : Promise.resolve(false),
-  ]);
-  const setupSteps: SetupSteps = {
-    wired: repo.wired_up,
-    pm_md_present: pmMdPresent,
-    scout_configured: unfinishedWorkInstalled,
-    first_proposal: proposals.length > 0,
-    first_feature_shipped: workspace.recentlyShipped.length > 0,
-  };
+  // Probed, not inferred. The previous checklist ticked boxes from earlier
+  // steps having run, which reports what should be true rather than what is —
+  // the same shape as a gate that passes without checking.
+  const readinessRows = assessRepo(
+    await probeRepoReadiness(
+      octokit,
+      repo.owner,
+      repo.name,
+      repo.default_branch,
+      repo.wired_up,
+    ),
+  );
+  const readiness = summarizeReadiness(readinessRows);
 
   return (
     <div className="flex flex-col gap-10">
-      <SetupChecklist repoName={name} steps={setupSteps} />
+      <RepoReadiness repoName={name} rows={readinessRows} verdict={readiness} />
       {/* Band 1 — Repo header */}
       <div>
         <PageHeader
@@ -340,6 +331,54 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                 />
               )}
             </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">PR fixer</h3>
+              {readinessRows.find((r) => r.id === 'pr_review')?.state === 'met' ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. Mentioning <code>@claude</code> on a dev-agent PR
+                  reads the review findings and CI failures, fixes them on the same
+                  branch, and pushes.
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="pr-review"
+                  title="PR fixer"
+                  description="Installs dev-agent-pr-review.yml. Without it, mentioning the agent on a pull request does nothing at all — the reusable workflow's comment triggers only exist inside dev-agent's own repo."
+                />
+              )}
+            </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">PR autopilot</h3>
+              {readinessRows.find((r) => r.id === 'pr_autopilot')?.state === 'met' ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. Every 20 minutes it checks the open dev-agent PRs and
+                  wakes the fixer on anything red, unreviewed, or unresolved. Label a
+                  PR <code>autopilot:off</code> to pause it there.
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="pr-autopilot"
+                  title="PR autopilot"
+                  description="Installs dev-agent-pr-autopilot.yml so a failing check or an unread review wakes the fixer on its own, instead of waiting for you to notice."
+                />
+              )}
+            </div>
+            <PushSecretsPanel
+              repo={name}
+              // Resolved, not re-derived: a shared secret can be overridden per
+              // repo, so the variable in play is not always the bare name, and
+              // a panel that guessed would send the operator to the wrong one.
+              // Only names and whether a value was found cross to the client.
+              sources={resolveSecrets(process.env, name).map((s) => ({
+                name: s.name,
+                envVar: s.sourceVar,
+                purpose: s.purpose,
+                perRepo: s.perRepo,
+                configured: s.value !== undefined,
+              }))}
+            />
             <div className="rounded-md border border-border bg-card p-5">
               <h3 className="mb-1 text-base font-semibold">/swarm-override handler</h3>
               {swarmOverrideInstalled ? (

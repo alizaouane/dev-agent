@@ -60,7 +60,7 @@ jobs:
         run: |
           STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
           # strip the documented inline comment, or 'enforce' never matches
-          MODE=$(sed -n 's/^sast:[[:space:]]*//p' "$STAMP" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | tr -d "[:space:]")
+          MODE=$(sed -n 's/^sast:[[:space:]]*//p' "$STAMP" 2>/dev/null | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs)
           case "$MODE" in enforce|warn) ;; *) MODE=warn ;; esac
           set +e
           semgrep scan --config p/default --severity ERROR --error --quiet --metrics off .
@@ -71,3 +71,134 @@ jobs:
             echo "::error::semgrep found ERROR-severity issues (sast: enforce in .standard.yml)"; exit $RC
           fi
           echo "::warning::semgrep found ERROR-severity issues — advisory while .standard.yml has 'sast: warn'. Fix the baseline, then set 'sast: enforce' (§25)."
+
+  audit:
+    name: audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      # Corepack is enabled TWICE, deliberately, because two different things
+      # need it at two different moments:
+      #   before — setup-node activates the package.json "packageManager" field
+      #     itself, and fails with "Unable to locate executable file: pnpm" if
+      #     corepack has not already provided the shim;
+      #   after  — the shim must then be re-bound to the Node just installed,
+      #     not the runner's preinstalled one.
+      # Enabling it only before, or only after, fixes one and breaks the other.
+      - name: Enable corepack (for setup-node's packageManager activation)
+        run: corepack enable || true
+
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          # 22, not 20: this job only runs `npm audit` / `pnpm audit`, never the
+          # repo's own build, so it needs a Node new enough for the package
+          # manager rather than one matching the app. pnpm 11 uses builtins Node
+          # 20 lacks, and failed here with ERR_UNKNOWN_BUILTIN_MODULE.
+          node-version: '22'
+
+      # Re-bind to the Node just installed. Fails closed: a pnpm repo whose
+      # package manager cannot be provisioned must not silently fall through to
+      # an unaudited pass.
+      - name: Enable corepack (bind to the installed Node)
+        run: |
+          if [ -f pnpm-lock.yaml ] || grep -q '"packageManager"[[:space:]]*:[[:space:]]*"pnpm' package.json 2>/dev/null; then
+            corepack enable || { echo "::error::corepack could not provide pnpm for this repo; the audit would run on nothing."; exit 1; }
+            pnpm --version >/dev/null || { echo "::error::pnpm is unavailable after corepack enable."; exit 1; }
+          else
+            corepack enable || true
+          fi
+
+      # A vulnerability RATCHET, not a threshold. §21 says block on
+      # high/critical CVEs, but a fleet with an existing backlog cannot adopt a
+      # flat gate — it would red-build everything on day one and get switched
+      # off within a week (§25.1). So: the count may never RISE. A PR that
+      # introduces a new high or critical fails; the existing backlog does not
+      # block; and every fix lowers the ceiling permanently.
+      - name: High/critical vulnerability ratchet
+        run: |
+          # Audit every manifest, not just the root. A monorepo whose packages
+          # live under apps/* has no root package.json, and auditing only the
+          # root would pass silently forever while the vulnerabilities sit in
+          # the workspaces — a green gate that checked nothing.
+          # Every directory that owns a LOCKFILE is audited. A workspace member
+          # without its own lockfile is covered by its root and is skipped; an
+          # independent nested project with its own lockfile is not covered by
+          # anything and must be audited separately. Collapsing everything to
+          # "." for a pnpm repo would have skipped exactly those.
+          # NUL-delimited throughout: a manifest path containing a space would
+          # otherwise be split into two nonexistent directories, each silently
+          # contributing nothing to the total.
+          git ls-files -z '*package.json' 'package.json' \
+            | grep -zv node_modules \
+            | while IFS= read -r -d '' f; do printf '%s\0' "$(dirname "$f")"; done \
+            | sort -zu > /tmp/dirs.z
+          : > /tmp/manifests.z
+          while IFS= read -r -d '' d; do
+            if [ -f "$d/pnpm-lock.yaml" ] || [ -f "$d/package-lock.json" ] || [ -f "$d/yarn.lock" ]; then
+              printf '%s\0' "$d" >> /tmp/manifests.z
+            fi
+          done < /tmp/dirs.z
+          MANIFESTS=$(tr '\0' '\n' < /tmp/manifests.z)
+          if [ -z "$MANIFESTS" ]; then
+            echo "::warning::No package manifest found anywhere in this repo — the dependency audit checked nothing."
+            exit 0
+          fi
+
+          TOTAL=0; UNPARSED=0
+          while IFS= read -r -d '' dir; do
+            # Dispatch by lockfile type. Running `npm audit` against a yarn.lock
+            # project reports on a lockfile npm did not write, so the number
+            # would be wrong rather than merely missing.
+            ( cd "$dir" || exit 0
+              if [ -f pnpm-lock.yaml ]; then
+                pnpm audit --json > /tmp/audit.json 2>/dev/null || true
+              elif [ -f yarn.lock ]; then
+                corepack yarn npm audit --json --all --recursive > /tmp/audit.json 2>/dev/null \
+                  || yarn npm audit --json --all --recursive > /tmp/audit.json 2>/dev/null \
+                  || echo '{}' > /tmp/audit.json
+              else
+                npm audit --json > /tmp/audit.json 2>/dev/null || true
+              fi ) || true
+            N=$(jq -r 'if .metadata.vulnerabilities then ((.metadata.vulnerabilities.high//0)+(.metadata.vulnerabilities.critical//0)) elif .advisories then ([.advisories[]|select(.severity=="high" or .severity=="critical")]|length) else -1 end' /tmp/audit.json 2>/dev/null || echo -1)
+            [ -n "$N" ] || N=-1
+            if [ "$N" = "-1" ]; then UNPARSED=1; else
+              echo "  $dir: $N high/critical"
+              TOTAL=$((TOTAL + N))
+            fi
+          done < /tmp/manifests.z
+
+          COUNT=$TOTAL
+          [ "$UNPARSED" = "1" ] && COUNT=-1
+
+
+          STAMP=.standard.yml; [ -f "$STAMP" ] || STAMP=.bmad.yml
+          BASE=$(sed -n 's|^audit_baseline:[[:space:]]*||p' "$STAMP" 2>/dev/null                   | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs)
+
+          # An unparseable audit is not evidence of safety. With a baseline
+          # configured the gate fails closed rather than waving the PR through
+          # on a number it could not read.
+          if [ "$COUNT" = "-1" ]; then
+            if [ -n "$BASE" ]; then
+              echo "::error::Could not parse the audit output for at least one manifest. Refusing to pass a ratchet on an unknown count."
+              exit 1
+            fi
+            echo "::warning::Could not parse audit output, and no audit_baseline is set — nothing to compare against."
+            exit 0
+          fi
+
+          echo "high+critical advisories: $COUNT"
+          if [ -z "$BASE" ]; then
+            echo "::warning::No audit_baseline in $STAMP. Set 'audit_baseline: $COUNT' to freeze the ceiling — until then this is advisory and the count can drift upward unnoticed (§21)."
+            exit 0
+          fi
+          echo "baseline: $BASE"
+
+          if [ "$COUNT" -gt "$BASE" ]; then
+            echo "::error::High/critical advisories rose from $BASE to $COUNT. This change introduces new vulnerable dependencies; fix them or justify raising audit_baseline in $STAMP."
+            exit 1
+          fi
+          if [ "$COUNT" -lt "$BASE" ]; then
+            echo "::notice::Advisories fell from $BASE to $COUNT — lower 'audit_baseline' to $COUNT in $STAMP so the gain is locked in."
+          fi
+          echo "✅ no increase in high/critical advisories"

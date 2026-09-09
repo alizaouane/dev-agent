@@ -156,7 +156,7 @@ fi
 # # warn|enforce` yields the whole line and silently never matches "enforce".
 stamp_value() { # $1 = key
   sed -n "s/^$1:[[:space:]]*//p" "${STAMP:-/dev/null}" 2>/dev/null \
-    | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d '"' | xargs 2>/dev/null || true
+    | head -1 | sed 's/[[:space:]]*#.*$//' | tr -d "\"'" | xargs 2>/dev/null || true
 }
 # stamp_mode <key> <default>
 # Read a gate-promotion mode (§25.1) from the stamp and validate it. Prints
@@ -173,14 +173,28 @@ stamp_mode() { # $1 = key, $2 = default — only warn|enforce are valid
 }
 ENV_MODULE="$(stamp_value env_module)"
 ENV_MODE="$(stamp_mode env_contract warn)"
+# Optional space-separated path prefixes limiting the gate to the DEPLOYED
+# surface. A repo whose CLI tools read per-invocation inputs (BASE_REF, MODE,
+# CI runner vars) has no deployment to mis-wire there — counting those files
+# makes the gate unadoptable, and an unadoptable gate gets switched off.
+ENV_SCOPE="$(stamp_value env_scope)"
 
 if [[ -n "$ENV_MODULE" && ! -f "$ENV_MODULE" ]]; then
   fail "env module exists" "'.standard.yml' declares env_module: $ENV_MODULE but that file is missing"
 fi
 
-RAW_COUNT=0; RAW_LIST=""
+RAW_COUNT=0; RAW_LIST=""; SCOPE_MATCHED=0
 while IFS= read -r f; do
   [[ -n "$f" ]] || continue
+  # Scope membership is decided BEFORE the module is skipped: a scope whose
+  # only member is the env module itself has matched, and must not be reported
+  # as a scope that matches nothing.
+  if [[ -n "$ENV_SCOPE" ]]; then
+    IN_SCOPE=0
+    for pfx in $ENV_SCOPE; do [[ "$f" == $pfx* ]] && { IN_SCOPE=1; break; }; done
+    [[ $IN_SCOPE -eq 1 ]] || continue
+    SCOPE_MATCHED=$((SCOPE_MATCHED+1))
+  fi
   [[ -n "$ENV_MODULE" && "$f" == "$ENV_MODULE" ]] && continue
   case "$f" in
     *__tests__*|*/e2e/*|e2e/*|*/tests/*|tests/*|*/test/*|test/*|*__mocks__*|*fixtures*) continue ;;
@@ -188,16 +202,26 @@ while IFS= read -r f; do
     *.config.*|*/scripts/*|scripts/*|*/supabase/functions/_shared/env*) continue ;;
   esac
   # any access form counts: .X, ["X"], and `= process.env` destructuring
-  N="$(grep -cE 'process\.env' "$f" 2>/dev/null)" || N=0
+  # NODE_ENV is set by the toolchain in every environment, so it can never be
+  # "missing from this deployment" — the failure this gate exists to catch.
+  # Counting it produces false positives that make the gate look noisy.
+  N="$(grep -oE 'process\.env(\.[A-Za-z_0-9]+|\[[[:space:]]*[\"'\'']?[A-Za-z_0-9]+[\"'\'']?[[:space:]]*\])?([^A-Za-z_0-9]|$)' "$f" 2>/dev/null \
+        | grep -vE 'process\.env(\.NODE_ENV|\[[[:space:]]*[\"'\'']?NODE_ENV[\"'\'']?[[:space:]]*\])([^A-Za-z_0-9]|$)' \
+        | grep -c . )" || N=0
   [[ "${N:-0}" -gt 0 ]] && { RAW_COUNT=$((RAW_COUNT+1)); RAW_LIST="$RAW_LIST $f"; }
 done < <(git ls-files -- '*.ts' '*.tsx' '*.js' '*.jsx' '*.mjs' 2>/dev/null)
 
-if [[ $RAW_COUNT -eq 0 ]]; then
-  pass "env contract (no raw process.env reads outside the module)"
+# A scope that matches nothing silently disables the gate: RAW_COUNT stays 0
+# and `enforce` reports a clean contract without having scanned anything. A
+# typo'd prefix must fail loudly, not pass quietly.
+if [[ -n "$ENV_SCOPE" && $SCOPE_MATCHED -eq 0 ]]; then
+  fail "env contract [scope: $ENV_SCOPE]" "the scope matched no source files — a typo'd or stale prefix silently disables this gate. Fix or remove env_scope in the stamp."
+elif [[ $RAW_COUNT -eq 0 ]]; then
+  pass "env contract${ENV_SCOPE:+ [scope: $ENV_SCOPE]} (no raw process.env reads outside the module)"
 elif [[ "$ENV_MODE" == "enforce" ]]; then
   fail "env contract (enforce)" "$RAW_COUNT file(s) read process.env directly:$(echo "$RAW_LIST" | cut -c1-200) — route them through ${ENV_MODULE:-a validated env module}"
 else
-  warn "env contract ($RAW_COUNT file(s) read process.env directly)" "advisory while .standard.yml has 'env_contract: warn'. Adopt a validated env module, migrate the reads, then set 'env_contract: enforce' (§13.5)"
+  warn "env contract${ENV_SCOPE:+ [scope: $ENV_SCOPE]} ($RAW_COUNT file(s) read process.env directly)" "advisory while .standard.yml has 'env_contract: warn'. Adopt a validated env module, migrate the reads, then set 'env_contract: enforce' (§13.5)"
 fi
 
 # ---- 6. PR diff mode: stub markers in ADDED production lines (§13.2, §16.4)
