@@ -1,5 +1,24 @@
 # Session Log
 
+## 2026-09-09 15:10 UTC — interactive — Database URLs are per-repo, not shared
+
+**Trigger:** User asked where to maintain `SUPABASE_DB_URL` and which URL to use. Checking the repos to answer accurately surfaced a defect in what shipped yesterday in PR #150.
+
+**The defect.** `caliente-booking-app`, `social-media-content` and `whatsapp-console` each point at a **different** Supabase project (`sgtlkemm…`, `wmkgptlj…`, `ztkhjmot…`). The propagation read one dashboard-wide `SUPABASE_DB_URL` and pushed it to every repo, so whichever value was pasted would have gone everywhere — leaving two of the three drift gates comparing their migrations against a database they have nothing to do with. A gate failing for an unrelated reason is the same family of problem as a gate passing without checking: the signal no longer means what it says.
+
+**What changed (branch `fix/per-repo-supabase-url`):**
+
+- **[dashboard/lib/propagated-secrets.ts](dashboard/lib/propagated-secrets.ts)** — a secret can now declare `perRepo`. Such a secret is read only from `<NAME>__<REPO_SUFFIX>` (`SUPABASE_DB_URL__CALIENTE_BOOKING_APP`) with **no shared fallback**, because the fallback is the mistake. Shared secrets like the Anthropic key still work from the bare name, and now accept a per-repo override so one repo can differ without disturbing the others.
+- **[dashboard/components/push-secrets-panel.tsx](dashboard/components/push-secrets-panel.tsx)** — the panel names the exact variable each secret reads for that repo, before the button is pressed. "Which variable, and does it need a suffix" is what stalls this setup, and a variable set under the wrong name looks identical to one never set.
+
+**Which connection string.** The gate runs `supabase db diff --db-url`, so it needs the **session pooler** string (port 5432), not the transaction pooler (6543): GitHub runners are IPv4-only, and transaction mode does not support the session state a schema diff needs. A read-only role is sufficient — the gate only reads.
+
+**Tests:** 5 new dashboard tests, including one that two repos resolve to two different URLs and one that a bare `SUPABASE_DB_URL` is never used as a fallback. Dashboard 522 passed, typecheck clean.
+
+**Next session should start with:** opening the PR for `fix/per-repo-supabase-url`.
+
+---
+
 ## 2026-09-09 14:15 UTC — interactive — Propagate dashboard secrets to every wired repo
 
 **Trigger:** User: *"find a way to automate this SUPABASE_DB_URL"* — it was a manual paste into four separate repos' settings pages, and a repo that was missed left the schema-drift gate reporting instead of failing.

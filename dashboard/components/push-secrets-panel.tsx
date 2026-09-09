@@ -15,8 +15,28 @@ import { pushDashboardSecrets } from '@/lib/actions';
  * transmission; nothing here ever renders one. Pushing Actions secrets needs
  * admin permission on the repo, so a user with write access will see a
  * per-secret failure rather than a silent no-op.
+ *
+ * `sources` names the exact environment variables this repo reads from. It is
+ * shown before the button is pressed rather than only in the failure message,
+ * because "which variable, and does it need a repo suffix" is the question
+ * that stalls this setup — and a variable set under the wrong name looks
+ * identical to one that was never set.
  */
-export function PushSecretsPanel({ repo }: { repo: string }) {
+export function PushSecretsPanel({
+  repo,
+  sources,
+}: {
+  repo: string;
+  /** One row per secret: the Actions secret name, where it is read from, and why. */
+  sources: Array<{
+    name: string;
+    envVar: string;
+    purpose: string;
+    perRepo: boolean;
+    /** Whether a usable value was found. Never the value itself. */
+    configured: boolean;
+  }>;
+}) {
   const [pending, startTransition] = useTransition();
   const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
 
@@ -44,6 +64,23 @@ export function PushSecretsPanel({ repo }: { repo: string }) {
         same value does not have to be pasted into each one by hand. Safe to
         run again at any time; it overwrites rather than duplicating.
       </p>
+      <dl className="mt-3 space-y-2">
+        {sources.map((s) => (
+          <div key={s.name}>
+            <dt className="font-mono text-xs">
+              {s.name}
+              <span className="ml-2 font-sans text-muted-foreground">
+                {s.configured ? 'reads' : 'needs'} <code>{s.envVar}</code>
+                {s.perRepo ? ' (this repo only)' : ' on the dashboard'}
+              </span>
+              {s.configured ? null : (
+                <span className="ml-2 font-sans text-destructive">not set</span>
+              )}
+            </dt>
+            <dd className="text-xs text-muted-foreground">{s.purpose}</dd>
+          </div>
+        ))}
+      </dl>
       <div className="mt-3 flex items-center gap-3">
         <Button type="button" onClick={onClick} disabled={pending} size="sm">
           {pending ? 'Pushing…' : 'Push dashboard secrets'}
