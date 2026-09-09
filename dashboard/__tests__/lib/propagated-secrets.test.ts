@@ -72,11 +72,16 @@ describe('resolveSecrets', () => {
   });
 
   it('never carries a value into the skip reason', () => {
-    // The reason is rendered in the dashboard; a secret must not travel in it.
-    const out = resolveSecrets({ SUPABASE_DB_URL: 'postgresql://u:hunter2@h/d'.replace('/d', '') });
-    for (const s of out) {
-      expect(s.skipReason ?? '').not.toContain('hunter2');
-    }
+    // The reason is rendered in the dashboard, so a secret must not travel in
+    // it. The value has to actually FAIL validation, or this exercises the
+    // pushable path and cannot catch a leak: it carries a password and a
+    // scheme the validator rejects.
+    const out = resolveSecrets({ SUPABASE_DB_URL: 'mysql://user:hunter2@db.internal:3306/app' });
+    const supa = out.find((x) => x.name === 'SUPABASE_DB_URL')!;
+    expect(supa.value).toBeUndefined();
+    expect(supa.skipReason).toBeDefined();
+    expect(supa.skipReason).not.toContain('hunter2');
+    expect(supa.skipReason).not.toContain('db.internal');
   });
 });
 

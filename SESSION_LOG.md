@@ -14,7 +14,9 @@
 
 **Also this session, outside this branch:** the repo had no `.claude-plugin/marketplace.json`, so the install command the README documents failed with "not found in any configured marketplace". Added on `feat/pr-autopilot`; the plugin is now installed and enabled locally.
 
-**Tests:** 15 new dashboard tests. Dashboard 510 passed, typecheck clean.
+**What the review caught (critical).** The backfill action checked only write permission, like every other action in the file. But those act on the target repo with the *user's* authority; this one copies the *dashboard's* credentials into whatever repo the form names. A signed-in user could point it at any repo they can write to and walk away with the Anthropic key and the database URL. The target must now be a wired repo in the dashboard's own allowlist. Two smaller ones: `revalidatePath` named a route that never renders (the segment is the URL-encoded full name), so the page kept serving its pre-push cache; and the redaction test used a value that passed validation, so it exercised the pushable path and could not have caught a leak.
+
+**Tests:** 22 new dashboard tests. Dashboard 517 passed, typecheck clean.
 
 **Deferred / Next:** the operator still pastes `SUPABASE_DB_URL` once into the dashboard's environment. Deriving it would require the database password, which Supabase does not expose.
 

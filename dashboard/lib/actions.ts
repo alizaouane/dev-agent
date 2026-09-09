@@ -14,6 +14,7 @@ import {
   type WorkflowKey,
 } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
+import { listAllowedRepos } from './repos';
 import { resolveSecrets, summarizePush } from './propagated-secrets';
 import {
   parseRepoFromProposalId,
@@ -496,6 +497,10 @@ async function pushDashboardSecretsTo(
  * never got it — and the gate that needs it has been passing without checking
  * anything ever since. This is the backfill.
  *
+ * The target must be a wired repo in this dashboard's allowlist. Write
+ * permission alone would let a signed-in user name any repo they can write to
+ * and have the dashboard deposit its own credentials there.
+ *
  * Form fields:
  *  - `repo` — `owner/name`
  *
@@ -509,12 +514,42 @@ export async function pushDashboardSecrets(
     const session_username = await getCurrentUsername();
     const octokit = await getOctokit();
     const repoFull = ((formData.get('repo') as string | null) ?? '').trim();
-    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
-    const [owner, repo] = repoFull.split('/');
-    await assertWritePermission(octokit, owner, repo, session_username);
+    const parts = repoFull.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error('repo must be in owner/name format');
+    }
+    const [owner, repo] = parts;
 
-    const { pushed, skipped } = await pushDashboardSecretsTo(octokit, owner, repo);
-    revalidatePath(`/repos/${repo}`);
+    // Write permission is NOT sufficient here, unlike every other action in
+    // this file. Those act on the target repo with the user's own authority;
+    // this one copies the DASHBOARD's secrets into whatever repo the form
+    // names. A signed-in user could point it at any repo they can write to —
+    // a personal fork, a repo in another org — and walk away with the
+    // dashboard's Anthropic key and database URL. So the target has to be a
+    // repo this dashboard already manages, not merely one the caller can
+    // write to.
+    const allowed = await listAllowedRepos(octokit);
+    const target = allowed.find(
+      (r) => r.owner.toLowerCase() === owner.toLowerCase() && r.name.toLowerCase() === repo.toLowerCase(),
+    );
+    if (!target) {
+      throw new Error(
+        `${repoFull} is not in this dashboard's allowlist. Secrets are only pushed to repos the dashboard manages.`,
+      );
+    }
+    if (!target.wired_up) {
+      throw new Error(
+        `${repoFull} is not wired up yet. Wire it up first — that pushes these secrets as part of the setup.`,
+      );
+    }
+    await assertWritePermission(octokit, target.owner, target.name, session_username);
+
+    const { pushed, skipped } = await pushDashboardSecretsTo(octokit, target.owner, target.name);
+    // The route segment is the URL-encoded FULL name (`/repos/acme%2Fweb`),
+    // not the bare repo name — the page decodes it and matches on
+    // `owner/name`. Revalidating `/repos/<name>` names a path that is never
+    // rendered, leaving the page serving its pre-push cached render.
+    revalidatePath(`/repos/${encodeURIComponent(`${target.owner}/${target.name}`)}`);
     return { message: summarizePush(pushed, skipped) };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
