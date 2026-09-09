@@ -86,6 +86,15 @@ export interface PrTriage {
   waitingOnly: boolean;
   /** Stable signature of the blocker set, for detecting a stuck loop. */
   signature: string;
+  /**
+   * True when the PR was deliberately not evaluated — a draft, or opted out.
+   *
+   * Distinct from "evaluated and found clean", and the distinction is the
+   * whole point: a skipped PR has an empty blocker list because nothing was
+   * looked at, not because nothing is wrong. A caller that treats the two
+   * alike will announce a draft with red CI as ready to merge.
+   */
+  skipped: boolean;
 }
 
 /** Branch shapes dev-agent owns and may act on unattended. */
@@ -144,8 +153,9 @@ export function staleBotReviews(pr: PullRequestState): string[] {
  */
 export function triagePullRequest(pr: PullRequestState): PrTriage {
   const blockers: Blocker[] = [];
+  const skipped = pr.isDraft || pr.labels.includes(OFF_LABEL);
 
-  if (!pr.isDraft && !pr.labels.includes(OFF_LABEL)) {
+  if (!skipped) {
     const failing = pr.checks.filter(
       (c) => c.conclusion !== null && FAILED_CONCLUSIONS.includes(c.conclusion),
     );
@@ -197,6 +207,7 @@ export function triagePullRequest(pr: PullRequestState): PrTriage {
     needsWork: actionable.length > 0,
     waitingOnly: actionable.length === 0 && blockers.length > 0,
     signature: blockers.map((b) => b.kind).sort().join('|'),
+    skipped,
   };
 }
 
@@ -374,6 +385,24 @@ export const READY_MARKER = '<!-- dev-agent:pr-autopilot ready -->';
 
 /** Label applied to a PR the autopilot has cleared. */
 export const READY_LABEL = 'ready-to-merge';
+
+/**
+ * Whether a triaged PR is genuinely finished, as opposed to unexamined.
+ *
+ * Three things have to hold, and each rules out a way of looking clean without
+ * being clean. It must have been evaluated at all, so a draft or an opted-out
+ * PR is excluded. It must have no blockers. And it must actually have checks:
+ * a PR whose CI never ran produces no failing-check blocker either, and
+ * announcing "every check passed" over zero checks is both false and unhelpful,
+ * since branch protection will still hold the merge.
+ *
+ * @param triage - The triage verdict.
+ * @param checkCount - How many checks reported on the head commit.
+ * @returns True when the PR can honestly be called ready to merge.
+ */
+export function isReadyToMerge(triage: PrTriage, checkCount: number): boolean {
+  return !triage.skipped && triage.blockers.length === 0 && checkCount > 0;
+}
 
 /**
  * Render the announcement that a pull request has nothing left blocking it.

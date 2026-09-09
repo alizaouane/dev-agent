@@ -6,6 +6,8 @@ import {
   AUTOPILOT_MARKER,
   READY_MARKER,
   alreadyAnnouncedReady,
+  isReadyToMerge,
+  triagePullRequest as triage,
   priorSignatures,
   renderReadyComment,
   renderWakeComment,
@@ -372,5 +374,54 @@ describe('ready-to-merge announcement', () => {
 
   it('treats an unannounced clean PR as needing the announcement', () => {
     expect(alreadyAnnouncedReady([{ author: 'github-actions', body: 'unrelated' }])).toBe(false);
+  });
+});
+
+describe('isReadyToMerge', () => {
+  /** Triage a PR with the given overrides. */
+  const t = (over: Record<string, unknown> = {}) =>
+    triage({
+      number: 1,
+      headRefName: 'feat/dev-agent-issue-1',
+      labels: [],
+      headOid: 'abc1234def',
+      isDraft: false,
+      reviewDecision: 'APPROVED',
+      checks: [{ name: 'test', conclusion: 'SUCCESS' }],
+      reviews: [],
+      unresolvedThreadCount: 0,
+      ...over,
+    } as never);
+
+  it('is true for an examined PR with passing checks and no blockers', () => {
+    expect(isReadyToMerge(t(), 1)).toBe(true);
+  });
+
+  it('is false for a draft, however clean it looks', () => {
+    // A draft is never examined, so its empty blocker list means "not looked
+    // at". Announcing it ready would be announcing a PR with red CI as done.
+    const d = t({ isDraft: true, checks: [{ name: 'test', conclusion: 'FAILURE' }] });
+    expect(d.blockers).toEqual([]);
+    expect(d.skipped).toBe(true);
+    expect(isReadyToMerge(d, 1)).toBe(false);
+  });
+
+  it('is false for a PR the operator opted out of', () => {
+    // Someone labelled it to take it out of the autopilot's hands. Commenting
+    // and labelling it anyway is the opposite of honouring that.
+    const off = t({ labels: ['autopilot:off'], checks: [{ name: 'x', conclusion: 'FAILURE' }] });
+    expect(off.skipped).toBe(true);
+    expect(isReadyToMerge(off, 1)).toBe(false);
+  });
+
+  it('is false when no check has reported at all', () => {
+    // Zero checks produces no failing-check blocker either. "Every check
+    // passed" over zero checks is false, and branch protection would hold the
+    // merge regardless.
+    expect(isReadyToMerge(t({ checks: [] }), 0)).toBe(false);
+  });
+
+  it('is false while a blocker remains', () => {
+    expect(isReadyToMerge(t({ unresolvedThreadCount: 2 }), 1)).toBe(false);
   });
 });
