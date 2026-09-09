@@ -164,11 +164,14 @@ describe('dispatchGateDecision', () => {
     expect(d.reason).toBe('schema-too-new');
   });
 
-  it('refuses an approval recorded against a blocking review', () => {
-    const d = gate({ review_verdict: 'blocker' });
-    expect(d.allow).toBe(false);
-    expect(d.reason).toBe('blocker-verdict');
-  });
+  it.each([['blocker'], ['concerns']] as const)(
+    'refuses an approval recorded against a %s review',
+    (verdict) => {
+      const d = gate({ review_verdict: verdict });
+      expect(d.allow).toBe(false);
+      expect(d.reason).toBe('unclean-verdict');
+    },
+  );
 
   it('refuses once the spec is edited after approval', () => {
     const d = dispatchGateDecision({
@@ -222,10 +225,13 @@ describe('dispatchGateDecision', () => {
     expect(d.allow).toBe(true);
   });
 
-  it('says a concerns verdict was accepted, rather than hiding it', () => {
+  it('does not let a hash-matched concerns approval through the mechanical gate', () => {
+    // The review-and-correct loop that produces a clean verdict lives in a
+    // skill, which is prose. Accepting `concerns` here would leave the only
+    // enforcement of that loop in a document an agent can read past.
     const d = gate({ review_verdict: 'concerns' });
-    expect(d.allow).toBe(true);
-    expect(d.message).toContain('concerns');
+    expect(d.allow).toBe(false);
+    expect(d.message).toContain('clean');
   });
 
   it('lets the override label through, but states what it overrode', () => {

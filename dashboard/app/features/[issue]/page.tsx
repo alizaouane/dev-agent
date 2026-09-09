@@ -45,6 +45,7 @@ export default async function FeaturePage(props: {
     failedRuns,
     featurePR,
     outcomes,
+    defaultBranchOrNull,
   ] = await Promise.all([
     octokit.issues.get({ owner, repo: name, issue_number }),
     octokit.issues.listComments({ owner, repo: name, issue_number, per_page: 100 }),
@@ -53,11 +54,21 @@ export default async function FeaturePage(props: {
     fetchRecentFailuresForIssue(octokit, owner, name, issue_number),
     fetchFeaturePR(octokit, owner, name, issue_number),
     outcomesForFeature(octokit, `${owner}/${name}`, issue_number),
+    // Needed by the approval gate below. A failure here must not take the
+    // page down, so it resolves to null and the gate refuses with a reason.
+    octokit.repos
+      .get({ owner, repo: name })
+      .then((r) => r.data.default_branch)
+      .catch(() => null),
   ]);
   const expandedPillar: PillarId | null =
     tab === 'verification' && pillar && (PILLAR_IDS as readonly string[]).includes(pillar)
       ? (pillar as PillarId)
       : null;
+  // An unreadable default branch is not a reason to render an enabled button:
+  // the gate below refuses on the sentinel, the same as any other unknown.
+  const defaultBranch = defaultBranchOrNull ?? '<default-branch-unavailable>';
+
   const labels = issueData.labels
     .map((l) => (typeof l === 'string' ? l : l.name))
     .filter(Boolean) as string[];
@@ -73,10 +84,19 @@ export default async function FeaturePage(props: {
           octokit,
           repo: name,
           owner,
-          ref: (await octokit.repos.get({ owner, repo: name })).data.default_branch,
+          ref: defaultBranch,
           issueBody: issueData.body,
           labels,
-        })
+        }).catch((err) => ({
+          // A thrown decision would take the whole feature page down. Refuse
+          // instead: the operator keeps the page, and sees a disabled Start
+          // work button carrying the reason.
+          allow: false as const,
+          reason: 'malformed' as const,
+          message: `the approval could not be checked: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        }))
       : null;
 
   // Octokit v22 returns `{ data: T[] }` — we destructured only the issue

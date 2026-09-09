@@ -14,7 +14,8 @@
  *
  * Required env:
  *   SPEC_PATH        Repo-relative path to the approved spec (.md).
- *   REVIEW_VERDICT   The verdict being approved: ok | concerns.
+ *   REVIEW_VERDICT   The verdict being approved. Only `ok` is accepted: an
+ *                    approval exists to record that the review came back clean.
  *   REVIEW_ROUNDS    How many review-and-correct rounds it took (integer >= 1).
  *
  * Optional env:
@@ -57,12 +58,13 @@ export interface ApproveSpecInput {
 /**
  * Build the approval record for a spec and plan that exist on disk.
  *
- * A `blocker` verdict is rejected here rather than at the gate, so a blocked
- * spec cannot even produce an approval artifact to argue about later.
+ * An unclean verdict is rejected here as well as at the gate, so a spec the
+ * reviewer still has something to say about cannot even produce an artifact to
+ * argue about later.
  *
  * @param input - Resolved approval inputs.
  * @returns The approval record and the repo-relative path to write it to.
- * @throws If either document is missing, or the verdict is `blocker`.
+ * @throws If either document is missing, or the verdict is not `ok`.
  */
 export function buildApproval(input: ApproveSpecInput): {
   approval: SpecApproval;
@@ -70,10 +72,10 @@ export function buildApproval(input: ApproveSpecInput): {
 } {
   const { specPath, planPath, reviewVerdict, reviewRounds, approvedBy, repoRoot } = input;
 
-  if (reviewVerdict === 'blocker') {
+  if (reviewVerdict !== 'ok') {
     throw new Error(
-      'refusing to record an approval against a blocking review — correct the spec and plan, ' +
-        're-run the review, and approve the clean result',
+      `refusing to record an approval against a '${reviewVerdict}' review — correct the spec ` +
+        'and plan, re-run the review until it comes back clean, and approve that result',
     );
   }
   if (!Number.isInteger(reviewRounds) || reviewRounds < 1) {

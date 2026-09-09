@@ -78,7 +78,9 @@ If any check fails, surface the error verbatim and stop. Do not proceed.
 
 Use the TodoWrite tool. Mark each item `in_progress` when starting that phase, `completed` only when done. **Phase 4 stays `pending` until the issue URL is printed.** An incomplete todo is the visible signal that the skill is not finished — do not announce "done" or end the turn while any item is pending.
 
-**Phase 3.5 and 3.6 skip exception:** if Phase 1's PM evaluation classified the work as trivial (one-liner, typo, copy fix), mark both `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill, and the dashboard's approval gate honours the same trivial route through `quick-dev`.
+**Phase 3.5 skip exception:** if Phase 1's PM evaluation classified the work as trivial (one-liner, typo, copy fix), mark Phase 3.5 `completed` with note "skipped: trivial work" and go to **Phase 3.6**. Adversarial review of a 3-paragraph spec is overkill.
+
+**Phase 3.6 has no skip exception.** Trivial work still needs an approval on record — trivial `bug` and `improvement` work reaches quick-dev, which records one, but a trivial `feature` stays on this flow, and skipping 3.6 there would file an issue the dashboard cannot start. Skip the review, never the approval.
 
 **Quick-dev fast path (replaces the whole list).** If the user passed `--quick` OR if Phase 1's PM evaluation classifies the work as trivial AND `kind` is `bug` or `improvement`, REPLACE the 5-phase checklist above with:
 
@@ -216,8 +218,10 @@ rm -f .dev-agent/spec-review.json .dev-agent/spec-review-summary.md
 ```
 
 **Skip if trivial.** If Phase 1 marked the work trivial (one-liner, typo, copy
-fix), mark Phase 3.5 and 3.6 `completed` with note "skipped: trivial work" and
-go to Phase 4.
+fix), mark Phase 3.5 `completed` with note "skipped: trivial work" and go to
+Phase 3.6. The review is what gets skipped; the approval is not. On that path
+Phase 3.6 records `REVIEW_ROUNDS=1` and says plainly to the user that no
+independent review ran.
 
 ### The loop
 
@@ -283,8 +287,14 @@ SPEC_PATH=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md \
 PLAN_PATH=docs/superpowers/plans/YYYY-MM-DD-<topic>.md \
 REVIEW_VERDICT=ok \
 REVIEW_ROUNDS=<rounds it took> \
-npx tsx "${PLUGIN_DIR}/lib/cli/approve-spec.ts"
+"${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/approve-spec.ts"
 ```
+
+`npx` is deliberately not used here: on a cache miss it resolves `tsx` from the
+network at approval time, which is the wrong moment to pull an unpinned package.
+The plugin ships its own pinned binary. If `${PLUGIN_DIR}/node_modules/.bin/tsx`
+is missing, run `npm ci --omit=dev=false` in `${PLUGIN_DIR}` once rather than
+reaching for `npx`.
 
 This writes `<spec path with .md swapped for .approval.json>` next to the spec:
 the verdict, the round count, the approver's git identity, the timestamp, and a

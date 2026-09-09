@@ -105,12 +105,18 @@ cd "$consumer_root"
 SPEC_PATH=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md \
 REVIEW_VERDICT=ok \
 REVIEW_ROUNDS=1 \
-npx tsx "${PLUGIN_DIR}/lib/cli/approve-spec.ts"
+"${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/approve-spec.ts"
 
 git add "docs/superpowers/specs/YYYY-MM-DD-<topic>-design.approval.json"
 git commit -m "docs(spec): record approval for <feature title>"
 git push
 ```
+
+`npx` is deliberately not used here: on a cache miss it resolves `tsx` from the
+network at approval time, which is the wrong moment to pull an unpinned package.
+The plugin ships its own pinned binary. If `${PLUGIN_DIR}/node_modules/.bin/tsx`
+is missing, run `npm ci --omit=dev=false` in `${PLUGIN_DIR}` once rather than
+reaching for `npx`.
 
 **Never run this on the user's behalf.** The record carries a human's identity
 against work they authorized; writing it without them makes every gate

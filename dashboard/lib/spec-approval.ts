@@ -12,8 +12,10 @@ import { createHash } from 'node:crypto';
  *
  * Two properties make the record worth checking:
  *
- *  1. It names the verdict it was given against, so an approval cannot be
- *     harvested from a run that ended on a blocker.
+ *  1. It names the verdict it was given against, and only a clean `ok` verdict
+ *     lets work start. The review-and-correct loop that produces that verdict
+ *     lives in a skill, which is prose; this makes the artifact refuse what
+ *     the prose forbids, rather than trusting an agent to have followed it.
  *  2. It is bound to a hash of the spec AND plan, so editing either after
  *     approval invalidates it. Without the hash, "approved" degrades into
  *     "was approved once, in some earlier form" — which is how unreviewed
@@ -64,7 +66,7 @@ export type GateReason =
   | 'missing'
   | 'malformed'
   | 'schema-too-new'
-  | 'blocker-verdict'
+  | 'unclean-verdict'
   | 'spec-changed'
   | 'path-mismatch';
 
@@ -287,11 +289,12 @@ export function dispatchGateDecision(input: {
     );
   }
 
-  if (approval.review_verdict === 'blocker') {
+  if (approval.review_verdict !== 'ok') {
     return refuse(
-      'blocker-verdict',
-      'the approval was recorded against a blocking review. Correct the spec and plan, ' +
-        're-run the review until it is clean, and approve that result.',
+      'unclean-verdict',
+      `the approval was recorded against a '${approval.review_verdict}' review. Work starts ` +
+        'only on a clean one. Correct the spec and plan, re-run the review until it comes ' +
+        'back clean, and approve that result.',
     );
   }
 
@@ -312,15 +315,11 @@ export function dispatchGateDecision(input: {
     );
   }
 
-  const caveat =
-    approval.review_verdict === 'concerns'
-      ? ' The review returned concerns, which the approver accepted.'
-      : '';
   return {
     allow: true,
     reason: 'ok',
     message:
       `Approved by ${approval.approved_by} on ${approval.approved_at}, against a clean ` +
-      `'${approval.review_verdict}' review after ${approval.review_rounds} round(s).${caveat}`,
+      `review after ${approval.review_rounds} round(s).`,
   };
 }

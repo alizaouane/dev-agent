@@ -65,11 +65,12 @@ describe('buildApproval', () => {
     expect(d.allow).toBe(true);
   });
 
-  it('refuses to record an approval against a blocking review', () => {
-    expect(() => buildApproval(input({ reviewVerdict: 'blocker' }))).toThrow(
-      /blocking review/,
-    );
-  });
+  it.each([['blocker'], ['concerns']] as const)(
+    'refuses to record an approval against a %s review',
+    (verdict) => {
+      expect(() => buildApproval(input({ reviewVerdict: verdict }))).toThrow(/re-run the review/);
+    },
+  );
 
   it('refuses a spec that is not on disk, so the digest cannot be of nothing', () => {
     expect(() => buildApproval(input({ specPath: 'docs/specs/absent.md' }))).toThrow(
