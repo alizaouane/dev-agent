@@ -1322,6 +1322,69 @@ describe('resolveProposalAction', () => {
 });
 
 describe('redispatchPhase', () => {
+  beforeEach(() => {
+    // Re-running `implement` passes the same approval gate as Start work,
+    // so these tests run against an approved issue unless they say otherwise.
+    stubApprovedSpecOnBranch();
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 42,
+        labels: [{ name: 'state:pr-review' }],
+        body: APPROVED_BODY,
+        html_url: 'https://github.com/q/r/issues/42',
+      },
+    });
+  });
+
+  it('refuses to re-run implement on an issue with no recorded approval', async () => {
+    // The redispatch panel renders for an issue in any state and defaults its
+    // phase select to `implement`, so it is a first-dispatch route as much as
+    // a retry one. Ungated, it would be a second front door beside a locked
+    // one — which is how this gate was bypassed before the guard landed.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    const result = await redispatchPhase(fd);
+    expect((result as { error: string }).error).toMatch(/work cannot start/);
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('re-runs implement once the approval is in place', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    expect(await redispatchPhase(fd)).toBeUndefined();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+  });
+
+  it('does not gate the post-PR phases, which act on work already shipped', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'rollback');
+    fd.append('invocation_mode', 'live');
+    expect(await redispatchPhase(fd)).toBeUndefined();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+  });
+
   it('dispatches the chosen phase + invocation_mode on the repo default branch', async () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'develop' } });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});

@@ -1231,6 +1231,10 @@ export async function getLatestScanRun(
  *  - `issue`           — issue number
  *  - `phase`           — implement | staging-deploy | promote-to-prod | rollback
  *  - `invocation_mode` — live | stub (default 'live')
+ *
+ * `implement` re-runs pass the spec-approval gate first; see
+ * `evaluateSpecApproval`. The later phases operate on work that already has a
+ * PR and are not gated here.
  */
 export async function redispatchPhase(
   formData: FormData,
@@ -1257,6 +1261,28 @@ export async function redispatchPhase(
 
     const repoData = await octokit.repos.get({ owner, repo });
     const default_branch = repoData.data.default_branch;
+
+    // Re-running `implement` starts implementation work, so it goes through
+    // the same approval gate as the Start work button. This panel is rendered
+    // for an issue in ANY state and defaults its phase select to `implement`,
+    // which makes it a first-dispatch route as much as a retry one — leaving
+    // it ungated would be a second front door standing next to a locked one.
+    // The other phases act on work that already shipped a PR and are not
+    // gated here.
+    if (phase === 'implement') {
+      const issue = await octokit.issues.get({ owner, repo, issue_number });
+      const gate = await evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: issue.data.body,
+        labels: issue.data.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))),
+      });
+      if (!gate.allow) {
+        return { error: `work cannot start — ${gate.message}` };
+      }
+    }
 
     await octokit.actions.createWorkflowDispatch({
       owner,
