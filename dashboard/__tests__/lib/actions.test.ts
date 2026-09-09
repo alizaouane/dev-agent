@@ -48,6 +48,14 @@ vi.mock('@/lib/gh', () => ({
   UnauthorizedError: class extends Error {},
 }));
 
+// The dashboard's own allowlist. `pushDashboardSecrets` writes the
+// DASHBOARD's credentials into the named repo, so the allowlist — not the
+// caller's write permission — is what bounds the target.
+const mockListAllowedRepos = vi.fn();
+vi.mock('@/lib/repos', () => ({
+  listAllowedRepos: (...args: unknown[]) => mockListAllowedRepos(...args),
+}));
+
 vi.mock('next/cache', () => ({ revalidatePath: vi.fn() }));
 vi.mock('next/navigation', () => ({
   redirect: vi.fn((url: string) => {
@@ -1577,5 +1585,92 @@ describe('mergeFeaturePR', () => {
     const result = await mergeFeaturePR(fd);
     expect((result as { error: string }).error).toMatch(/lacks write/);
     expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+});
+
+describe('pushDashboardSecrets', () => {
+  beforeEach(() => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({
+      data: { permission: 'admin' },
+    });
+    mockListAllowedRepos.mockResolvedValue([
+      { owner: 'x', name: 'y', wired_up: true },
+      { owner: 'x', name: 'unwired', wired_up: false },
+    ]);
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-test';
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_ANTHROPIC_API_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = ORIGINAL_ANTHROPIC_API_KEY;
+  });
+
+  /** Submit the action for one repo. */
+  async function push(repo: string) {
+    const { pushDashboardSecrets } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', repo);
+    return pushDashboardSecrets(fd);
+  }
+
+  it('pushes to a wired repo the dashboard manages', async () => {
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    const result = await push('x/y');
+    expect(result).toEqual({ message: expect.stringContaining('ANTHROPIC_API_KEY') });
+    expect(pushRepoSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ owner: 'x', repo: 'y', name: 'ANTHROPIC_API_KEY' }),
+    );
+  });
+
+  it('refuses a repo outside the allowlist even when the user can write to it', async () => {
+    // The reason this action is not like the others: it copies the DASHBOARD's
+    // credentials into the named repo. Write permission would let a signed-in
+    // user name any repo they control and walk away with the Anthropic key
+    // and the database URL.
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    const result = await push('attacker/exfil');
+    expect(result).toEqual({ error: expect.stringContaining("allowlist") });
+    expect(pushRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it('refuses a repo that is not wired up', async () => {
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    const result = await push('x/unwired');
+    expect(result).toEqual({ error: expect.stringContaining('not wired up') });
+    expect(pushRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it('refuses a malformed repo value without calling GitHub', async () => {
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    for (const bad of ['justname', 'a/b/c', '/y', 'x/']) {
+      expect(await push(bad)).toEqual({ error: expect.stringMatching(/owner\/name/) });
+    }
+    expect(pushRepoSecret).not.toHaveBeenCalled();
+  });
+
+  it('still refuses without write permission on an allowlisted repo', async () => {
+    mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValueOnce({
+      data: { permission: 'read' },
+    });
+    expect(await push('x/y')).toEqual({ error: expect.stringContaining('lacks write') });
+  });
+
+  it('revalidates the path the page is actually rendered at', async () => {
+    // The route segment is the URL-encoded full name; revalidating the bare
+    // repo name names a path that never renders, leaving the stale page up.
+    const { revalidatePath } = await import('next/cache');
+    await push('x/y');
+    expect(revalidatePath).toHaveBeenCalledWith('/repos/x%2Fy');
+  });
+
+  it('reports a per-secret push failure instead of failing the whole action', async () => {
+    const { pushRepoSecret } = await import('@/lib/gh-secrets');
+    vi.mocked(pushRepoSecret).mockRejectedValueOnce(
+      Object.assign(new Error('Resource not accessible'), { status: 403 }),
+    );
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const result = await push('x/y');
+    expect(result).toEqual({ message: expect.stringContaining('skipped') });
+    warnSpy.mockRestore();
   });
 });

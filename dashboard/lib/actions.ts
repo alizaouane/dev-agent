@@ -14,6 +14,8 @@ import {
   type WorkflowKey,
 } from './wire-up-template';
 import { pushRepoSecret } from './gh-secrets';
+import { listAllowedRepos } from './repos';
+import { resolveSecrets, summarizePush } from './propagated-secrets';
 import {
   parseRepoFromProposalId,
   snoozeProposalPersistent,
@@ -313,25 +315,12 @@ export async function wireUpRepo(
       );
     }
 
-    // Push the dashboard's ANTHROPIC_API_KEY into the consumer repo's Actions
-    // secrets so the user doesn't have to paste it manually. Failures (e.g.,
-    // user has write but not admin perm — secrets require admin) are non-
-    // fatal; we log and continue. The user will see a workflow run fail later
-    // with a missing-secret error if push didn't succeed.
-    const dashboardKey = process.env.ANTHROPIC_API_KEY;
-    if (dashboardKey) {
-      try {
-        await pushRepoSecret({
-          octokit,
-          owner,
-          repo,
-          name: 'ANTHROPIC_API_KEY',
-          value: dashboardKey,
-        });
-      } catch (err) {
-        console.warn(`wireUpRepo: pushRepoSecret failed for ${owner}/${repo}:`, err);
-      }
-    }
+    // Push every secret the dashboard holds into the consumer repo's Actions
+    // secrets, so the user doesn't paste the same value into four repos by
+    // hand and miss one. Failures (e.g. write but not admin — secrets need
+    // admin) are non-fatal: we log and continue, and the workflow that needs
+    // the secret fails loudly on its first run.
+    await pushDashboardSecretsTo(octokit, owner, repo);
 
     // Direct-commit each template file to the default branch. Without a
     // `branch` arg, createOrUpdateFileContents targets the repo's default
@@ -456,6 +445,115 @@ export async function installWorkflow(
       message,
       raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
     });
+    return { error: message };
+  }
+}
+
+/**
+ * Push every configured dashboard secret into one repo.
+ *
+ * Non-fatal by design: pushing secrets needs admin permission, which a user
+ * with write access may not have, and that must not block a wire-up. What it
+ * must not do is fail silently — an unpushed secret leaves a gate reporting
+ * instead of failing, so each skip is logged with its reason.
+ *
+ * @param octokit - Authenticated client.
+ * @param owner - Repo owner.
+ * @param repo - Repo name.
+ * @returns Which secrets landed and which did not, for the caller to surface.
+ */
+async function pushDashboardSecretsTo(
+  octokit: Octokit,
+  owner: string,
+  repo: string,
+): Promise<{ pushed: string[]; skipped: Array<{ name: string; skipReason: string }> }> {
+  const pushed: string[] = [];
+  const skipped: Array<{ name: string; skipReason: string }> = [];
+
+  // eslint-disable-next-line no-restricted-syntax -- each push re-fetches the
+  // repo public key; running them in parallel gains nothing and muddles which
+  // secret a failure belonged to.
+  for (const secret of resolveSecrets(process.env)) {
+    if (secret.value === undefined) {
+      skipped.push({ name: secret.name, skipReason: secret.skipReason ?? 'not configured' });
+      continue;
+    }
+    try {
+      await pushRepoSecret({ octokit, owner, repo, name: secret.name, value: secret.value });
+      pushed.push(secret.name);
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      console.warn(`pushDashboardSecretsTo: ${secret.name} failed for ${owner}/${repo}:`, err);
+      skipped.push({ name: secret.name, skipReason: `push failed (${detail})` });
+    }
+  }
+  return { pushed, skipped };
+}
+
+/**
+ * Server Action: push the dashboard's secrets into an already-wired repo.
+ *
+ * Wire-up does this automatically, but a repo wired before a secret existed
+ * never got it — and the gate that needs it has been passing without checking
+ * anything ever since. This is the backfill.
+ *
+ * The target must be a wired repo in this dashboard's allowlist. Write
+ * permission alone would let a signed-in user name any repo they can write to
+ * and have the dashboard deposit its own credentials there.
+ *
+ * Form fields:
+ *  - `repo` — `owner/name`
+ *
+ * @param formData - The submitted form.
+ * @returns A message naming what was pushed and what was skipped, or an error.
+ */
+export async function pushDashboardSecrets(
+  formData: FormData,
+): Promise<{ error: string } | { message: string }> {
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = ((formData.get('repo') as string | null) ?? '').trim();
+    const parts = repoFull.split('/');
+    if (parts.length !== 2 || !parts[0] || !parts[1]) {
+      throw new Error('repo must be in owner/name format');
+    }
+    const [owner, repo] = parts;
+
+    // Write permission is NOT sufficient here, unlike every other action in
+    // this file. Those act on the target repo with the user's own authority;
+    // this one copies the DASHBOARD's secrets into whatever repo the form
+    // names. A signed-in user could point it at any repo they can write to —
+    // a personal fork, a repo in another org — and walk away with the
+    // dashboard's Anthropic key and database URL. So the target has to be a
+    // repo this dashboard already manages, not merely one the caller can
+    // write to.
+    const allowed = await listAllowedRepos(octokit);
+    const target = allowed.find(
+      (r) => r.owner.toLowerCase() === owner.toLowerCase() && r.name.toLowerCase() === repo.toLowerCase(),
+    );
+    if (!target) {
+      throw new Error(
+        `${repoFull} is not in this dashboard's allowlist. Secrets are only pushed to repos the dashboard manages.`,
+      );
+    }
+    if (!target.wired_up) {
+      throw new Error(
+        `${repoFull} is not wired up yet. Wire it up first — that pushes these secrets as part of the setup.`,
+      );
+    }
+    await assertWritePermission(octokit, target.owner, target.name, session_username);
+
+    const { pushed, skipped } = await pushDashboardSecretsTo(octokit, target.owner, target.name);
+    // The route segment is the URL-encoded FULL name (`/repos/acme%2Fweb`),
+    // not the bare repo name — the page decodes it and matches on
+    // `owner/name`. Revalidating `/repos/<name>` names a path that is never
+    // rendered, leaving the page serving its pre-push cached render.
+    revalidatePath(`/repos/${encodeURIComponent(`${target.owner}/${target.name}`)}`);
+    return { message: summarizePush(pushed, skipped) };
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error('[pushDashboardSecrets] failed', { message, raw: e });
     return { error: message };
   }
 }
