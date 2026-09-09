@@ -1,5 +1,27 @@
 # Session Log
 
+## 2026-09-09 14:15 UTC — interactive — Propagate dashboard secrets to every wired repo
+
+**Trigger:** User: *"find a way to automate this SUPABASE_DB_URL"* — it was a manual paste into four separate repos' settings pages, and a repo that was missed left the schema-drift gate reporting instead of failing.
+
+**What is and is not automatable.** The connection string's host and user are derivable from the Supabase project ref, but the database password is not: Supabase never exposes it through its API. So the value itself has to be supplied once by a human. What was worth removing is the per-repo repetition, not the one-time paste.
+
+**What changed (branch `feat/propagate-dashboard-secrets`):**
+
+- **[dashboard/lib/propagated-secrets.ts](dashboard/lib/propagated-secrets.ts)** — a declared set of secrets the dashboard holds once and pushes everywhere: `ANTHROPIC_API_KEY` (already done ad hoc) and `SUPABASE_DB_URL`. Each declares what a usable value looks like. That validation is the substance, not decoration: a malformed connection string makes `schema-drift` treat the secret as absent and pass, so a pushed-but-unusable value is worse than an unset one — the operator believes it is configured. A Supabase project URL pasted in place of the connection string, or a string with no password, is refused with the reason.
+- **[dashboard/lib/actions.ts](dashboard/lib/actions.ts)** — `wireUpRepo` now pushes every configured secret rather than just the Anthropic key, and a new `pushDashboardSecrets` action backfills a repo wired before a secret existed. Non-fatal per secret (pushing needs admin), but never silent: every skip carries its reason.
+- **[dashboard/components/push-secrets-panel.tsx](dashboard/components/push-secrets-panel.tsx)** — the button, on the repo page. Values never render.
+
+**Also this session, outside this branch:** the repo had no `.claude-plugin/marketplace.json`, so the install command the README documents failed with "not found in any configured marketplace". Added on `feat/pr-autopilot`; the plugin is now installed and enabled locally.
+
+**Tests:** 15 new dashboard tests. Dashboard 510 passed, typecheck clean.
+
+**Deferred / Next:** the operator still pastes `SUPABASE_DB_URL` once into the dashboard's environment. Deriving it would require the database password, which Supabase does not expose.
+
+**Next session should start with:** opening the PR for `feat/propagate-dashboard-secrets`, and checking PR #149 (pr-autopilot) to green.
+
+---
+
 ## 2026-09-09 11:45 UTC — interactive — Spec approval gate: review until clean, approve once, then Start work
 
 **Trigger:** User: *"I need the spec independently reviewed and corrected until I approve it, then it can move to Dev agent dashboard where the button is not to approve but to start the work"*. The existing flow contradicted this in two places: `start-feature` Phase 3.5 **defaulted to proceeding** on a `concerns` verdict if the user did not answer within the turn, and `dispatchExistingIssue` validated only the `state:spec-ready` label — nothing anywhere read the review verdict.
