@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { hashSpecAndPlan } from '@/lib/spec-approval';
+import { WIRE_UP_FILES } from '@/lib/wire-up-template';
 
 const mockOctokit = {
   repos: {
@@ -881,7 +882,7 @@ describe('wireUpRepo', () => {
 
     // All template files committed without a `branch` param, so they
     // land on the repo's default branch.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(WIRE_UP_FILES.length);
     for (const call of mockOctokit.repos.createOrUpdateFileContents.mock.calls) {
       expect(call[0].branch).toBeUndefined();
     }
@@ -910,7 +911,7 @@ describe('wireUpRepo', () => {
       expect((e as Error).message).toMatch(/__redirect__:\/repos$/);
     }
 
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(WIRE_UP_FILES.length);
     expect(mockOctokit.git.createRef).not.toHaveBeenCalled();
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
@@ -999,7 +1000,7 @@ describe('wireUpRepo', () => {
       value: 'sk-ant-test',
     });
     // Files were committed directly to the default branch (no PR flow).
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(WIRE_UP_FILES.length);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
   });
 
@@ -1024,7 +1025,7 @@ describe('wireUpRepo', () => {
 
     expect(pushRepoSecret).not.toHaveBeenCalled();
     // Files still committed even without the secret.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(WIRE_UP_FILES.length);
   });
 
   it('still commits files when secret-push fails (e.g. user lacks admin perm)', async () => {
@@ -1050,7 +1051,7 @@ describe('wireUpRepo', () => {
     }
 
     // The wire-up still landed all three files; only the secret push failed.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(WIRE_UP_FILES.length);
     expect(mockOctokit.pulls.create).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
@@ -1080,7 +1081,7 @@ describe('wireUpRepo', () => {
     }
 
     // All 10 template files committed despite the orphan.
-    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(10);
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledTimes(WIRE_UP_FILES.length);
 
     const calls = mockOctokit.repos.createOrUpdateFileContents.mock.calls as Array<
       [{ path: string; sha?: string }]

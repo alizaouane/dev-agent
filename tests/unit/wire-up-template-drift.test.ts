@@ -43,6 +43,17 @@ describe('wire-up-template embedded copy', () => {
     expect(normalized).toContain(onDisk);
   });
 
+  it.each([
+    ['dev-agent-pr-review.yml', 'TEMPLATE_PR_REVIEW_WORKFLOW_YML'],
+    ['dev-agent-pr-autopilot.yml', 'TEMPLATE_PR_AUTOPILOT_WORKFLOW_YML'],
+  ])('%s on disk matches the embedded %s', (file) => {
+    const onDisk = readFileSync(resolve(tplDir, '.github/workflows', file), 'utf8');
+    const normalized = embedded
+      .replace(/\\\$\{\{/g, '${{')
+      .replace(/\\`/g, '`');
+    expect(normalized).toContain(onDisk);
+  });
+
   it('pm.md on disk matches the embedded TEMPLATE_PM_MD', () => {
     const onDisk = readFileSync(resolve(tplDir, '.dev-agent/pm.md'), 'utf8');
     const normalized = embedded.replace(/\\`/g, '`');

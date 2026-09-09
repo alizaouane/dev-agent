@@ -72,6 +72,7 @@ properties:
     properties:
       specs_dir: { type: string }
       plans_dir: { type: string }
+      spec_plan_via_pr: { type: boolean }
       status_file: { type: string }
       runbooks_dir: { type: string }
 

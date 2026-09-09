@@ -1,0 +1,20 @@
+{
+  "$comment": "Makes this repo installable as a Claude Code marketplace. Without it, `claude plugin install alizaouane/dev-agent` fails with 'not found in any configured marketplace', even though .claude-plugin/plugin.json is valid and the README documents that exact command.",
+  "name": "dev-agent",
+  "owner": {
+    "name": "Ali Zaouane",
+    "url": "https://github.com/alizaouane"
+  },
+  "metadata": {
+    "description": "Agentic feature development: brainstorm a spec in Claude Code, approve it once, and let GitHub Actions carry it to production.",
+    "version": "0.3.0"
+  },
+  "plugins": [
+    {
+      "name": "dev-agent",
+      "source": "./",
+      "description": "Portable agentic feature-development orchestrator: intent to spec to PR to staging to prod, with bounded human gates.",
+      "category": "workflow"
+    }
+  ]
+}

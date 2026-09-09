@@ -235,11 +235,21 @@ describe('.github/workflows/', () => {
     });
 
     it('validates head ref shape with a regex before checkout', () => {
-      // The Resolve PR head branch step must whitelist the head ref to a
-      // strict feat/dev-agent-issue-<digits> shape; otherwise an attacker
-      // who can push a PR could choose a head ref that smuggles shell
-      // metacharacters into the checkout step.
-      expect(raw).toMatch(/feat\/dev-agent-issue-\[0-9\]\+\$/);
+      // The Resolve PR head branch step must whitelist the head ref to the
+      // two dev-agent-owned shapes; otherwise an attacker who can push a PR
+      // could choose a head ref that smuggles shell metacharacters into the
+      // checkout step. Anchored at both ends, and no unbounded wildcard.
+      expect(raw).toMatch(
+        /\^\(feat\/dev-agent-issue-\[0-9\]\+\|dev-agent\/spec-\[A-Za-z0-9\._-\]\+\)\$/,
+      );
+      expect(raw).not.toMatch(/HEAD" =~ \.\*/);
+    });
+
+    it('accepts the spec doc branch, which used to get no automation', () => {
+      // A PR carrying an approved spec and plan lives on dev-agent/spec-<topic>.
+      // The old filter rejected it, so nothing fixed its CI or its review and
+      // the operator had to notice both by hand.
+      expect(raw).toMatch(/dev-agent\/spec-/);
     });
   });
 
