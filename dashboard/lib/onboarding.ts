@@ -26,6 +26,27 @@
 /** Whether one requirement is met on a repo. */
 export type CheckState = 'met' | 'missing' | 'unknown' | 'not-applicable';
 
+/**
+ * What a probe found for something that either exists or does not.
+ *
+ * `unknown` is a first-class outcome, not an error to swallow. A read the
+ * dashboard was not permitted to make, or one that hit a rate limit, is not
+ * evidence of absence — and reporting it as absence sends the operator to
+ * install a workflow that is already installed, or marks a repo ready because
+ * a check could not run.
+ */
+export type Presence = 'present' | 'absent' | 'unknown';
+
+/**
+ * Map a probe's presence to a requirement's state.
+ *
+ * @param p - What the probe found.
+ * @returns The corresponding check state.
+ */
+function fromPresence(p: Presence): CheckState {
+  return p === 'present' ? 'met' : p === 'absent' ? 'missing' : 'unknown';
+}
+
 /** One thing a repo needs before dev-agent works on it. */
 export interface Requirement {
   id: string;
@@ -58,18 +79,32 @@ export interface RepoProbe {
   secretNames: string[] | null;
   /** Why secrets could not be read, when `secretNames` is null. */
   secretsError?: string;
-  /** Workflow files present under `.github/workflows/`. */
-  workflows: { prReview: boolean; prAutopilot: boolean };
-  /** True when the repo has `supabase/migrations`, so the drift gate applies. */
-  hasMigrations: boolean;
+  /** Workflow files under `.github/workflows/`. */
+  workflows: { prReview: Presence; prAutopilot: Presence };
+  /** Whether the repo has `supabase/migrations`, so the drift gate applies. */
+  hasMigrations: Presence;
   /** The per-repo env var this repo's database URL is read from. */
   dbSecretName: string;
-  /** True when `.dev-agent/pm.md` exists and has been edited past the template. */
-  pmConfigured: boolean;
+  /** Whether `.dev-agent/pm.md` has been edited past the shipped template. */
+  pmConfigured: Presence;
+  /** Why a file read came back `unknown`, when one did. */
+  readError?: string;
 }
 
-/** Labels the intake skill files issues with; a missing one fails `gh issue create`. */
-export const REQUIRED_LABEL_PREFIXES: readonly string[] = ['state:', 'kind:'];
+/**
+ * The exact labels the dashboard and the intake skill create issues with.
+ *
+ * Checked by name rather than by prefix. A repo carrying only `state:done` and
+ * `kind:bug` satisfies a prefix test while `dispatchFromSpec` still fails on
+ * the labels it actually uses — a check that passes without checking the
+ * thing that breaks.
+ */
+export const REQUIRED_LABELS: readonly string[] = [
+  'state:spec-ready',
+  'state:implementing',
+  'state:pr-review',
+  'kind:feature',
+];
 
 /**
  * Build the readiness list for one repo.
@@ -85,13 +120,10 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
   const hasSecret = (name: string): CheckState =>
     probe.secretNames === null ? 'unknown' : probe.secretNames.includes(name) ? 'met' : 'missing';
 
-  const labelState: CheckState = (() => {
-    if (probe.labels === null) return 'unknown';
-    const covered = REQUIRED_LABEL_PREFIXES.every((p) =>
-      probe.labels!.some((l) => l.startsWith(p)),
-    );
-    return covered ? 'met' : 'missing';
-  })();
+  const missingLabels =
+    probe.labels === null ? null : REQUIRED_LABELS.filter((l) => !probe.labels!.includes(l));
+  const labelState: CheckState =
+    missingLabels === null ? 'unknown' : missingLabels.length === 0 ? 'met' : 'missing';
 
   const rows: RequirementStatus[] = [
     {
@@ -119,6 +151,10 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
       remedy: 'Run /dev-agent-init in the repo, or create the state:* and kind:* labels by hand.',
       required: true,
       state: labelState,
+      detail:
+        missingLabels && missingLabels.length > 0
+          ? `Missing: ${missingLabels.join(', ')}.`
+          : undefined,
     },
     {
       id: 'pr_review',
@@ -127,7 +163,8 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
         'Mentioning the agent on a pull request does nothing. Review findings and red CI wait for you to fix them.',
       remedy: 'Install "PR fixer" from the workflows section below.',
       required: true,
-      state: probe.workflows.prReview ? 'met' : 'missing',
+      state: fromPresence(probe.workflows.prReview),
+      detail: probe.workflows.prReview === 'unknown' ? probe.readError : undefined,
     },
     {
       id: 'pr_autopilot',
@@ -136,7 +173,8 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
         'Nothing notices a failing check or an unread review. You find out by looking.',
       remedy: 'Install "PR autopilot" from the workflows section below.',
       required: false,
-      state: probe.workflows.prAutopilot ? 'met' : 'missing',
+      state: fromPresence(probe.workflows.prAutopilot),
+      detail: probe.workflows.prAutopilot === 'unknown' ? probe.readError : undefined,
     },
     {
       id: 'db_url',
@@ -148,8 +186,21 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
         'The schema-drift gate cannot connect, so it reports and passes. The repo looks covered while nothing is checked.',
       remedy: `Set ${probe.dbSecretName} on the dashboard, then press "Push dashboard secrets".`,
       required: true,
-      state: probe.hasMigrations ? hasSecret('SUPABASE_DB_URL') : 'not-applicable',
-      detail: probe.hasMigrations ? probe.secretsError : 'No supabase/migrations in this repo.',
+      // An unreadable migrations directory is not proof the repo has none.
+      // Calling it not-applicable there would report a repo ready at exactly
+      // the moment the check could not run.
+      state:
+        probe.hasMigrations === 'present'
+          ? hasSecret('SUPABASE_DB_URL')
+          : probe.hasMigrations === 'absent'
+            ? 'not-applicable'
+            : 'unknown',
+      detail:
+        probe.hasMigrations === 'present'
+          ? probe.secretsError
+          : probe.hasMigrations === 'absent'
+            ? 'No supabase/migrations in this repo.'
+            : probe.readError,
     },
     {
       id: 'pm_md',
@@ -158,7 +209,8 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
         'The PM agent has no goals or avoid-list to judge a pitch against, so its scoping is generic.',
       remedy: 'Edit .dev-agent/pm.md in the repo — goals, what to avoid, recent decisions.',
       required: false,
-      state: probe.pmConfigured ? 'met' : 'missing',
+      state: fromPresence(probe.pmConfigured),
+      detail: probe.pmConfigured === 'unknown' ? probe.readError : undefined,
     },
   ];
 

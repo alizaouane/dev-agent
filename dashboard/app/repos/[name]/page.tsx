@@ -331,6 +331,40 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                 />
               )}
             </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">PR fixer</h3>
+              {readinessRows.find((r) => r.id === 'pr_review')?.state === 'met' ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. Mentioning <code>@claude</code> on a dev-agent PR
+                  reads the review findings and CI failures, fixes them on the same
+                  branch, and pushes.
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="pr-review"
+                  title="PR fixer"
+                  description="Installs dev-agent-pr-review.yml. Without it, mentioning the agent on a pull request does nothing at all — the reusable workflow's comment triggers only exist inside dev-agent's own repo."
+                />
+              )}
+            </div>
+            <div className="rounded-md border border-border bg-card p-5">
+              <h3 className="mb-1 text-base font-semibold">PR autopilot</h3>
+              {readinessRows.find((r) => r.id === 'pr_autopilot')?.state === 'met' ? (
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  Installed. Every 20 minutes it checks the open dev-agent PRs and
+                  wakes the fixer on anything red, unreviewed, or unresolved. Label a
+                  PR <code>autopilot:off</code> to pause it there.
+                </p>
+              ) : (
+                <InstallWorkflowPanel
+                  repo={name}
+                  workflow="pr-autopilot"
+                  title="PR autopilot"
+                  description="Installs dev-agent-pr-autopilot.yml so a failing check or an unread review wakes the fixer on its own, instead of waiting for you to notice."
+                />
+              )}
+            </div>
             <PushSecretsPanel
               repo={name}
               // Resolved, not re-derived: a shared secret can be overridden per

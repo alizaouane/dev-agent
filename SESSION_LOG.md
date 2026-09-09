@@ -15,6 +15,8 @@
 
 **Tests:** 25 new dashboard tests. Dashboard 554 passed, typecheck clean.
 
+**What the review caught.** Eight findings, several of them the same defect: the module header stated that a read the dashboard may not be permitted to make must never resolve to absence, and `exists` did exactly that for every non-404 error. A rate-limited read would have reported the fixer workflow as missing and told the operator to install one that was already there; an unreadable `supabase/migrations` would have marked the database check not-applicable, reporting a repo ready at the moment the check could not run. Presence is now tri-state throughout. Also: labels were checked by prefix, so a repo carrying only `state:done` and `kind:bug` passed while `dispatchFromSpec` still failed on the labels it uses; the pm.md check looked for angle-bracketed prose the template does not contain, so every freshly wired repo passed — reproducing the exact false positive it was written to remove; secrets were unpaginated; and two remedies pointed at install controls that did not exist on the page.
+
 **Deferred / Next:** branch protection is not checked. A repo can be fully green here and still merge PRs with the required checks unset.
 
 **Next session should start with:** opening the PR for `feat/repo-onboarding-checklist`.

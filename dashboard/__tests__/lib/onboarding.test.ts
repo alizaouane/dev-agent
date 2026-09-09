@@ -1,16 +1,21 @@
 import { describe, it, expect } from 'vitest';
-import { assessRepo, summarizeReadiness, type RepoProbe } from '@/lib/onboarding';
+import {
+  REQUIRED_LABELS,
+  assessRepo,
+  summarizeReadiness,
+  type RepoProbe,
+} from '@/lib/onboarding';
 
 /** A fully configured repo, overridable field by field. */
 function probe(over: Partial<RepoProbe> = {}): RepoProbe {
   return {
     wired: true,
-    labels: ['state:spec-ready', 'kind:feature', 'priority:p1'],
+    labels: [...REQUIRED_LABELS, 'priority:p1'],
     secretNames: ['ANTHROPIC_API_KEY', 'SUPABASE_DB_URL'],
-    workflows: { prReview: true, prAutopilot: true },
-    hasMigrations: true,
+    workflows: { prReview: 'present', prAutopilot: 'present' },
+    hasMigrations: 'present',
     dbSecretName: 'SUPABASE_DB_URL__ALIZAOUANE__CALIENTE_BOOKING_APP',
-    pmConfigured: true,
+    pmConfigured: 'present',
     ...over,
   };
 }
@@ -39,16 +44,45 @@ describe('assessRepo', () => {
     expect(stateOf(probe({ labels: null }), 'labels')).toBe('unknown');
   });
 
-  it('flags labels when a whole prefix is absent', () => {
-    // The intake session files an issue with a state and a kind label. One
-    // missing prefix fails `gh issue create` partway through the flow.
-    expect(stateOf(probe({ labels: ['state:spec-ready'] }), 'labels')).toBe('missing');
-    expect(stateOf(probe({ labels: ['kind:feature'] }), 'labels')).toBe('missing');
+  it('flags labels by exact name, not by prefix', () => {
+    // A repo carrying only `state:done` and `kind:bug` satisfies a prefix test
+    // while `dispatchFromSpec` still fails on the labels it actually uses —
+    // a check that passes without checking the thing that breaks.
+    expect(stateOf(probe({ labels: ['state:done', 'kind:bug'] }), 'labels')).toBe('missing');
     expect(stateOf(probe({ labels: [] }), 'labels')).toBe('missing');
   });
 
+  it('names exactly which labels are absent', () => {
+    const row = assessRepo(probe({ labels: ['state:spec-ready'] })).find((r) => r.id === 'labels')!;
+    expect(row.detail).toContain('kind:feature');
+    expect(row.detail).not.toContain('state:spec-ready');
+  });
+
+  it.each(['pr_review', 'pr_autopilot', 'pm_md'])(
+    'reports %s as unknown, not missing, when the file could not be read',
+    (id) => {
+      // Reporting a read failure as absence tells the operator to install a
+      // workflow that is already there.
+      const p = probe({
+        workflows: { prReview: 'unknown', prAutopilot: 'unknown' },
+        pmConfigured: 'unknown',
+        readError: 'rate limited',
+      });
+      expect(stateOf(p, id)).toBe('unknown');
+      expect(assessRepo(p).find((r) => r.id === id)!.detail).toBe('rate limited');
+    },
+  );
+
+  it('does not call the database check not-applicable when migrations are unreadable', () => {
+    // Absence of evidence is the trap: a repo WITH migrations and no URL would
+    // be reported ready at exactly the moment the check could not run.
+    const p = probe({ hasMigrations: 'unknown', readError: 'rate limited' });
+    expect(stateOf(p, 'db_url')).toBe('unknown');
+    expect(summarizeReadiness(assessRepo(p)).ready).toBe(false);
+  });
+
   it('skips the database check on a repo with no migrations', () => {
-    const p = probe({ hasMigrations: false, secretNames: ['ANTHROPIC_API_KEY'] });
+    const p = probe({ hasMigrations: 'absent', secretNames: ['ANTHROPIC_API_KEY'] });
     expect(stateOf(p, 'db_url')).toBe('not-applicable');
   });
 
@@ -71,7 +105,7 @@ describe('assessRepo', () => {
   });
 
   it('flags a missing fixer workflow, which makes mentioning the agent silent', () => {
-    const p = probe({ workflows: { prReview: false, prAutopilot: true } });
+    const p = probe({ workflows: { prReview: 'absent', prAutopilot: 'present' } });
     expect(stateOf(p, 'pr_review')).toBe('missing');
   });
 
@@ -104,7 +138,7 @@ describe('summarizeReadiness', () => {
 
   it('stays ready when only optional items are outstanding', () => {
     const v = summarizeReadiness(
-      assessRepo(probe({ pmConfigured: false, workflows: { prReview: true, prAutopilot: false } })),
+      assessRepo(probe({ pmConfigured: 'absent', workflows: { prReview: 'present', prAutopilot: 'absent' } })),
     );
     expect(v.ready).toBe(true);
     expect(v.optional.map((r) => r.id).sort()).toEqual(['pm_md', 'pr_autopilot']);
@@ -128,7 +162,7 @@ describe('summarizeReadiness', () => {
 
   it('does not count a not-applicable item against the repo', () => {
     const v = summarizeReadiness(
-      assessRepo(probe({ hasMigrations: false, secretNames: ['ANTHROPIC_API_KEY'] })),
+      assessRepo(probe({ hasMigrations: 'absent', secretNames: ['ANTHROPIC_API_KEY'] })),
     );
     expect(v.ready).toBe(true);
   });

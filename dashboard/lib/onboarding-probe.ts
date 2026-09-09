@@ -3,7 +3,8 @@ import 'server-only';
 import type { Octokit } from '@octokit/rest';
 
 import { envVarForRepo, PROPAGATED_SECRETS } from './propagated-secrets';
-import type { RepoProbe } from './onboarding';
+import { TEMPLATE_PM_MD } from './wire-up-template';
+import type { Presence, RepoProbe } from './onboarding';
 
 /**
  * Read the current configuration of one repo, for the readiness checklist.
@@ -12,34 +13,53 @@ import type { RepoProbe } from './onboarding';
  * because an earlier step ran would report what should be true instead of what
  * is, which is the failure the checklist exists to catch.
  *
- * Reads that the caller may lack permission for resolve to `null` with a
- * reason, never to an empty list. An empty list reads as "nothing configured"
- * and would report a working repo as broken; worse, the same conflation in the
- * other direction is how a missing secret gets reported as satisfied.
+ * Only a 404 counts as absence. Every other read failure — a permission
+ * response, a 5xx, a secondary rate limit — resolves to `unknown` with its
+ * reason, never to absence. This page issues several reads at once, so rate
+ * limiting is realistic rather than theoretical, and treating one as absence
+ * tells the operator to install a workflow that is already installed, or marks
+ * a repo ready because the check could not run.
  */
 
 /** Workflow files the readiness check looks for. */
 const PR_REVIEW_PATH = '.github/workflows/dev-agent-pr-review.yml';
 const PR_AUTOPILOT_PATH = '.github/workflows/dev-agent-pr-autopilot.yml';
 
+/** A file read that distinguishes absence from inability to look. */
+interface Read {
+  presence: Presence;
+  error?: string;
+}
+
 /**
  * Whether a path exists on a ref.
  *
- * @returns True when present; false on 404 or any other read failure, since a
- *   file the dashboard cannot see is one the operator should be told about.
+ * Only a 404 counts as absence. A 403, a 5xx, or a secondary rate limit means
+ * the dashboard could not look — and reporting that as absence tells the
+ * operator to install a workflow that is already installed, or marks a repo
+ * ready because the check could not run. This page issues several content
+ * reads at once, so rate limiting is a realistic trigger rather than a
+ * theoretical one.
+ *
+ * @returns Present, absent, or unknown with the reason.
  */
-async function exists(
+async function readPath(
   octokit: Octokit,
   owner: string,
   repo: string,
   path: string,
   ref: string,
-): Promise<boolean> {
+): Promise<Read> {
   try {
     await octokit.repos.getContent({ owner, repo, path, ref });
-    return true;
-  } catch {
-    return false;
+    return { presence: 'present' };
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === 404) return { presence: 'absent' };
+    return {
+      presence: 'unknown',
+      error: `could not read ${path} (${err instanceof Error ? err.message : String(err)})`,
+    };
   }
 }
 
@@ -57,8 +77,14 @@ async function readSecretNames(
   repo: string,
 ): Promise<{ names: string[] | null; error?: string }> {
   try {
-    const { data } = await octokit.actions.listRepoSecrets({ owner, repo, per_page: 100 });
-    return { names: data.secrets.map((s) => s.name) };
+    // Paginated: a repo with more than 100 secrets would otherwise report the
+    // ones on later pages as missing.
+    const secrets = await octokit.paginate(octokit.actions.listRepoSecrets, {
+      owner,
+      repo,
+      per_page: 100,
+    });
+    return { names: secrets.map((s) => s.name) };
   } catch (err) {
     const status = (err as { status?: number }).status;
     return {
@@ -94,20 +120,32 @@ async function readLabels(
 }
 
 /**
+ * A sentence that appears only in the shipped, unedited template.
+ *
+ * Compared against the real template rather than guessed at. An earlier
+ * version looked for angle-bracketed prose, which the template does not use —
+ * so every freshly wired repo passed, reproducing the false positive this
+ * check was written to remove, while a genuinely edited file containing an
+ * HTML tag or a bare URL failed.
+ */
+const PM_TEMPLATE_SENTINEL = "Replace this with one sentence about what you're focused on this quarter.";
+
+/**
  * Decide whether `.dev-agent/pm.md` has been filled in.
  *
- * Presence is not enough: wire-up ships a placeholder, so a repo that has
- * never been edited would otherwise tick this box while the PM agent still has
- * nothing to reason with.
+ * Presence is not enough: wire-up ships a placeholder, so a repo that has never
+ * been edited would tick this box while the PM agent still has nothing to
+ * reason with.
  *
- * @returns True when the file exists and differs meaningfully from the stub.
+ * @returns Present when edited, absent when missing or still the template,
+ *   unknown when the file could not be read.
  */
 async function readPmConfigured(
   octokit: Octokit,
   owner: string,
   repo: string,
   ref: string,
-): Promise<boolean> {
+): Promise<Read> {
   try {
     const { data } = await octokit.repos.getContent({
       owner,
@@ -115,14 +153,19 @@ async function readPmConfigured(
       path: '.dev-agent/pm.md',
       ref,
     });
-    if (Array.isArray(data) || !('content' in data)) return false;
+    if (Array.isArray(data) || !('content' in data)) {
+      return { presence: 'absent' };
+    }
     const text = Buffer.from(data.content, 'base64').toString('utf8');
-    // The shipped template is placeholder prose in angle brackets. Any repo
-    // that has been edited will have replaced at least one of them.
-    const placeholders = (text.match(/<[^>\n]{4,}>/g) ?? []).length;
-    return text.trim().length > 200 && placeholders === 0;
-  } catch {
-    return false;
+    const untouched = text.trim() === TEMPLATE_PM_MD.trim() || text.includes(PM_TEMPLATE_SENTINEL);
+    return { presence: untouched ? 'absent' : 'present' };
+  } catch (err) {
+    const status = (err as { status?: number }).status;
+    if (status === 404) return { presence: 'absent' };
+    return {
+      presence: 'unknown',
+      error: `could not read .dev-agent/pm.md (${err instanceof Error ? err.message : String(err)})`,
+    };
   }
 }
 
@@ -155,19 +198,19 @@ export async function probeRepoReadiness(
       wired: false,
       labels: null,
       secretNames: null,
-      workflows: { prReview: false, prAutopilot: false },
-      hasMigrations: false,
+      workflows: { prReview: 'absent', prAutopilot: 'absent' },
+      hasMigrations: 'absent',
       dbSecretName,
-      pmConfigured: false,
+      pmConfigured: 'absent',
     };
   }
 
-  const [secrets, labels, prReview, prAutopilot, hasMigrations, pmConfigured] = await Promise.all([
+  const [secrets, labels, prReview, prAutopilot, migrations, pm] = await Promise.all([
     readSecretNames(octokit, owner, repo),
     readLabels(octokit, owner, repo),
-    exists(octokit, owner, repo, PR_REVIEW_PATH, defaultBranch),
-    exists(octokit, owner, repo, PR_AUTOPILOT_PATH, defaultBranch),
-    exists(octokit, owner, repo, 'supabase/migrations', defaultBranch),
+    readPath(octokit, owner, repo, PR_REVIEW_PATH, defaultBranch),
+    readPath(octokit, owner, repo, PR_AUTOPILOT_PATH, defaultBranch),
+    readPath(octokit, owner, repo, 'supabase/migrations', defaultBranch),
     readPmConfigured(octokit, owner, repo, defaultBranch),
   ]);
 
@@ -176,9 +219,13 @@ export async function probeRepoReadiness(
     labels,
     secretNames: secrets.names,
     secretsError: secrets.error,
-    workflows: { prReview, prAutopilot },
-    hasMigrations,
+    workflows: { prReview: prReview.presence, prAutopilot: prAutopilot.presence },
+    hasMigrations: migrations.presence,
     dbSecretName,
-    pmConfigured,
+    pmConfigured: pm.presence,
+    // One reason covers every unknown file read: they share a cause (a
+    // permission or rate-limit response), and the row that shows it only needs
+    // to tell the operator why the answer is missing.
+    readError: [prReview, prAutopilot, migrations, pm].find((r) => r.error)?.error,
   };
 }

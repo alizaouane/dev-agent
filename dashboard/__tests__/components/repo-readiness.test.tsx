@@ -1,18 +1,23 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { RepoReadiness } from '@/components/repo-readiness';
-import { assessRepo, summarizeReadiness, type RepoProbe } from '@/lib/onboarding';
+import {
+  REQUIRED_LABELS,
+  assessRepo,
+  summarizeReadiness,
+  type RepoProbe,
+} from '@/lib/onboarding';
 
 /** A fully configured repo, overridable field by field. */
 function probe(over: Partial<RepoProbe> = {}): RepoProbe {
   return {
     wired: true,
-    labels: ['state:spec-ready', 'kind:feature'],
+    labels: [...REQUIRED_LABELS],
     secretNames: ['ANTHROPIC_API_KEY', 'SUPABASE_DB_URL'],
-    workflows: { prReview: true, prAutopilot: true },
-    hasMigrations: true,
+    workflows: { prReview: 'present', prAutopilot: 'present' },
+    hasMigrations: 'present',
     dbSecretName: 'SUPABASE_DB_URL__ALIZAOUANE__CALIENTE_BOOKING_APP',
-    pmConfigured: true,
+    pmConfigured: 'present',
     ...over,
   };
 }
@@ -53,12 +58,12 @@ describe('<RepoReadiness>', () => {
   });
 
   it('marks optional items so they do not read as blockers', () => {
-    renderFor({ pmConfigured: false });
+    renderFor({ pmConfigured: 'absent' });
     expect(screen.getByText('optional')).toBeInTheDocument();
   });
 
   it('collapses settled rows instead of showing a wall of ticks', () => {
-    renderFor({ pmConfigured: false });
+    renderFor({ pmConfigured: 'absent' });
     // The met rows appear once, in the compact summary line, not as sections
     // with their own consequence and remedy text.
     expect(screen.queryByText(/Every phase that calls a model fails/)).not.toBeInTheDocument();
