@@ -40,6 +40,12 @@ name: dev-agent · pr-autopilot
 #   After MAX_REPEATS unchanged attempts it stands down and says so on the PR,
 #   so a wedged PR costs nothing and is not silently abandoned.
 #
+# TELLING YOU IT IS DONE
+#   When a PR has nothing blocking left, the sweep says so once on the PR and
+#   labels it `ready-to-merge`. An autopilot that reports only problems and is
+#   silent on success still makes you go and look, which is the habit it exists
+#   to replace. Silence means "not finished", never "finished".
+#
 # KILL SWITCH
 #   Disable the workflow in the Actions tab, or label a PR `autopilot:off`.
 
@@ -169,6 +175,7 @@ jobs:
               end,
               "",
               "Woken: \(.woken | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
-              "Stood down: \(.wedged | if length == 0 then "none" else map("#\(.)") | join(", ") end)"
+              "Stood down: \(.wedged | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
+              "Ready to merge: \(.ready | if length == 0 then "none" else map("#\(.)") | join(", ") end)"
             ' /tmp/triage.json
           } >> "$GITHUB_STEP_SUMMARY"

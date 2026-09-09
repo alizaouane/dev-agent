@@ -368,3 +368,55 @@ export function priorSignatures(comments: CommentRecord[]): string[] {
     .map((c) => c.body.match(/<!-- signature:([^>]*) -->/)?.[1]?.trim() ?? '')
     .filter((s) => s !== '');
 }
+
+/** Marker on the comment that announces a PR is ready to merge. */
+export const READY_MARKER = '<!-- dev-agent:pr-autopilot ready -->';
+
+/** Label applied to a PR the autopilot has cleared. */
+export const READY_LABEL = 'ready-to-merge';
+
+/**
+ * Render the announcement that a pull request has nothing left blocking it.
+ *
+ * The autopilot was built to remove the need to go and look at a PR, but it
+ * only ever spoke up about problems. A mechanism that reports failures and
+ * stays silent on success still requires the operator to check, which is the
+ * habit it was meant to replace — silence has to mean "not finished", never
+ * "finished".
+ *
+ * Announced once per PR, not on every sweep: a comment repeated every twenty
+ * minutes is noise that trains you to ignore the channel.
+ *
+ * @param pr - The pull request, now clear of blockers.
+ * @returns The comment body.
+ */
+export function renderReadyComment(pr: PullRequestState): string {
+  return [
+    AUTOPILOT_MARKER,
+    READY_MARKER,
+    '',
+    `**#${pr.number} is ready to merge.** Every check passed, every review thread is`,
+    'resolved, and no bot review is stale against the current head.',
+    '',
+    `Head: \`${pr.headOid.slice(0, 8)}\` · checks: ${pr.checks.length} · reviews: ${pr.reviews.length}`,
+    '',
+    '_Posted once. If a later push reopens something, the autopilot will say so_',
+    '_on this thread rather than repeating this._',
+  ].join('\n');
+}
+
+/**
+ * Whether the autopilot has already announced this PR as ready.
+ *
+ * Checked against its own authorship for the same reason `priorSignatures` is:
+ * anyone can paste the marker, and a forged one would suppress the real
+ * announcement — turning the signal off precisely when it matters.
+ *
+ * @param comments - Every comment on the PR.
+ * @returns True when its own ready announcement is already present.
+ */
+export function alreadyAnnouncedReady(comments: CommentRecord[]): boolean {
+  return comments.some(
+    (c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes(READY_MARKER),
+  );
+}

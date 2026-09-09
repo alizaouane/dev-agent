@@ -39,8 +39,11 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   AUTOPILOT_AUTHORS,
+  READY_LABEL,
+  alreadyAnnouncedReady,
   isDevAgentBranch,
   priorSignatures,
+  renderReadyComment,
   renderWakeComment,
   renderWedgedComment,
   shouldWake,
@@ -202,6 +205,8 @@ export interface TriageReport {
   woken: number[];
   /** PRs the sweep stood down on, having tried and not moved them. */
   wedged: number[];
+  /** PRs announced as ready to merge on this sweep. */
+  ready: number[];
 }
 
 /**
@@ -252,6 +257,29 @@ export function readComments(repo: string, number: number): CommentRecord[] {
 }
 
 /**
+ * Add a label to a PR, ignoring a failure.
+ *
+ * The label is a convenience for scanning the PR list; the comment is the
+ * actual signal. A repo that has never created this label should not turn a
+ * successful announcement into a failed sweep.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number.
+ * @param label - Label to add.
+ */
+export function addLabel(repo: string, number: number, label: string): void {
+  try {
+    execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, '--add-label', label], {
+      encoding: 'utf8',
+    });
+  } catch (err) {
+    process.stderr.write(
+      `could not add ${label} to #${number}: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+}
+
+/**
  * Post a comment on a PR.
  *
  * @param repo - owner/name.
@@ -288,7 +316,7 @@ export function runTriage(
     ? [gh<RawPr>(['pr', 'view', String(onlyPr), '--repo', repo, '--json', fields])]
     : gh<RawPr[]>(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', fields]);
 
-  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [] };
+  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [], ready: [] };
   for (const raw of prs) {
     // Skip the thread query for branches we would never act on — it is the
     // expensive call in this sweep and most open PRs are not ours.
@@ -297,7 +325,22 @@ export function runTriage(
       toPullRequestState(raw, countUnresolvedThreads(repo, raw.number)),
     );
     if (!triage.needsWork) {
-      if (triage.waitingOnly) report.waiting.push(triage);
+      if (triage.waitingOnly) {
+        report.waiting.push(triage);
+        continue;
+      }
+      // Nothing blocking at all. Say so, once. An autopilot that reports only
+      // problems and stays silent on success still makes you go and look,
+      // which is the habit it exists to replace.
+      const comments = readComments(repo, triage.number);
+      if (!alreadyAnnouncedReady(comments)) {
+        if (!dryRun) {
+          const state = toPullRequestState(raw, 0);
+          postComment(repo, triage.number, renderReadyComment(state));
+          addLabel(repo, triage.number, READY_LABEL);
+        }
+        report.ready.push(triage.number);
+      }
       continue;
     }
     report.actionable.push(triage);

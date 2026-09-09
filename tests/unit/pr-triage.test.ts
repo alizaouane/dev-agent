@@ -4,7 +4,10 @@ import { resolve } from 'node:path';
 import { normalizeChecks, toPullRequestState } from '../../lib/cli/pr-triage';
 import {
   AUTOPILOT_MARKER,
+  READY_MARKER,
+  alreadyAnnouncedReady,
   priorSignatures,
+  renderReadyComment,
   renderWakeComment,
   renderWedgedComment,
   shouldWake,
@@ -322,5 +325,52 @@ describe('consumer workflow wrappers', () => {
     const raw = readFileSync(resolve(tplDir, 'dev-agent-pr-review.yml'), 'utf8');
     expect(raw).toMatch(/author_association/);
     expect(raw).toMatch(/OWNER","MEMBER","COLLABORATOR/);
+  });
+});
+
+describe('ready-to-merge announcement', () => {
+  const clean = {
+    number: 42,
+    headRefName: 'feat/dev-agent-issue-42',
+    labels: [],
+    headOid: 'abc1234def',
+    isDraft: false,
+    reviewDecision: 'APPROVED',
+    checks: [{ name: 'test', conclusion: 'SUCCESS' }],
+    reviews: [],
+    unresolvedThreadCount: 0,
+  };
+
+  it('says the PR is ready and names it', () => {
+    // The autopilot was built so the operator stops checking PRs by hand. One
+    // that reports only problems still makes them check, so silence has to
+    // mean "not finished" rather than "finished".
+    const body = renderReadyComment(clean);
+    expect(body).toContain('#42 is ready to merge');
+    expect(body).toContain('abc1234d');
+  });
+
+  it('does not mention the fixer, which would wake it on a finished PR', () => {
+    expect(renderReadyComment(clean)).not.toContain('@claude');
+  });
+
+  it('is recognised as its own announcement afterwards', () => {
+    const body = renderReadyComment(clean);
+    expect(alreadyAnnouncedReady([{ author: 'github-actions[bot]', body }])).toBe(true);
+  });
+
+  it('announces once, so a clean PR is not commented on every twenty minutes', () => {
+    const body = renderReadyComment(clean);
+    expect(alreadyAnnouncedReady([{ author: 'github-actions', body }])).toBe(true);
+  });
+
+  it('ignores a forged marker, which would suppress the real announcement', () => {
+    // Same reasoning as the signature check: anyone can paste the marker, and
+    // a forged one would turn the signal off exactly when it matters.
+    expect(alreadyAnnouncedReady([{ author: 'drive-by', body: READY_MARKER }])).toBe(false);
+  });
+
+  it('treats an unannounced clean PR as needing the announcement', () => {
+    expect(alreadyAnnouncedReady([{ author: 'github-actions', body: 'unrelated' }])).toBe(false);
   });
 });
