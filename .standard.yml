@@ -1,6 +1,6 @@
 # Operating Standard conformance stamp (v5 §26.3). Read by .standard/check.sh.
 standard: "5.1"
-kit_version: 5.7.2
+kit_version: 5.9.6
 track: standard
 initialized: 2026-08-25
 
@@ -19,3 +19,4 @@ env_scope: dashboard/
 #   mis-wire, so routing them through a validated env module would add
 #   ceremony without catching anything. Counting them also made the gate
 #   report 27 files when only ~10 are actionable (§13.5, kit 5.5.0).
+audit_baseline: 12   # measured 2026-09-08; the gate blocks any increase (§21)

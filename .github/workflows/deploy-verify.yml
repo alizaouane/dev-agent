@@ -105,8 +105,26 @@ jobs:
           REST="${READ#*|}"
           CTYPE="${REST%%|*}"
           FINAL="${REST#*|}"
-          PROBE_HOST=$(printf '%s' "$URL"   | sed -E 's|^https?://([^/]+).*|\1|')
-          FINAL_HOST=$(printf '%s' "$FINAL" | sed -E 's|^https?://([^/]+).*|\1|')
+          # A transport failure never reached a host at all: curl reports 000
+          # and may leave url_effective empty or unchanged. That is a broken
+          # probe, not a redirect, and must not be dressed up as an auth wall.
+          if [ "$CODE" = "000" ]; then
+            echo "::error::Could not reach ${URL}${EP} at all (connection failed or timed out). This is a transport failure, not deployment protection."
+            exit 1
+          fi
+
+          # Compare authorities, not raw strings: an https URL is the same host
+          # whether or not it spells out the default port, differs in case, or
+          # carries a trailing dot. Treating those as "redirected elsewhere"
+          # would report a wall that does not exist and skip the smokes.
+          canon_authority() {
+            printf '%s' "$1" \
+              | sed -E 's|^https?://||; s|/.*$||; s|^[^@]*@||' \
+              | tr 'A-Z' 'a-z' \
+              | sed -E 's|:0*443$||; s|\.$||'
+          }
+          PROBE_HOST=$(canon_authority "$URL")
+          FINAL_HOST=$(canon_authority "$FINAL")
 
           # An auth wall is only *confirmed* by being sent somewhere else: a
           # redirect off the deployment host (Vercel SSO answers 200 + HTML at
