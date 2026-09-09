@@ -20,6 +20,23 @@ name: dev-agent · phase-pr-review
 # regex before use).
 
 on:
+  # Consumer repos call this the same way they call every other phase. Without
+  # it, pr-review was the one phase that could not be wired into a repo via
+  # `uses:` — it only ever fired on its own comment triggers.
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'Pull request to review'
+        required: true
+        type: number
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+    secrets:
+      ANTHROPIC_API_KEY:
+        required: true
   issue_comment:
     types: [created]
   pull_request_review:
@@ -30,6 +47,7 @@ on:
 jobs:
   pr-review:
     if: |
+      inputs.pr_number != '' ||
       (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
@@ -65,7 +83,7 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PR_NUMBER: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
           HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
@@ -112,7 +130,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          CONFIG_PATH: .dev-agent.yml
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
           PHASE: implement
         run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
@@ -134,7 +152,7 @@ jobs:
         if: always() && steps.pr.outputs.skip != 'true'
         env:
           EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
-          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          ISSUE_NUMBER: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
           PHASE: implement
           MODEL: claude-sonnet-4-6
           AGENT_STATUS: ${{ steps.agent.outcome == 'success' && 'success' || 'blocked' }}
