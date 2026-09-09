@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { normalizeChecks, toPullRequestState } from '../../lib/cli/pr-triage';
 import {
@@ -194,17 +194,39 @@ describe('shouldWake', () => {
 });
 
 describe('priorSignatures', () => {
+  const BOT = 'github-actions';
+
   it('reads back only its own comments', () => {
-    const bodies = [
-      'a human said something',
-      `${AUTOPILOT_MARKER}\n<!-- signature:failing-check -->\n@claude fix it`,
-      'coderabbit walkthrough',
-    ];
-    expect(priorSignatures(bodies)).toEqual(['failing-check']);
+    expect(
+      priorSignatures([
+        { author: 'alizaouane', body: 'a human said something' },
+        { author: BOT, body: `${AUTOPILOT_MARKER}\n<!-- signature:failing-check -->\nfix it` },
+        { author: 'coderabbitai', body: 'walkthrough' },
+      ]),
+    ).toEqual(['failing-check']);
+  });
+
+  it('ignores a forged marker from someone else, which could silence it forever', () => {
+    // Anyone who can comment could otherwise paste the marker until the
+    // stand-down cap is reached and the autopilot never wakes on that PR
+    // again — the one outcome the whole mechanism exists to prevent.
+    const forged = Array.from({ length: 20 }, () => ({
+      author: 'drive-by',
+      body: `${AUTOPILOT_MARKER}\n<!-- signature:failing-check -->`,
+    }));
+    expect(priorSignatures(forged)).toEqual([]);
+  });
+
+  it('accepts the [bot]-suffixed spelling of its own login', () => {
+    expect(
+      priorSignatures([
+        { author: 'github-actions[bot]', body: `${AUTOPILOT_MARKER}\n<!-- signature:x -->` },
+      ]),
+    ).toEqual(['x']);
   });
 
   it('ignores an autopilot comment with no signature rather than counting a blank', () => {
-    expect(priorSignatures([`${AUTOPILOT_MARKER}\nno signature here`])).toEqual([]);
+    expect(priorSignatures([{ author: BOT, body: `${AUTOPILOT_MARKER}\nno signature` }])).toEqual([]);
   });
 });
 
@@ -227,7 +249,7 @@ describe('renderWakeComment', () => {
 
   it('embeds a signature the next sweep can read back', () => {
     const body = renderWakeComment(triage, shouldWake(triage.signature, []));
-    expect(priorSignatures([body])).toEqual([triage.signature]);
+    expect(priorSignatures([{ author: 'github-actions[bot]', body }])).toEqual([triage.signature]);
   });
 
   it('lists every blocker, so the thread says why it woke', () => {
@@ -265,8 +287,40 @@ describe('renderWedgedComment', () => {
     expect(body).toContain('<!-- wedged -->');
   });
 
-  it('does not mention @claude, which would re-trigger the fixer it just stopped', () => {
+  it('never contains the fixer mention, which would start the run it is ending', () => {
+    // The trigger matches that substring ANYWHERE in a comment body, and the
+    // fixer's author exclusion covers claude[bot], not the workflow identity.
+    // A stand-down notice naming the mention would wake the fixer.
     const body = renderWedgedComment(triage, { wake: false, repeats: 4, reason: 'wedged' });
-    expect(body).not.toMatch(/^@claude/m);
+    expect(body).not.toContain('@claude');
+  });
+});
+
+describe('consumer workflow wrappers', () => {
+  const tplDir = resolve(__dirname, '../../examples/web-app-template/.github/workflows');
+
+  it.each(['dev-agent-pr-review.yml', 'dev-agent-pr-autopilot.yml'])(
+    '%s references a reusable workflow that exists in this repo',
+    (file) => {
+      // Catches a typo'd path. It does NOT prove the file exists on the `v1`
+      // tag — `v1` is a moving tag re-pointed at main on release, and this
+      // repo has previously shipped consumer wrappers pointing at a `v1` that
+      // did not yet carry them, breaking every wired repo until someone
+      // remembered to move it. Moving `v1` is a release step, not a PR step.
+      const raw = readFileSync(resolve(tplDir, file), 'utf8');
+      const refs = [...raw.matchAll(/uses: alizaouane\/dev-agent\/(\.github\/workflows\/[\w.-]+)@/g)];
+      expect(refs.length).toBeGreaterThan(0);
+      for (const [, path] of refs) {
+        expect(existsSync(resolve(__dirname, '../..', path))).toBe(true);
+      }
+    },
+  );
+
+  it('authorizes the actor before the fixer spends a model call', () => {
+    // Mentioning the fixer starts a run that edits and pushes a branch. Any
+    // passer-by able to comment must not be able to trigger that.
+    const raw = readFileSync(resolve(tplDir, 'dev-agent-pr-review.yml'), 'utf8');
+    expect(raw).toMatch(/author_association/);
+    expect(raw).toMatch(/OWNER","MEMBER","COLLABORATOR/);
   });
 });

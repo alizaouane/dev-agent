@@ -38,12 +38,14 @@
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
+  AUTOPILOT_AUTHORS,
   isDevAgentBranch,
   priorSignatures,
   renderWakeComment,
   renderWedgedComment,
   shouldWake,
   triagePullRequest,
+  type CommentRecord,
   type PrTriage,
   type PullRequestState,
 } from '../pr-blockers';
@@ -141,8 +143,11 @@ export function countUnresolvedThreads(repo: string, number: number): number {
     [
       'api', 'graphql', '--paginate',
       '-f', `query=${query}`,
-      '-F', `owner=${owner}`,
-      '-F', `name=${name}`,
+      // -f keeps these strings. -F would coerce a numeric-only owner or repo
+      // name to a JSON number, which fails the String! type and aborts the
+      // whole sweep, not just this PR.
+      '-f', `owner=${owner}`,
+      '-f', `name=${name}`,
       '-F', `number=${number}`,
       '--jq', '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length',
     ],
@@ -200,17 +205,50 @@ export interface TriageReport {
 }
 
 /**
- * Read every comment body on a PR, oldest first.
+ * Read every comment on a PR, oldest first, with its author.
+ *
+ * Paginated, and via GraphQL rather than `gh pr view --json comments`, which
+ * caps at 100. On exactly the PRs this feature targets — several bot review
+ * cycles deep — that cap silently hides the autopilot's own recent history,
+ * so every sweep would read "no prior attempts" and wake the fixer again with
+ * the stand-down cap counting a truncated list.
+ *
+ * The author travels with the body because the caller must not count a comment
+ * it did not write; see `priorSignatures`.
  *
  * @param repo - owner/name.
  * @param number - PR number.
- * @returns The comment bodies.
+ * @returns Every comment, oldest first.
  */
-export function readCommentBodies(repo: string, number: number): string[] {
-  const data = gh<{ comments?: Array<{ body?: string }> }>([
-    'pr', 'view', String(number), '--repo', repo, '--json', 'comments',
-  ]);
-  return (data.comments ?? []).map((c) => c.body ?? '');
+export function readComments(repo: string, number: number): CommentRecord[] {
+  const [owner, name] = repo.split('/');
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
+    repository(owner:$owner,name:$name){
+      pullRequest(number:$number){
+        comments(first:100,after:$endCursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{ body author{login} }
+        }
+      }
+    }
+  }`;
+  const raw = execFileSync(
+    'gh',
+    [
+      'api', 'graphql', '--paginate',
+      '-f', `query=${query}`,
+      '-f', `owner=${owner}`,
+      '-f', `name=${name}`,
+      '-F', `number=${number}`,
+      '--jq', '.data.repository.pullRequest.comments.nodes[] | {author: (.author.login // ""), body: (.body // "")}',
+    ],
+    { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 },
+  );
+  // --jq emits one JSON object per line, across every page.
+  return raw
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .map((l) => JSON.parse(l) as CommentRecord);
 }
 
 /**
@@ -264,8 +302,8 @@ export function runTriage(
     }
     report.actionable.push(triage);
 
-    const bodies = readCommentBodies(repo, triage.number);
-    const decision = shouldWake(triage.signature, priorSignatures(bodies), maxRepeats);
+    const comments = readComments(repo, triage.number);
+    const decision = shouldWake(triage.signature, priorSignatures(comments), maxRepeats);
 
     if (decision.wake) {
       if (!dryRun) postComment(repo, triage.number, renderWakeComment(triage, decision));
@@ -275,7 +313,9 @@ export function runTriage(
     // Stood down. Say so once, then stay quiet: a PR the autopilot has
     // silently given up on looks exactly like one it is still working, which
     // is the situation this whole mechanism exists to prevent.
-    const alreadySaid = bodies.some((b) => b.includes('<!-- wedged -->'));
+    const alreadySaid = comments.some(
+      (c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes('<!-- wedged -->'),
+    );
     if (!alreadySaid && !dryRun) {
       postComment(repo, triage.number, renderWedgedComment(triage, decision));
     }
@@ -296,10 +336,22 @@ function main(): void {
   if (onlyPr !== undefined && !Number.isInteger(onlyPr)) {
     throw new Error(`PR_NUMBER must be an integer, got: ${process.env.PR_NUMBER}`);
   }
+  // `max_repeats` is an unrestricted `number` on the reusable workflow, so a
+  // direct workflow_call can pass 0, a negative, or a fraction. Zero or less
+  // stands the autopilot down on the first PR it looks at — the feature
+  // silently disabled by a plausible-looking input.
+  let maxRepeats: number | undefined;
+  if (process.env.MAX_REPEATS) {
+    maxRepeats = Number(process.env.MAX_REPEATS);
+    if (!Number.isInteger(maxRepeats) || maxRepeats < 1) {
+      throw new Error(`MAX_REPEATS must be a positive integer, got: ${process.env.MAX_REPEATS}`);
+    }
+  }
+
   const report = runTriage(repo, {
     onlyPr,
     dryRun: process.env.DRY_RUN === 'true',
-    maxRepeats: process.env.MAX_REPEATS ? Number(process.env.MAX_REPEATS) : undefined,
+    maxRepeats,
   });
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
 }

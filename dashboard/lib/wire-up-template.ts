@@ -938,24 +938,45 @@ permissions:
 
 jobs:
   pr-review:
+    # Two guards, for two different problems.
+    #
     # \`claude[bot]\` is excluded so the fixer's own comments cannot wake it
     # again — that loop would spend the budget cap in an afternoon.
+    #
+    # \`author_association\` authorizes the person. Mentioning the fixer starts
+    # a model run that edits and pushes to a branch, so it cannot be something
+    # any passer-by can trigger by commenting. Bot reviewers (CodeRabbit,
+    # Codex) and the autopilot report as NONE, so they are allowed by login
+    # rather than by association; every other actor must be an owner, member,
+    # or collaborator. Same allowlist the /swarm-override handler uses.
     if: |
       (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
         contains(github.event.comment.body, '@claude') &&
-        github.event.comment.user.login != 'claude[bot]'
+        github.event.comment.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)
+        )
       ) ||
       (
         github.event_name == 'pull_request_review_comment' &&
         contains(github.event.comment.body, '@claude') &&
-        github.event.comment.user.login != 'claude[bot]'
+        github.event.comment.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.comment.user.login)
+        )
       ) ||
       (
         github.event_name == 'pull_request_review' &&
         contains(github.event.review.body, '@claude') &&
-        github.event.review.user.login != 'claude[bot]'
+        github.event.review.user.login != 'claude[bot]' &&
+        (
+          contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.review.author_association) ||
+          contains(fromJSON('["github-actions[bot]","coderabbitai[bot]","chatgpt-codex-connector[bot]"]'), github.event.review.user.login)
+        )
       )
     uses: alizaouane/dev-agent/.github/workflows/phase-pr-review.yml@v1
     with:

@@ -113,6 +113,11 @@ jobs:
           repository: alizaouane/dev-agent
           ref: v1
           path: .dev-agent-engine
+          # `npm ci` runs against this tree, and this job holds
+          # `pull-requests: write`. A dependency install script has no reason
+          # to reach the git credential checkout persists by default, and no
+          # later step here needs git authentication.
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         with:

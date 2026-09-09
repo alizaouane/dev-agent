@@ -314,6 +314,12 @@ export function renderWakeComment(triage: PrTriage, decision: WakeDecision): str
  * looks identical to one it is still working, which is the situation this whole
  * mechanism exists to prevent.
  *
+ * It must not contain the fixer's mention string. The trigger matches that
+ * substring anywhere in a comment body, and the fixer's author exclusion
+ * covers `claude[bot]` rather than the workflow identity — so a stand-down
+ * notice that named the mention would start the very run it is announcing the
+ * end of.
+ *
  * @param triage - The PR's blockers.
  * @param decision - The wake decision that concluded `wedged`.
  * @returns The comment body.
@@ -330,20 +336,35 @@ export function renderWedgedComment(triage: PrTriage, decision: WakeDecision): s
     '',
     ...triage.blockers.map((b) => `- ${b.detail}`),
     '',
-    'This needs a decision rather than another attempt. Comment `@claude` to try',
-    'again once something has changed.',
+    'This needs a decision rather than another attempt. Mention the fixer on this',
+    'PR to try again once something has changed.',
   ].join('\n');
 }
+
+/** One PR comment, with enough context to know whether to trust it. */
+export interface CommentRecord {
+  author: string;
+  body: string;
+}
+
+/** Logins whose comments count as this autopilot's own history. */
+export const AUTOPILOT_AUTHORS: readonly string[] = ['github-actions', 'github-actions[bot]'];
 
 /**
  * Extract the blocker signatures this autopilot recorded on a PR.
  *
- * @param commentBodies - Every comment on the PR, oldest first.
- * @returns Signatures from autopilot comments only, in order.
+ * The author check is not bookkeeping. Anyone who can comment on the PR can
+ * paste the marker and a signature, and without it those forgeries would count
+ * toward the stand-down cap — letting a commenter silence the autopilot on a
+ * PR permanently, which is the one outcome this whole mechanism exists to
+ * prevent. Only comments the workflow identity actually wrote are counted.
+ *
+ * @param comments - Every comment on the PR, oldest first.
+ * @returns Signatures from this autopilot's own comments, in order.
  */
-export function priorSignatures(commentBodies: string[]): string[] {
-  return commentBodies
-    .filter((b) => b.includes(AUTOPILOT_MARKER))
-    .map((b) => b.match(/<!-- signature:([^>]*) -->/)?.[1]?.trim() ?? '')
+export function priorSignatures(comments: CommentRecord[]): string[] {
+  return comments
+    .filter((c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes(AUTOPILOT_MARKER))
+    .map((c) => c.body.match(/<!-- signature:([^>]*) -->/)?.[1]?.trim() ?? '')
     .filter((s) => s !== '');
 }
