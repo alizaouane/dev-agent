@@ -20,7 +20,9 @@ import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { StartFromSpecPanel } from '@/components/start-from-spec-panel';
 import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
-import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
+import { RepoReadiness } from '@/components/repo-readiness';
+import { assessRepo, summarizeReadiness } from '@/lib/onboarding';
+import { probeRepoReadiness } from '@/lib/onboarding-probe';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PushSecretsPanel } from '@/components/push-secrets-panel';
 import { resolveSecrets } from '@/lib/propagated-secrets';
@@ -47,20 +49,6 @@ async function isWorkflowInstalled(
   }
 }
 
-async function probeFile(
-  octokit: Awaited<ReturnType<typeof getOctokit>>,
-  owner: string,
-  repo: string,
-  path: string,
-  ref: string,
-): Promise<boolean> {
-  try {
-    await octokit.repos.getContent({ owner, repo, path, ref });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 export default async function RepoPage(props: { params: Promise<{ name: string }> }) {
   const { name: rawName } = await props.params;
@@ -113,22 +101,23 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       : Promise.resolve({ specs: [], plans: [] }),
   ]);
 
-  const [pmMdPresent] = await Promise.all([
-    repo.wired_up
-      ? probeFile(octokit, repo.owner, repo.name, '.dev-agent/pm.md', repo.default_branch)
-      : Promise.resolve(false),
-  ]);
-  const setupSteps: SetupSteps = {
-    wired: repo.wired_up,
-    pm_md_present: pmMdPresent,
-    scout_configured: unfinishedWorkInstalled,
-    first_proposal: proposals.length > 0,
-    first_feature_shipped: workspace.recentlyShipped.length > 0,
-  };
+  // Probed, not inferred. The previous checklist ticked boxes from earlier
+  // steps having run, which reports what should be true rather than what is —
+  // the same shape as a gate that passes without checking.
+  const readinessRows = assessRepo(
+    await probeRepoReadiness(
+      octokit,
+      repo.owner,
+      repo.name,
+      repo.default_branch,
+      repo.wired_up,
+    ),
+  );
+  const readiness = summarizeReadiness(readinessRows);
 
   return (
     <div className="flex flex-col gap-10">
-      <SetupChecklist repoName={name} steps={setupSteps} />
+      <RepoReadiness repoName={name} rows={readinessRows} verdict={readiness} />
       {/* Band 1 — Repo header */}
       <div>
         <PageHeader

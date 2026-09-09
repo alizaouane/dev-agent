@@ -1,5 +1,26 @@
 # Session Log
 
+## 2026-09-09 16:20 UTC — interactive — Repo onboarding: probe readiness instead of tracking milestones
+
+**Trigger:** User: *"I will need some sort of repo onboarding in Dev Agent dashboard for when I start adding new project."*
+
+**What was there.** A five-item `SetupChecklist` tracking milestones — wired, pm.md present, scout configured, first proposal, first feature shipped. Three of those are outcomes rather than configuration, and none of the things that actually stall a new repo were checked at all: no labels check, no secrets check, no fixer-workflow check. The one item that overlapped, `pm_md_present`, only tested existence, so a repo carrying the untouched wire-up placeholder ticked the box while the PM agent still had nothing to reason with.
+
+**What changed (branch `feat/repo-onboarding-checklist`):**
+
+- **[dashboard/lib/onboarding.ts](dashboard/lib/onboarding.ts)** — seven requirements, each carrying the consequence of its absence and the remedy. Every item is drawn from something that has genuinely failed: labels the intake skill files issues with, the fixer workflow whose absence made mentioning the agent silent, the database URL whose absence leaves the drift gate reporting and passing. `unknown` is a distinct state from `missing` and it blocks — listing secrets needs admin, and reporting a repo ready because a check could not run is a guess presented as a fact.
+- **[dashboard/lib/onboarding-probe.ts](dashboard/lib/onboarding-probe.ts)** — every field looked up rather than inferred. A permission failure resolves to null with a reason, never to an empty list, because an empty list reads as "nothing configured".
+- **[dashboard/components/repo-readiness.tsx](dashboard/components/repo-readiness.tsx)** — outstanding rows carry their consequence and remedy in full; settled rows collapse to one line. A row reading "PR fixer workflow ☐" gets skipped; one saying mentioning the agent currently does nothing gets acted on.
+- Removed `setup-checklist.tsx` and its tests, superseded.
+
+**Tests:** 25 new dashboard tests. Dashboard 554 passed, typecheck clean.
+
+**Deferred / Next:** branch protection is not checked. A repo can be fully green here and still merge PRs with the required checks unset.
+
+**Next session should start with:** opening the PR for `feat/repo-onboarding-checklist`.
+
+---
+
 ## 2026-09-09 15:10 UTC — interactive — Database URLs are per-repo, not shared
 
 **Trigger:** User asked where to maintain `SUPABASE_DB_URL` and which URL to use. Checking the repos to answer accurately surfaced a defect in what shipped yesterday in PR #150.
