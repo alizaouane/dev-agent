@@ -13,6 +13,7 @@ import {
   type IssueCommentRow,
 } from '@/lib/feature-timeline';
 import { fetchActiveRunsForIssue } from '@/lib/active-runs';
+import { evaluateSpecApproval } from '@/lib/spec-approval-gate';
 import { fetchRecentFailuresForIssue } from '@/lib/run-failures';
 import { fetchFeaturePR } from '@/lib/feature-pr';
 import { outcomesForFeature } from '@/lib/verification/aggregate';
@@ -57,10 +58,26 @@ export default async function FeaturePage(props: {
     tab === 'verification' && pillar && (PILLAR_IDS as readonly string[]).includes(pillar)
       ? (pillar as PillarId)
       : null;
-  const stateLabel =
-    (issueData.labels.map((l) => (typeof l === 'string' ? l : l.name)).filter(Boolean) as string[]).find((l) =>
-      l.startsWith('state:'),
-    ) ?? 'state:unknown';
+  const labels = issueData.labels
+    .map((l) => (typeof l === 'string' ? l : l.name))
+    .filter(Boolean) as string[];
+  const stateLabel = labels.find((l) => l.startsWith('state:')) ?? 'state:unknown';
+
+  // Evaluate the approval gate up front so the operator sees whether the
+  // spec is startable BEFORE clicking, rather than learning it from an
+  // error after a round trip. The server action re-checks on submit —
+  // this is presentation, not enforcement.
+  const approvalGate =
+    stateLabel === 'state:spec-ready'
+      ? await evaluateSpecApproval({
+          octokit,
+          repo: name,
+          owner,
+          ref: (await octokit.repos.get({ owner, repo: name })).data.default_branch,
+          issueBody: issueData.body,
+          labels,
+        })
+      : null;
 
   // Octokit v22 returns `{ data: T[] }` — we destructured only the issue
   // fetch above; `commentsResp` keeps its envelope so we can normalize.
@@ -127,8 +144,12 @@ export default async function FeaturePage(props: {
         prUrl={prUrl}
         verification={{ outcomes, expandedPillar }}
       />
-      {stateLabel === 'state:spec-ready' ? (
-        <FeatureApproveButton repo={`${owner}/${name}`} issue={issue_number} />
+      {stateLabel === 'state:spec-ready' && approvalGate ? (
+        <FeatureApproveButton
+          repo={`${owner}/${name}`}
+          issue={issue_number}
+          gate={approvalGate}
+        />
       ) : null}
       <ActiveRunsPanel runs={activeRuns} repo={`${owner}/${name}`} />
       <FailedRunsPanel runs={failedRuns} />

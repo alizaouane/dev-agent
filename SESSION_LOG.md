@@ -1,5 +1,31 @@
 # Session Log
 
+## 2026-09-09 11:45 UTC — interactive — Spec approval gate: review until clean, approve once, then Start work
+
+**Trigger:** User: *"I need the spec independently reviewed and corrected until I approve it, then it can move to Dev agent dashboard where the button is not to approve but to start the work"*. The existing flow contradicted this in two places: `start-feature` Phase 3.5 **defaulted to proceeding** on a `concerns` verdict if the user did not answer within the turn, and `dispatchExistingIssue` validated only the `state:spec-ready` label — nothing anywhere read the review verdict.
+
+**What changed (branch `feat/spec-approval-gate`):**
+
+- **[lib/spec-approval.ts](lib/spec-approval.ts)** — new. The approval record and the pure gate decision. An approval names the verdict it was given against and carries a sha256 over the spec and plan together, so an approval cannot be harvested from a blocked run and cannot survive an edit to either document. Fails closed on a missing, malformed, or too-new record. `spec-approval:override` on the issue dispatches anyway and states in the message what it overrode. The plan is optional so the `quick-dev` route stays inside the gate rather than being exempted from it.
+- **[lib/cli/approve-spec.ts](lib/cli/approve-spec.ts)** — new. Writes `<spec>.approval.json` next to the spec. Refuses to record an approval against a `blocker` verdict.
+- **[dashboard/lib/spec-approval-gate.ts](dashboard/lib/spec-approval-gate.ts)** — new. Fetches spec, plan, and approval from the consumer repo and hands them to the pure decision. An API error refuses rather than reading as "no approval".
+- **[dashboard/lib/actions.ts](dashboard/lib/actions.ts)** — both dispatch paths now run the gate. In `dispatchFromSpec` it runs *before* `issues.create`, so a refusal leaves no orphan `state:spec-ready` issue.
+- **[dashboard/components/feature-approve-button.tsx](dashboard/components/feature-approve-button.tsx)** — the button reads **Start work** and is disabled when the gate refuses, with the reason underneath. The server action re-checks, so the disable is presentation, not enforcement.
+- **[skills/start-feature/SKILL.md](skills/start-feature/SKILL.md)** — Phase 3.5 is now a review → correct → re-review loop that terminates only on `ok`, with a four-round cap that stops and reports instead of shipping. New Phase 3.6 asks the user once, waits for an explicit answer, and records the approval. Both phases carry an explicit "never run `approve-spec` on the user's behalf".
+- **[skills/quick-dev/SKILL.md](skills/quick-dev/SKILL.md)** — new Step 3.5: quick-dev skips the adversarial review, not the approval.
+- **[schema/label-vocabulary.yml](schema/label-vocabulary.yml)** — new `gates:` section for `spec-approval:override`, deliberately not a `state:` label.
+
+**Tests:** 44 new engine tests + 15 dashboard gate tests + 3 wiring guards in the actions suite. Engine 852 passed, dashboard 490 passed, both typechecks clean.
+
+**Deferred / Next:**
+
+- The `spec-review` skill still writes a repo-global `.dev-agent/spec-review.json`; the approval record carries the verdict instead, so the gate does not depend on that file. Worth keying the review artifact by spec too.
+- Consumer repos need the `spec-approval:override` label created before it can be applied.
+
+**Next session should start with:** opening the PR for `feat/spec-approval-gate` and running the review loop on it to green.
+
+---
+
 ## 2026-06-12 UTC — interactive — Spec/plan templates + spec-review skill (PR-1 of BMAD alignment)
 
 **Trigger:** User asked for a review of dev-agent against the AI-Native Operating Standard v4.0, then against the actual [BMAD-METHOD repo](https://github.com/bmad-code-org/BMAD-METHOD.git). Agreed that the biggest leverage point was extracting the spec/plan structure (today buried as prose inside [skills/start-feature/SKILL.md](skills/start-feature/SKILL.md)) into real template files, plus a fresh-context adversarial reviewer modeled on BMAD's `bmad-create-story/checklist.md`. User said "continue the work" — this is PR-1 of three.

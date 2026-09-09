@@ -22,6 +22,7 @@ import {
 import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
+import { evaluateSpecApproval } from './spec-approval-gate';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -551,6 +552,30 @@ export async function dispatchExistingIssue(
     );
     const default_branch = repoData.data.default_branch;
 
+    // The approval gate. `state:spec-ready` only records which stage the
+    // issue reached — it says nothing about whether the spec was reviewed,
+    // whether the review passed, or whether the text still matches what the
+    // user approved. Specs are approved in the Claude Code intake session,
+    // after the independent review comes back clean; this button starts
+    // approved work rather than approving it, so it refuses anything it
+    // cannot tie back to a hash-matched approval on `default_branch`.
+    const gate = await wrapStep('checking spec approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: issue.data.body,
+        labels,
+      }),
+    );
+    if (!gate.allow) {
+      return {
+        error: `work cannot start — ${gate.message}`,
+        issue_url: issue.data.html_url,
+      };
+    }
+
     await wrapStep('dispatching implement workflow', () =>
       octokit.actions.createWorkflowDispatch({
         owner,
@@ -675,6 +700,26 @@ export async function dispatchFromSpec(
       '',
       'Filed from the dashboard "Start from existing spec" panel.',
     ].join('\n');
+
+    // Same approval gate as `dispatchExistingIssue`, run BEFORE the issue
+    // is created so a refusal doesn't leave an orphan `state:spec-ready`
+    // issue behind. This panel files and dispatches in one step, which
+    // would otherwise be the one route into the implement workflow that
+    // never passes an approval check. There is no issue yet and therefore
+    // no override label: an unapproved spec has to go back through intake.
+    const gate = await wrapStep('checking spec approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: body,
+        labels: [],
+      }),
+    );
+    if (!gate.allow) {
+      return { error: `work cannot start — ${gate.message}` };
+    }
 
     const created = await wrapStep('creating spec-ready issue', () =>
       octokit.issues.create({

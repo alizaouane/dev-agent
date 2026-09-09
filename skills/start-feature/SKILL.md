@@ -71,13 +71,14 @@ If any check fails, surface the error verbatim and stop. Do not proceed.
 - [ ] Phase 1: PM evaluation → Agreed scope
 - [ ] Phase 2: Spec written + committed
 - [ ] Phase 3: Plan written + committed
-- [ ] Phase 3.5: spec-review run; verdict ok or concerns
+- [ ] Phase 3.5: review → correct loop until the verdict is clean
+- [ ] Phase 3.6: user approval recorded (.approval.json committed)
 - [ ] Phase 4: GitHub issue filed at state:spec-ready
 ```
 
 Use the TodoWrite tool. Mark each item `in_progress` when starting that phase, `completed` only when done. **Phase 4 stays `pending` until the issue URL is printed.** An incomplete todo is the visible signal that the skill is not finished — do not announce "done" or end the turn while any item is pending.
 
-**Phase 3.5 skip exception:** if Phase 1's PM evaluation classified the work as trivial (one-liner, typo, copy fix), mark Phase 3.5 `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill.
+**Phase 3.5 and 3.6 skip exception:** if Phase 1's PM evaluation classified the work as trivial (one-liner, typo, copy fix), mark both `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill, and the dashboard's approval gate honours the same trivial route through `quick-dev`.
 
 **Quick-dev fast path (replaces the whole list).** If the user passed `--quick` OR if Phase 1's PM evaluation classifies the work as trivial AND `kind` is `bug` or `improvement`, REPLACE the 5-phase checklist above with:
 
@@ -86,7 +87,7 @@ Use the TodoWrite tool. Mark each item `in_progress` when starting that phase, `
 - [ ] Phase 1.5: hand off to dev-agent:quick-dev (spec + issue filed in one shot)
 ```
 
-Phases 2, 3, 3.5, and 4 are all rolled into quick-dev's flow. See `## Phase 1.5 — quick-dev fast path` below for the routing logic.
+Phases 2, 3, 3.5, 3.6, and 4 are all rolled into quick-dev's flow. See `## Phase 1.5 — quick-dev fast path` below for the routing logic.
 
 ## Phase 1 — PM evaluation
 
@@ -134,7 +135,7 @@ Invoke `dev-agent:quick-dev` via the `Skill` tool, passing:
 
 Quick-dev fills the `templates/quick-spec.template.md`, commits it, files the `state:spec-ready` + `quick-dev` labeled issue (no `Plan:` line — the implement agent derives its own task list), and returns the issue URL. See [skills/quick-dev/SKILL.md](../quick-dev/SKILL.md) for the full contract.
 
-When quick-dev returns, mark Phase 1.5 todo `completed` and surface the issue URL to the user. **The workflow is done.** Phases 2, 3, 3.5, and 4 are not run on this path.
+When quick-dev returns, mark Phase 1.5 todo `completed` and surface the issue URL to the user. **The workflow is done.** Phases 2, 3, 3.5, 3.6, and 4 are not run on this path.
 
 If quick-dev bails (e.g. `forced_quick=true` but the user declines its "looks substantial" warning), return to the full flow: replace the 2-item TodoWrite list with the 5-phase list, and proceed to Phase 2 normally.
 
@@ -200,29 +201,115 @@ git push
 
 Mark Phase 3 todo complete. Move to Phase 3.5.
 
-## Phase 3.5 — spec-review (adversarial fresh-context audit)
+## Phase 3.5 — Review and correct, until the review is clean
 
-Before filing the handoff issue, run the `dev-agent:spec-review` skill against the just-written spec and plan. This is the gate that catches the class of bugs the spec author missed in Phase 2/3 — wheel reinvention, missing tests, files-to-touch paths that don't resolve, AC ↔ plan mismatches, scope creep.
+The user does not read specs. An independent reviewer does, and the spec is
+corrected and re-reviewed until that reviewer has nothing blocking left to say.
+Only then is there something worth approving. This phase is that loop.
 
-**Clear stale artifacts first.** Always remove any leftover `.dev-agent/spec-review.json` and `.dev-agent/spec-review-summary.md` from a prior `/develop` run in this clone, BEFORE branching on the verdict path. After this, the files exist only if the current run produced them — Phase 4's "include the summary in the issue body if it exists" check then can't pick up stale review text:
+**Clear stale artifacts first**, before branching on any verdict. After this the
+files exist only if the current run produced them, so Phase 4 cannot pick up
+review text from a previous `/develop` run in this clone:
 
 ```bash
 rm -f .dev-agent/spec-review.json .dev-agent/spec-review-summary.md
 ```
 
-**Skip if trivial.** If Phase 1 marked the work as trivial (one-liner / typo / copy fix), mark Phase 3.5 todo `completed` with note "skipped: trivial work" and proceed to Phase 4. Adversarial review of a 3-paragraph spec is overkill and the friction isn't worth it.
+**Skip if trivial.** If Phase 1 marked the work trivial (one-liner, typo, copy
+fix), mark Phase 3.5 and 3.6 `completed` with note "skipped: trivial work" and
+go to Phase 4.
 
-**Otherwise invoke spec-review:**
+### The loop
 
-Use the `Skill` tool to invoke `dev-agent:spec-review`. Pass the absolute paths to the spec and plan you just wrote. The skill runs in a fresh-context audit pass and writes its verdict to `.dev-agent/spec-review.json` + `.dev-agent/spec-review-summary.md` in the consumer repo, then prints the verdict word (`ok` | `concerns` | `blocker`) on its final stdout line.
+Track the round number; it goes into the approval record.
 
-**Handle the verdict:**
+1. Invoke `dev-agent:spec-review` via the `Skill` tool, passing absolute paths
+   to the spec and plan. It runs a fresh-context audit, writes
+   `.dev-agent/spec-review.json` and `.dev-agent/spec-review-summary.md`, and
+   prints the verdict word on its final stdout line.
+2. Read the verdict:
+   - **`ok`** — the loop is done. Go to Phase 3.6.
+   - **`concerns` or `blocker`** — **correct the spec and plan yourself.** Do
+     not ask the user which findings to address, and do not carry findings
+     forward into the issue body for someone else to weigh. Read each finding,
+     edit the affected sections of the spec or plan, commit the correction, and
+     go back to step 1 for another round. Re-run the review from scratch every
+     round — never reuse the previous verdict.
+3. Repeat until the verdict is `ok`.
 
-- **`ok`** — silent pass. Proceed to Phase 4. Reference `.dev-agent/spec-review.json` in the issue body so the dashboard / approver can see the review was clean.
-- **`concerns`** — print the summary from `.dev-agent/spec-review-summary.md` to the user. Ask: "Address the concerns now (return to Phase 2 or 3), or proceed and surface them in the issue body for the approver to consider?" Default to proceeding if no user input within the same turn. **Either way, mark Phase 3.5 todo `completed`** — proceeding without acknowledgement still counts as proceeding; leaving the todo open would let Phase 4 advance with the checklist still showing work outstanding.
-- **`blocker`** — print the summary. Refuse to advance to Phase 4. Tell the user which sections of the spec or plan to fix. Mark Phase 3.5 todo `in_progress` (still). On the next attempt, re-run spec-review from the top — do NOT cache the previous verdict.
+**On a finding you believe is wrong:** say so in one sentence, in the spec
+itself, in the section the reviewer flagged. A finding you disagree with still
+has to be answered in the document, because the document is what the next
+reviewer and the implement agent read. An unanswered finding is a finding.
 
-Mark Phase 3.5 todo `completed` on `ok` or any `concerns` path (acknowledged or default-proceed). Only `blocker` leaves the todo `in_progress`. Move to Phase 4.
+**Round cap.** If four rounds pass without reaching `ok`, stop looping. Print
+the outstanding findings and tell the user plainly that the spec is not
+converging and why. Leave Phase 3.5 `in_progress`. Do not file an issue, and do
+not record an approval — a spec the reviewer keeps rejecting is exactly the case
+this gate exists for. Four rounds means either the scope is wrong (return to
+Phase 1) or the reviewer has found something real that needs a decision only the
+user can make.
+
+**A `concerns` verdict is not a pass.** Earlier versions of this skill let
+`concerns` through by default when the user did not answer within the turn.
+That inverted the point: it made the quiet path the one where unreviewed
+concerns reach the implement agent. Correct them instead.
+
+Mark Phase 3.5 `completed` only on `ok`. Move to Phase 3.6.
+
+## Phase 3.6 — User approval (the one decision that is the user's)
+
+The review is clean. Now, and only now, ask the user.
+
+Show them, in the chat:
+
+- The feature title and the agreed scope from Phase 1.
+- The spec and plan paths.
+- How many review rounds it took, and one line on what the reviewer caught and
+  you corrected. This is the substance of the ask — the user is approving that
+  the review happened and concluded cleanly, not re-reading the spec.
+
+Then ask, plainly: **"Approve this spec so the dashboard can start work on it?"**
+
+**Wait for an explicit answer.** There is no default. Silence is not approval,
+and neither is "sounds good, carry on" said about something else earlier in the
+session. If the user asks for changes, make them, return to Phase 3.5, and run
+the review again from round one.
+
+**When the user approves**, record it from the consumer repo root:
+
+```bash
+SPEC_PATH=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md \
+PLAN_PATH=docs/superpowers/plans/YYYY-MM-DD-<topic>.md \
+REVIEW_VERDICT=ok \
+REVIEW_ROUNDS=<rounds it took> \
+npx tsx "${PLUGIN_DIR}/lib/cli/approve-spec.ts"
+```
+
+This writes `<spec path with .md swapped for .approval.json>` next to the spec:
+the verdict, the round count, the approver's git identity, the timestamp, and a
+sha256 over the spec and plan contents together. Commit and push it on the same
+branch as the spec and plan:
+
+```bash
+git add docs/superpowers/specs/YYYY-MM-DD-<topic>-design.approval.json
+git commit -m "docs(spec): record approval for <feature title>"
+git push
+```
+
+**The hash is the point.** The dashboard recomputes it before it will start
+anything. Edit the spec or the plan after this and the approval stops matching,
+the Start work button goes dead, and the fix is to re-run Phase 3.5 and 3.6
+rather than to argue with the button. That is deliberate: an approval that
+survives an edit is an approval of text nobody read.
+
+**Never run `approve-spec` on the user's behalf.** Not to unblock yourself, not
+because the review was clean and approval looks like a formality, not because
+the user approved a different spec earlier in the session. `APPROVED_BY` records
+a human's identity against work they authorized; writing it without them is the
+single thing in this skill that would make every gate downstream meaningless.
+
+Mark Phase 3.6 `completed`. Move to Phase 4.
 
 ## Phase 4 — Handoff (single bash invocation)
 
@@ -237,6 +324,8 @@ TITLE="<feature title from Phase 1>"
 KIND="feature"  # or "bug" or "improvement" — set per Phase 1's determination
 TLDR="$(awk '/^## /{exit} NR>1 && NF' "$SPEC_PATH" | head -10)"
 
+APPROVAL_PATH="${SPEC_PATH%.md}.approval.json"
+
 SPEC_REVIEW_BLOCK=""
 if [ -f .dev-agent/spec-review-summary.md ]; then
   SPEC_REVIEW_BLOCK=$(cat <<EOF
@@ -245,7 +334,7 @@ if [ -f .dev-agent/spec-review-summary.md ]; then
 
 $(cat .dev-agent/spec-review-summary.md)
 
-_Machine-readable verdict: \`.dev-agent/spec-review.json\` (read by the dashboard to render the verdict pill)._
+_Machine-readable verdict: \`.dev-agent/spec-review.json\`. Approval: \`${APPROVAL_PATH}\`, checked by the dashboard before it will start work._
 
 EOF
 )
@@ -261,7 +350,7 @@ ${TLDR}
 ${SPEC_REVIEW_BLOCK}
 ---
 
-Brainstormed and planned via the \`start-feature\` skill in Claude Code. Tap **Approve and start implementation** in the dashboard to dispatch the implement workflow.
+Brainstormed, planned, independently reviewed and approved via the \`start-feature\` skill in Claude Code. Tap **Start work** in the dashboard to dispatch the implement workflow. The dashboard verifies the approval at \`${APPROVAL_PATH}\` still matches the spec and plan before it dispatches anything.
 EOF
 )
 

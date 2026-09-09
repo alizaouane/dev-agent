@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { hashSpecAndPlan } from '@/lib/spec-approval';
 
 const mockOctokit = {
   repos: {
@@ -134,12 +135,57 @@ describe('approveGate', () => {
   });
 });
 
+// --- Approved-spec fixture ---------------------------------------------
+// `dispatchExistingIssue` and `dispatchFromSpec` both refuse to start work
+// they cannot tie back to a committed, hash-matched approval. These tests
+// are about the dispatch mechanics, so they run against a repo where that
+// approval is in place; `spec-approval-gate.test.ts` covers the refusals.
+const APPROVED_SPEC = 'docs/superpowers/specs/2026-05-01-foo-design.md';
+const APPROVED_PLAN = 'docs/superpowers/plans/2026-05-01-foo.md';
+const APPROVED_APPROVAL = 'docs/superpowers/specs/2026-05-01-foo-design.approval.json';
+const APPROVED_SPEC_TEXT = '# Foo\n\nAC-1: it works.\n';
+const APPROVED_PLAN_TEXT = '# Plan\n\nTask 1 (AC: 1)\n';
+const APPROVED_BODY = `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`;
+
+/**
+ * Point `repos.getContent` at a repo holding the spec, the plan, and a
+ * matching approval. Responses carry both `type` (for the existence probes)
+ * and `content` (for the gate's hash check).
+ */
+function stubApprovedSpecOnBranch(): void {
+  const files: Record<string, string> = {
+    [APPROVED_SPEC]: APPROVED_SPEC_TEXT,
+    [APPROVED_PLAN]: APPROVED_PLAN_TEXT,
+    [APPROVED_APPROVAL]: JSON.stringify({
+      schema_version: 1,
+      spec_path: APPROVED_SPEC,
+      plan_path: APPROVED_PLAN,
+      spec_sha256: hashSpecAndPlan(APPROVED_SPEC_TEXT, APPROVED_PLAN_TEXT),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'tester@example.com',
+      approved_at: '2026-05-01T00:00:00.000Z',
+    }),
+  };
+  mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+    const content = files[path];
+    if (content === undefined) {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    }
+    return {
+      data: { type: 'file', content: Buffer.from(content, 'utf8').toString('base64') },
+    };
+  });
+}
+
 describe('dispatchExistingIssue', () => {
   beforeEach(() => {
+    stubApprovedSpecOnBranch();
     mockOctokit.issues.get.mockResolvedValue({
       data: {
         number: 42,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+        body: APPROVED_BODY,
         html_url: 'https://github.com/x/y/issues/42',
       },
     });
@@ -210,6 +256,52 @@ describe('dispatchExistingIssue', () => {
     expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 
+  it('refuses to start work on a spec with no recorded approval', async () => {
+    // The wiring guard: `state:spec-ready` alone must not be enough. Without
+    // this the gate could be deleted from the action and every other test
+    // here would still pass.
+    mockOctokit.repos.getContent.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({
+      error: expect.stringContaining('work cannot start'),
+      issue_url: 'https://github.com/x/y/issues/42',
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('refuses once the spec has been edited since it was approved', async () => {
+    stubApprovedSpecOnBranch();
+    const stale = mockOctokit.repos.getContent.getMockImplementation()!;
+    mockOctokit.repos.getContent.mockImplementation(async (args: { path: string }) => {
+      if (args.path !== APPROVED_SPEC) return stale(args);
+      return {
+        data: {
+          type: 'file',
+          content: Buffer.from(APPROVED_SPEC_TEXT + 'AC-2: sneaked in.\n', 'utf8').toString(
+            'base64',
+          ),
+        },
+      };
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('issue', '42');
+    const { dispatchExistingIssue } = await import('@/lib/actions');
+    const result = await dispatchExistingIssue(fd);
+    expect(result).toEqual({
+      error: expect.stringContaining('changed after approval'),
+      issue_url: 'https://github.com/x/y/issues/42',
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it('rejects non-numeric issue input without calling the dispatch', async () => {
     const fd = new FormData();
     fd.append('repo', 'x/y');
@@ -263,6 +355,7 @@ describe('dispatchExistingIssue', () => {
           { name: 'state:scoping' },
           { name: 'kind:feature' },
         ],
+        body: APPROVED_BODY,
         html_url: 'https://github.com/x/y/issues/42',
       },
     });
@@ -304,8 +397,8 @@ describe('dispatchFromSpec', () => {
     mockOctokit.repos.getCollaboratorPermissionLevel.mockResolvedValue({
       data: { permission: 'admin' },
     });
-    // Both files present on the default branch by default.
-    mockOctokit.repos.getContent.mockResolvedValue({ data: { type: 'file' } });
+    // Spec, plan, and a matching approval all present on the default branch.
+    stubApprovedSpecOnBranch();
     mockOctokit.issues.create.mockResolvedValue({
       data: {
         number: 77,
@@ -353,6 +446,27 @@ describe('dispatchFromSpec', () => {
     const setLabelsCall = mockOctokit.issues.setLabels.mock.calls.at(-1)?.[0];
     expect(setLabelsCall?.labels).toContain('state:implementing');
     expect(setLabelsCall?.labels).not.toContain('state:spec-ready');
+  });
+
+  it('refuses to file an issue for a spec with no recorded approval', async () => {
+    // This panel files AND dispatches in one step, so the gate runs before
+    // `issues.create` — a refusal must not leave an orphan spec-ready issue.
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === APPROVED_APPROVAL) {
+        throw Object.assign(new Error('Not Found'), { status: 404 });
+      }
+      return { data: { type: 'file', content: Buffer.from('x', 'utf8').toString('base64') } };
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual({ error: expect.stringContaining('work cannot start') });
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
   it('refuses when spec_path does not exist on the default branch', async () => {
