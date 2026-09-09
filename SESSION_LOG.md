@@ -1,5 +1,31 @@
 # Session Log
 
+## 2026-09-09 13:30 UTC — interactive — PR autopilot: drive dev-agent PRs to green with nobody watching
+
+**Trigger:** User, after the spec-approval gate landed: *"this PR must be checked and any CI failure and Code review need to be addressed, I need this to be automated as well without me having to check the PR and find that there are unresolved code review and CI failures"*.
+
+**What was actually broken.** The loop existed three times and worked none of the times it mattered. It was prose in the standard; a Stop hook on the laptop, which only runs while a session is open and the machine awake — the automation depended on the attention it was written to replace; and `phase-pr-review.yml`, which fires only when a human types `@claude` and, until now, rejected any branch not named `feat/dev-agent-issue-<n>`. Two further gaps found while building: **no consumer repo has a pr-review wrapper at all**, so `@claude` on a PR in booking-app or whatsapp-console triggered nothing; and `spec_plan_via_pr` was documented in three skill files but was never a real config key, so the doc-PR path could not be turned on.
+
+**What changed (branch `feat/pr-autopilot`):**
+
+- **[lib/pr-blockers.ts](lib/pr-blockers.ts)** — the Stop hook's rules as pure, tested functions: failing checks, unresolved threads counted across all pages, bot reviews stale against HEAD, `CHANGES_REQUESTED`. A check merely running is reported and left alone rather than spending a model call to learn CI is still going. Plus the anti-wedge: re-wake on an unchanged blocker set, but stand down after four attempts and say so on the PR, because a set that has not moved in four tries is not one attempt from moving.
+- **[lib/cli/pr-triage.ts](lib/cli/pr-triage.ts)** — sweeps a repo and wakes the fixer by posting `@claude`. Deliberately the existing manual trigger rather than a workflow dispatch: it works unchanged in every wired repo, cannot drift from the manual path because it is the manual path, and the comment is the audit trail.
+- **[.github/workflows/pr-autopilot.yml](.github/workflows/pr-autopilot.yml)** — scheduled sweep, `workflow_call`-able so consumers get it too. No model call of its own; `contents: read` only.
+- **Two new consumer wrappers**, both wired into `WIRE_UP_FILES` and installable from `/repos`: `dev-agent-pr-review.yml` (the fixer, which consumers never had) and `dev-agent-pr-autopilot.yml` (the sweep).
+- **[phase-pr-review.yml](.github/workflows/phase-pr-review.yml)** — branch filter widened to the spec doc shape, still an anchored allowlist.
+- **`spec_plan_via_pr` is now a real key** in the zod schema, the JSON schema, and defaults.
+
+**Tests:** 44 new engine tests. Engine 927 passed, dashboard 495 passed, both typechecks clean. The wire-up file count assertion now derives from `WIRE_UP_FILES.length` instead of a hardcoded 10.
+
+**Deferred / Next:**
+
+- The autopilot only wakes the fixer; it does not verify the fixer succeeded. A PR that the fixer cannot move gets four attempts then a stand-down comment, which is the intended floor, not a silent failure.
+- `SUPABASE_DB_URL` is still hand-set per repo. The dashboard already pushes `ANTHROPIC_API_KEY` at wire-up and could prompt for this the same way.
+
+**Next session should start with:** opening the PR for `feat/pr-autopilot` and running its own review loop to green.
+
+---
+
 ## 2026-09-09 11:45 UTC — interactive — Spec approval gate: review until clean, approve once, then Start work
 
 **Trigger:** User: *"I need the spec independently reviewed and corrected until I approve it, then it can move to Dev agent dashboard where the button is not to approve but to start the work"*. The existing flow contradicted this in two places: `start-feature` Phase 3.5 **defaulted to proceeding** on a `concerns` verdict if the user did not answer within the turn, and `dispatchExistingIssue` validated only the `state:spec-ready` label — nothing anywhere read the review verdict.

@@ -1,0 +1,306 @@
+#!/usr/bin/env tsx
+/**
+ * pr-triage — list the dev-agent pull requests that need an agent's attention.
+ *
+ * The sweep half of the autopilot. It answers one question for a whole repo:
+ * which open dev-agent PRs are sitting on a failing check, an unresolved review
+ * thread, a stale bot review, or a changes-requested verdict?
+ *
+ * This exists because the loop that used to answer it ran as a Stop hook on the
+ * operator's laptop, so it only ran while a session was open and the machine
+ * awake — which made the automation depend on the attention it was written to
+ * replace. In a scheduled workflow it runs whether or not anyone is looking.
+ *
+ * Reads are done through the GitHub CLI, which is present on every runner and
+ * already authenticated there. Review threads are paginated deliberately: an
+ * unpaginated first page reports "all resolved" while unresolved threads sit on
+ * page two, which is how a PR silently looks finished.
+ *
+ * Required env:
+ *   REPO             owner/name of the repo to sweep.
+ *
+ * Having decided, it wakes the fixer the way a human would: by posting
+ * `@claude` on the PR. That is the trigger `phase-pr-review` already listens
+ * for, so this works unchanged in every wired consumer repo with no new
+ * plumbing, and the comment doubles as the audit trail — anyone reading the
+ * thread later can see what woke it and why.
+ *
+ * Optional env:
+ *   PR_NUMBER        Triage only this PR instead of sweeping the repo.
+ *   DRY_RUN          `true` reports what it would post without posting.
+ *   MAX_REPEATS      Consecutive unchanged wakeups before standing down (4).
+ *   GH_TOKEN         Passed through to `gh`.
+ *
+ * Output: JSON to stdout — `{ actionable, waiting, woken, wedged }`.
+ * Exit code: 0 always, unless the GitHub calls themselves fail (2). "Nothing to
+ * do" is a normal, successful outcome and must not read as an error.
+ */
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import {
+  isDevAgentBranch,
+  priorSignatures,
+  renderWakeComment,
+  renderWedgedComment,
+  shouldWake,
+  triagePullRequest,
+  type PrTriage,
+  type PullRequestState,
+} from '../pr-blockers';
+
+/** Logins that leave reviews as bots rather than as people. */
+const REVIEW_BOTS = new Set([
+  'coderabbitai',
+  'chatgpt-codex-connector',
+  'claude',
+  'github-actions',
+]);
+
+/**
+ * Run a `gh` command and parse its stdout as JSON.
+ *
+ * @param args - Arguments after `gh`.
+ * @returns The parsed response.
+ * @throws If `gh` exits non-zero or emits unparseable output.
+ */
+function gh<T>(args: string[]): T {
+  const out = execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
+  return JSON.parse(out) as T;
+}
+
+/** Shape of one PR as `gh pr list` returns it with the fields we ask for. */
+interface RawPr {
+  number: number;
+  headRefName: string;
+  isDraft: boolean;
+  reviewDecision: string | null;
+  headRefOid: string;
+  statusCheckRollup?: Array<{
+    name?: string;
+    context?: string;
+    conclusion?: string | null;
+    status?: string | null;
+    state?: string | null;
+  }> | null;
+  reviews?: Array<{
+    author?: { login?: string } | null;
+    state?: string;
+    commit?: { oid?: string } | null;
+  }> | null;
+}
+
+/**
+ * Normalize `gh`'s check rollup, which mixes two shapes.
+ *
+ * A CheckRun carries `status` plus `conclusion`; a StatusContext carries only
+ * `state`. Flattening them here keeps the branching out of the triage rules,
+ * where a missed shape would read as "no checks" and pass a broken PR.
+ *
+ * @param rollup - The `statusCheckRollup` field.
+ * @returns Checks with a single uppercase conclusion, null while running.
+ */
+export function normalizeChecks(rollup: RawPr['statusCheckRollup']): PullRequestState['checks'] {
+  return (rollup ?? []).map((c) => {
+    const name = c.name ?? c.context ?? 'unnamed check';
+    // StatusContext: `state` is the whole story.
+    if (c.state) return { name, conclusion: c.state.toUpperCase() };
+    // CheckRun: a conclusion only exists once it finished.
+    if (c.status && c.status.toUpperCase() !== 'COMPLETED') return { name, conclusion: null };
+    return { name, conclusion: c.conclusion ? c.conclusion.toUpperCase() : null };
+  });
+}
+
+/**
+ * Count unresolved review threads across every page.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number.
+ * @returns How many threads are still open.
+ */
+export function countUnresolvedThreads(repo: string, number: number): number {
+  const [owner, name] = repo.split('/');
+  const query = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+    repository(owner:$owner,name:$name){
+      pullRequest(number:$number){
+        reviewThreads(first:100,after:$cursor){
+          pageInfo{hasNextPage endCursor}
+          nodes{isResolved}
+        }
+      }
+    }
+  }`;
+  const raw = execFileSync(
+    'gh',
+    [
+      'api', 'graphql', '--paginate',
+      '-f', `query=${query}`,
+      '-F', `owner=${owner}`,
+      '-F', `name=${name}`,
+      '-F', `number=${number}`,
+      '--jq', '[.data.repository.pullRequest.reviewThreads.nodes[]|select(.isResolved==false)]|length',
+    ],
+    { encoding: 'utf8' },
+  );
+  // --paginate emits one count per page; they sum to the total.
+  return raw
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .reduce((sum, l) => sum + Number(l), 0);
+}
+
+/**
+ * Turn one raw PR plus its thread count into the triage input shape.
+ *
+ * @param raw - The PR as `gh` returned it.
+ * @param unresolvedThreadCount - Threads still open on it.
+ * @returns The normalized state.
+ */
+export function toPullRequestState(
+  raw: RawPr,
+  unresolvedThreadCount: number,
+): PullRequestState {
+  return {
+    number: raw.number,
+    headRefName: raw.headRefName,
+    headOid: raw.headRefOid,
+    isDraft: raw.isDraft,
+    reviewDecision: raw.reviewDecision,
+    checks: normalizeChecks(raw.statusCheckRollup),
+    reviews: (raw.reviews ?? []).map((r) => {
+      const author = (r.author?.login ?? '').replace(/\[bot\]$/, '');
+      return {
+        author,
+        state: r.state ?? 'COMMENTED',
+        commitOid: r.commit?.oid ?? '',
+        isBot: REVIEW_BOTS.has(author),
+      };
+    }),
+    unresolvedThreadCount,
+  };
+}
+
+/** What the sweep found and what it did about it. */
+export interface TriageReport {
+  /** PRs that need an agent. */
+  actionable: PrTriage[];
+  /** PRs whose only blocker is a check still running. */
+  waiting: PrTriage[];
+  /** PRs the sweep woke the fixer on. */
+  woken: number[];
+  /** PRs the sweep stood down on, having tried and not moved them. */
+  wedged: number[];
+}
+
+/**
+ * Read every comment body on a PR, oldest first.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number.
+ * @returns The comment bodies.
+ */
+export function readCommentBodies(repo: string, number: number): string[] {
+  const data = gh<{ comments?: Array<{ body?: string }> }>([
+    'pr', 'view', String(number), '--repo', repo, '--json', 'comments',
+  ]);
+  return (data.comments ?? []).map((c) => c.body ?? '');
+}
+
+/**
+ * Post a comment on a PR.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number.
+ * @param body - Comment body, passed as a file to avoid any shell quoting.
+ */
+export function postComment(repo: string, number: number, body: string): void {
+  execFileSync('gh', ['pr', 'comment', String(number), '--repo', repo, '--body-file', '-'], {
+    input: body,
+    encoding: 'utf8',
+  });
+}
+
+/**
+ * Sweep a repo (or one PR), wake the fixer where it is needed, and report.
+ *
+ * @param repo - owner/name.
+ * @param opts.onlyPr - Restrict to this PR number when given.
+ * @param opts.dryRun - Decide and report, but post nothing.
+ * @param opts.maxRepeats - Unchanged wakeups before standing down.
+ * @returns What was found and what was done about it.
+ */
+export function runTriage(
+  repo: string,
+  { onlyPr, dryRun = false, maxRepeats = 4 }: {
+    onlyPr?: number;
+    dryRun?: boolean;
+    maxRepeats?: number;
+  } = {},
+): TriageReport {
+  const fields = 'number,headRefName,headRefOid,isDraft,reviewDecision,statusCheckRollup,reviews';
+  const prs: RawPr[] = onlyPr
+    ? [gh<RawPr>(['pr', 'view', String(onlyPr), '--repo', repo, '--json', fields])]
+    : gh<RawPr[]>(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', fields]);
+
+  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [] };
+  for (const raw of prs) {
+    // Skip the thread query for branches we would never act on — it is the
+    // expensive call in this sweep and most open PRs are not ours.
+    if (!isDevAgentBranch(raw.headRefName)) continue;
+    const triage = triagePullRequest(
+      toPullRequestState(raw, countUnresolvedThreads(repo, raw.number)),
+    );
+    if (!triage.needsWork) {
+      if (triage.waitingOnly) report.waiting.push(triage);
+      continue;
+    }
+    report.actionable.push(triage);
+
+    const bodies = readCommentBodies(repo, triage.number);
+    const decision = shouldWake(triage.signature, priorSignatures(bodies), maxRepeats);
+
+    if (decision.wake) {
+      if (!dryRun) postComment(repo, triage.number, renderWakeComment(triage, decision));
+      report.woken.push(triage.number);
+      continue;
+    }
+    // Stood down. Say so once, then stay quiet: a PR the autopilot has
+    // silently given up on looks exactly like one it is still working, which
+    // is the situation this whole mechanism exists to prevent.
+    const alreadySaid = bodies.some((b) => b.includes('<!-- wedged -->'));
+    if (!alreadySaid && !dryRun) {
+      postComment(repo, triage.number, renderWedgedComment(triage, decision));
+    }
+    report.wedged.push(triage.number);
+  }
+  return report;
+}
+
+/**
+ * CLI entry point: sweep, print JSON, exit 0.
+ *
+ * @returns Nothing.
+ */
+function main(): void {
+  const repo = process.env.REPO;
+  if (!repo || !repo.includes('/')) throw new Error('REPO required, as owner/name');
+  const onlyPr = process.env.PR_NUMBER ? Number(process.env.PR_NUMBER) : undefined;
+  if (onlyPr !== undefined && !Number.isInteger(onlyPr)) {
+    throw new Error(`PR_NUMBER must be an integer, got: ${process.env.PR_NUMBER}`);
+  }
+  const report = runTriage(repo, {
+    onlyPr,
+    dryRun: process.env.DRY_RUN === 'true',
+    maxRepeats: process.env.MAX_REPEATS ? Number(process.env.MAX_REPEATS) : undefined,
+  });
+  process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+}
+
+const invokedAsCli = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
+if (invokedAsCli) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(`pr-triage failed: ${err instanceof Error ? err.message : String(err)}\n`);
+    process.exit(2);
+  }
+}

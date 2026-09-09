@@ -90,6 +90,13 @@ export const devAgentConfigSchema = z.object({
     plans_dir: z.string().min(1),
     status_file: z.string().min(1),
     runbooks_dir: z.string().min(1),
+    /**
+     * Open the spec and plan as a PR on a `dev-agent/spec-<topic>` branch
+     * instead of pushing them straight to the default branch. Three skill
+     * files already documented this flag; it had never been a real key, so
+     * setting it did nothing and the doc-PR path silently never ran.
+     */
+    spec_plan_via_pr: z.boolean().default(false),
   }),
   guardrails: z.object({
     blocked_paths: z.array(z.string()),

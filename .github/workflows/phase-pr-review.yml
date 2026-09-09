@@ -90,7 +90,13 @@ jobs:
           # Strict regex gate: only dev-agent-authored PRs proceed. The head
           # ref came from GH but we still validate it against a known-safe
           # shape before using it as a checkout ref or echoing it back.
-          if ! [[ "$HEAD" =~ ^feat/dev-agent-issue-[0-9]+$ ]]; then
+          # Both dev-agent-owned branch shapes: the implement branches and the
+          # spec/plan doc branches. The doc shape was missing, which left a PR
+          # carrying an approved spec with no automation at all — a human had
+          # to notice its red CI and unread review themselves. Kept as an
+          # allowlist: pushing to a branch a person is working on is worse
+          # than doing nothing.
+          if ! [[ "$HEAD" =~ ^(feat/dev-agent-issue-[0-9]+|dev-agent/spec-[A-Za-z0-9._-]+)$ ]]; then
             echo "PR head branch is not a dev-agent branch; exiting." >&2
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
@@ -209,7 +215,13 @@ jobs:
         run: |
           set -euo pipefail
           HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
-          if ! [[ "$HEAD" =~ ^feat/dev-agent-issue-[0-9]+$ ]]; then
+          # Both dev-agent-owned branch shapes: the implement branches and the
+          # spec/plan doc branches. The doc shape was missing, which left a PR
+          # carrying an approved spec with no automation at all — a human had
+          # to notice its red CI and unread review themselves. Kept as an
+          # allowlist: pushing to a branch a person is working on is worse
+          # than doing nothing.
+          if ! [[ "$HEAD" =~ ^(feat/dev-agent-issue-[0-9]+|dev-agent/spec-[A-Za-z0-9._-]+)$ ]]; then
             echo "Not a dev-agent PR; exiting."
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0

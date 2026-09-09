@@ -1,0 +1,169 @@
+name: dev-agent · pr-autopilot
+
+# Drives dev-agent's own pull requests to green without anyone watching them.
+#
+# WHY THIS EXISTS
+#   The rule "after every push, re-check CI and every review source, fix
+#   everything, resolve the threads, loop until green" already existed twice:
+#   as prose in the operating standard, and as a Stop hook on the operator's
+#   laptop. The hook only runs while a Claude Code session is open and the
+#   machine is awake, so the automation depended on exactly the attention it
+#   was written to replace — the operator would come back to a PR sitting on a
+#   red check and an unread review.
+#
+#   phase-pr-review already fixes a PR, but only once a human writes `@claude`
+#   on it. Nothing anywhere reacted to a check simply failing, and until this
+#   change its branch filter also excluded the spec/plan doc branches — so a
+#   PR carrying an approved spec got no automation at all.
+#
+#   This workflow is the missing trigger: a sweep that decides which PRs need
+#   work, and wakes the fixer the way a person would.
+#
+# WHY A COMMENT RATHER THAN A WORKFLOW DISPATCH
+#   `@claude` is the trigger phase-pr-review already listens for, so this works
+#   unchanged in every wired consumer repo with no new plumbing, and it cannot
+#   drift from the manual path because it IS the manual path. The comment is
+#   also the audit trail: whoever reads the thread later sees what woke the
+#   fixer and why, without opening a run.
+#
+# WHAT IT WILL AND WILL NOT TOUCH
+#   Only branches matching a dev-agent-owned shape (`isDevAgentBranch` in
+#   lib/pr-blockers.ts): the implement branches and the spec doc branches.
+#   Never a human's branch. Never a draft — a draft is a deliberate "not yet".
+#   Never a PR labelled `autopilot:off`.
+#
+# COST
+#   The sweep itself makes no model calls; it is `gh` reads and at most one
+#   comment per PR. The fixer it wakes runs its own pre-flight budget gate
+#   before any model call. A PR whose only blocker is a check still running is
+#   reported and left alone rather than spending a call to learn CI is going.
+#   After MAX_REPEATS unchanged attempts it stands down and says so on the PR,
+#   so a wedged PR costs nothing and is not silently abandoned.
+#
+# KILL SWITCH
+#   Disable the workflow in the Actions tab, or label a PR `autopilot:off`.
+
+on:
+  # Consumers call this from a thin scheduled wrapper, the same way they call
+  # every phase workflow. Without it the autopilot would only ever protect
+  # dev-agent's own repo, which is not where the operator's PRs are.
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'Triage only this PR (blank sweeps every open PR)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Report what would be posted, without posting'
+        required: false
+        type: boolean
+        default: false
+      max_repeats:
+        description: 'Unchanged wakeups before standing down'
+        required: false
+        type: number
+        default: 4
+  schedule:
+    # Every 20 minutes during working hours, hourly otherwise. Frequent enough
+    # that a red check is picked up before the operator would have seen it,
+    # rare enough that a stuck PR does not spin.
+    - cron: '*/20 6-20 * * 1-5'
+    - cron: '0 * * * *'
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Triage only this PR (blank sweeps every open PR)'
+        required: false
+        type: string
+      dry_run:
+        description: 'Report what would be posted, without posting'
+        required: false
+        type: boolean
+        default: false
+
+# Least privilege: the sweep reads PR state and writes one comment. It never
+# pushes; the fixer it wakes does that, under its own permissions.
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  # Two sweeps racing would double-comment and double-wake. The scheduled run
+  # is cheap to drop, so a queued one yields to the running one.
+  group: pr-autopilot-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Harden runner (egress audit)
+        uses: step-security/harden-runner@v2
+        with:
+          egress-policy: audit
+          disable-sudo: true
+
+      # The engine, not the consumer's tree: this job runs inside whichever
+      # repo called it, and the triage CLI lives here. Same pattern as every
+      # phase workflow, pinned so workflow code and CLI code move together.
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: v1
+          path: .dev-agent-engine
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: .dev-agent-engine/package-lock.json
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci
+
+      - name: Triage open dev-agent PRs and wake the fixer where needed
+        id: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          # Never interpolated into a run block — the CLI validates it as an
+          # integer and refuses anything else.
+          PR_NUMBER: ${{ inputs.pr_number }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          MAX_REPEATS: ${{ inputs.max_repeats }}
+        run: |
+          set -euo pipefail
+          .dev-agent-engine/node_modules/.bin/tsx \
+            .dev-agent-engine/lib/cli/pr-triage.ts > /tmp/triage.json
+          cat /tmp/triage.json
+
+      - name: Summarize the sweep
+        if: always()
+        run: |
+          set -euo pipefail
+          # The summary is the operator-facing record: what was blocked, what
+          # was woken, and what the autopilot has given up on. A sweep that
+          # found nothing says so, so a silent run is never ambiguous.
+          {
+            echo '### pr-autopilot sweep'
+            echo
+            if [ ! -s /tmp/triage.json ]; then
+              echo 'Triage produced no output — see the step log.'
+              exit 0
+            fi
+            jq -r '
+              if (.actionable | length) == 0 and (.waiting | length) == 0 then
+                "No dev-agent PRs need attention."
+              else
+                (.actionable[] | "- **#\(.number)** (`\(.headRefName)`): " +
+                   ([.blockers[].detail] | join("; "))),
+                (.waiting[]    | "- #\(.number) (`\(.headRefName)`) waiting on CI only")
+              end,
+              "",
+              "Woken: \(.woken | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
+              "Stood down: \(.wedged | if length == 0 then "none" else map("#\(.)") | join(", ") end)"
+            ' /tmp/triage.json
+          } >> "$GITHUB_STEP_SUMMARY"
