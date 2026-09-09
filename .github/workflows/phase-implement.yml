@@ -219,6 +219,14 @@ jobs:
         run: |
           set -euo pipefail
 
+          # The same escape hatch the verifier honours, applied to the
+          # working-tree comparison below so one label releases the whole gate
+          # rather than half of it.
+          OVERRIDE=false
+          case ",${ISSUE_LABELS}," in
+            *,spec-approval:override,*) OVERRIDE=true ;;
+          esac
+
           # Read the spec, plan and approval from the DEFAULT BRANCH, never
           # from the working tree. The prefetch step above checks out
           # `feat/dev-agent-issue-<n>` when it exists, and that branch is
@@ -250,6 +258,20 @@ jobs:
               .dev-agent-engine/lib/cli/verify-approval.ts; then
             echo "::error::Refusing to implement a spec with no matching human approval on ${BASE}. Approve it in the Claude Code intake session (start-feature Phase 3.6), or apply the spec-approval:override label to proceed on the record." >&2
             exit 1
+          fi
+
+          # The check above proved the DEFAULT BRANCH copies are approved. The
+          # agent, however, is handed the WORKING TREE copies — which sit on
+          # the agent-written feature branch. Approved text on one branch and
+          # different text on the other would put the whole binding back where
+          # it started, so the two must be identical.
+          if [ "${OVERRIDE:-}" != "true" ]; then
+            for REL in "$SPEC_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
+              if ! cmp -s "$BASE_ROOT/$REL" "$REL"; then
+                echo "::error::${REL} differs between ${BASE} and the working branch. The approval covers the ${BASE} copy; the agent would read the other one. Push the approved text, or re-approve the current one." >&2
+                exit 1
+              fi
+            done
           fi
 
       - name: Render system prompt

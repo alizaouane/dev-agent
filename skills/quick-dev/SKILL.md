@@ -115,7 +115,7 @@ git push
 `npx` is deliberately not used here: on a cache miss it resolves `tsx` from the
 network at approval time, which is the wrong moment to pull an unpinned package.
 The plugin ships its own pinned binary. If `${PLUGIN_DIR}/node_modules/.bin/tsx`
-is missing, run `npm ci --omit=dev=false` in `${PLUGIN_DIR}` once rather than
+is missing, run `npm ci` in `${PLUGIN_DIR}` once rather than
 reaching for `npx`.
 
 **Never run this on the user's behalf.** The record carries a human's identity

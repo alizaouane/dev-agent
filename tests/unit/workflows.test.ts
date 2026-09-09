@@ -481,6 +481,21 @@ describe('.github/workflows/', () => {
       // It must refuse rather than guess when the base ref is unknowable.
       expect(step).toMatch(/Cannot determine the default branch/);
     });
+
+    it('refuses when the working tree differs from the approved copies', () => {
+      // Verifying the base-ref copies proves those are approved. The agent is
+      // handed the working-tree copies, which live on the branch the agent
+      // itself writes — approved text on one branch and different text on the
+      // other would put the binding back where it started.
+      const step = raw.slice(
+        stepIndex('Verify spec approval'),
+        stepIndex('Render system prompt'),
+      );
+      expect(step).toMatch(/cmp -s "\$BASE_ROOT\/\$REL" "\$REL"/);
+      expect(step).toMatch(/differs between \$\{BASE\} and the working branch/);
+      // The override label has to release the whole gate, not half of it.
+      expect(step).toMatch(/OVERRIDE/);
+    });
   });
 
   describe('phase-implement.yml — agent-no-pr salvage', () => {
