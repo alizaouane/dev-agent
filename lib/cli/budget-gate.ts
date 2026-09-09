@@ -59,14 +59,40 @@ async function main(): Promise<void> {
   const phase = process.env.PHASE ?? '';
   const override = process.env.BUDGET_OVERRIDE === 'true';
 
+  if (!configPath.trim()) {
+    // An empty CONFIG_PATH means the caller forgot to pass one, not that the
+    // repo opted out. parseConfig would fail on '' and the old catch-all would
+    // have read that as "no config" and waved the run through.
+    console.error(
+      '::error::Budget gate received an empty CONFIG_PATH. Refusing to start rather than ' +
+      'treating a misconfigured caller as an opted-out repo.',
+    );
+    report({ allow: false, reason: 'config-unreadable' });
+    process.exit(2);
+  }
+
   let config: Awaited<ReturnType<typeof parseConfig>> | undefined;
   try {
     config = await parseConfig({ configPath, defaultsPath });
-  } catch {
-    // No config is not a budget breach; it is a repo that has not opted in.
-    console.log('No .dev-agent.yml — budget gate inactive.');
-    report({ allow: true, reason: 'no-budget-configured' });
-    return;
+  } catch (e) {
+    // ONLY a genuinely absent file means "this repo has not opted in". Any
+    // other failure — malformed YAML, schema violation, unreadable file —
+    // must fail closed: otherwise a broken config silently disables the gate,
+    // which is the most valuable thing an attacker (or a typo) could achieve.
+    const err = e as NodeJS.ErrnoException;
+    const msg = e instanceof Error ? e.message : String(e);
+    const missing = err?.code === 'ENOENT' || /config not found|no such file/i.test(msg);
+    if (missing) {
+      console.log(`No ${configPath} — budget gate inactive (repo has not opted in).`);
+      report({ allow: true, reason: 'no-budget-configured' });
+      return;
+    }
+    console.error(
+      `::error::Budget gate could not parse ${configPath} (${msg}). Refusing to start — a ` +
+      'config that cannot be read is not permission to spend.',
+    );
+    report({ allow: false, reason: 'config-unreadable' });
+    process.exit(2);
   }
 
   const budgetUsd = config.cost_caps?.monthly_budget_usd ?? 0;

@@ -23,6 +23,11 @@ name: dev-agent · phase-bug-scout
 on:
   workflow_call:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       config_path:
         required: false
         type: string
@@ -46,6 +51,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       config_path:
         description: 'Path to .dev-agent.yml'
         required: false
@@ -194,6 +204,23 @@ jobs:
           prompt: ${{ steps.build.outputs.prompt_path }}
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Read Glob Grep TodoWrite'
           show_full_output: 'true'
+
+      # Record what this run actually cost. Before this existed the only
+      # telemetry any workflow posted was a stub with `Cost: $0`, so
+      # month-to-date spend always read zero and both the nightly watchdog and
+      # the budget gate were decorative. always() so a failed or timed-out run
+      # still records the spend it incurred.
+      - name: Emit telemetry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PHASE: scout_digest
+          MODEL: claude-sonnet-4-6
+          AGENT_STATUS: ${{ steps.claude.outcome == 'success' && 'success' || 'blocked' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Parse findings + file issues
         if: inputs.invocation_mode == 'live'

@@ -3,6 +3,11 @@ name: dev-agent · phase-implement
 on:
   workflow_call:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         required: true
         type: number
@@ -19,6 +24,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         description: 'Issue number'
         required: true
@@ -327,6 +337,23 @@ jobs:
           claude_args: '--max-turns 500 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           branch_prefix: 'feat/dev-agent-issue-'
           show_full_output: 'true'
+
+      # Record what this run actually cost. Before this existed the only
+      # telemetry any workflow posted was a stub with `Cost: $0`, so
+      # month-to-date spend always read zero and both the nightly watchdog and
+      # the budget gate were decorative. always() so a failed or timed-out run
+      # still records the spend it incurred.
+      - name: Emit telemetry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PHASE: implement
+          MODEL: claude-sonnet-4-6
+          AGENT_STATUS: ${{ steps.claude.outcome == 'success' && 'success' || 'blocked' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       # ACM gate (Pillar 1, post-agent). Runs only when phase-acm has
       # locked a manifest into the feature branch (gate_active=true).

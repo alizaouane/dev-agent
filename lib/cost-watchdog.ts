@@ -94,6 +94,16 @@ export interface BudgetGateDecision {
  * budget with $2 left should not admit a $5 implement phase and discover the
  * overshoot afterwards.
  *
+ * KNOWN BOUND — concurrent admission. Each caller reads month-to-date spend
+ * independently, so N phases starting before any of them posts telemetry can
+ * each see the same total and each be admitted. The overshoot is bounded by the
+ * sum of the concurrent phases' caps (with current defaults, a few dollars
+ * against a $50 ceiling), not unbounded — the runaway this gate exists to stop
+ * is a cron firing daily for a week, which it does stop. Repos that need a hard
+ * ceiling should additionally serialise spending workflows with a shared
+ * `concurrency:` group; that is a throughput trade-off, so it is opt-in rather
+ * than imposed here.
+ *
  * @param input.spentUsd - Month-to-date spend for the repo.
  * @param input.budgetUsd - `cost_caps.monthly_budget_usd`; 0 or absent means
  *   no budget is configured, and the gate stays out of the way.

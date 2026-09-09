@@ -205,3 +205,15 @@ describe('budgetGateDecision', () => {
     expect(Math.round(d.pct)).toBe(80);
   });
 });
+
+describe('budgetGateDecision — phase attribution', () => {
+  // Each workflow projects against ITS OWN cap. Before PhaseName gained
+  // swarm_review/acm/tier2_smoke, those phases were attributed to `implement`
+  // and projected against its far larger cap, so runs near the ceiling were
+  // admitted or refused on the wrong number.
+  it('admits a small phase where a large one would be refused', () => {
+    const nearLimit = { spentUsd: 47, budgetUsd: 50 };
+    expect(budgetGateDecision({ ...nearLimit, phaseCostUsd: 1 }).allow).toBe(true);   // swarm_review
+    expect(budgetGateDecision({ ...nearLimit, phaseCostUsd: 5 }).allow).toBe(false);  // implement
+  });
+});

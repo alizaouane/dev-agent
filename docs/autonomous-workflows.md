@@ -75,6 +75,25 @@ gh run list -R alizaouane/<repo> --status in_progress --json databaseId \
   check. Anything marked **no** should either be gated or documented as
   deliberately exempt.
 
+## Known limitation: concurrent admission
+
+Each phase reads month-to-date spend independently, so several starting at once
+can each see the same total and each be admitted. The overshoot is bounded by
+the sum of their caps — a few dollars against a $50 ceiling — not unbounded.
+The failure this gate exists to stop is a cron firing daily for a week, and it
+does stop that.
+
+If a repo needs a hard ceiling rather than a bounded one, serialise the
+spending workflows:
+
+```yaml
+concurrency:
+  group: dev-agent-spend-${{ github.repository }}
+  cancel-in-progress: false
+```
+
+That trades throughput for strictness, so it is opt-in.
+
 ## Adding a new autonomous workflow
 
 Per §22.2 it does not ship until it has: an owner, its trigger (with debounce

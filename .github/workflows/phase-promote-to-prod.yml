@@ -3,6 +3,11 @@ name: dev-agent · phase-promote-to-prod
 on:
   workflow_call:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         required: true
         type: number
@@ -19,6 +24,11 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         description: 'Issue number'
         required: true

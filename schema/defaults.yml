@@ -55,6 +55,9 @@ cost_caps:
   smoke_verify:    { tokens_in: 30000,  tokens_out: 10000,  dollars: 0.5 }
   scout_digest:    { tokens_in: 100000, tokens_out: 20000,  dollars: 0.5 }
   rollback:        { tokens_in: 50000,  tokens_out: 20000,  dollars: 1 }
+  swarm_review:    { tokens_in: 80000,  tokens_out: 25000,  dollars: 1 }
+  acm:             { tokens_in: 80000,  tokens_out: 30000,  dollars: 1.5 }
+  tier2_smoke:     { tokens_in: 60000,  tokens_out: 20000,  dollars: 1 }
 
 models:
   scout: claude-haiku-4-5

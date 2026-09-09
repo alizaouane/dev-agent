@@ -118,6 +118,7 @@ jobs:
 
       - name: Run Claude Code (live agent)
         if: steps.pr.outputs.skip != 'true'
+        id: agent
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -125,6 +126,21 @@ jobs:
           # `agent` mode reads the PR + triggering comment automatically.
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           show_full_output: 'true'
+
+      # Record spend for comment-triggered reviews too — this workflow can fire
+      # many times on one PR, which is precisely the shape that produced the
+      # July 2026 drain while spend was going unrecorded.
+      - name: Emit telemetry
+        if: always() && steps.pr.outputs.skip != 'true'
+        env:
+          EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ github.event.issue.number || github.event.pull_request.number }}
+          PHASE: implement
+          MODEL: claude-sonnet-4-6
+          AGENT_STATUS: ${{ steps.agent.outcome == 'success' && 'success' || 'blocked' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
 
   # /swarm-override — Pillar 2 escape hatch.
   # When a swarm-review verdict is `swarm-fail` and a human reviewer
