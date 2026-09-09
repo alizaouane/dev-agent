@@ -1,0 +1,13 @@
+# Sprint envelope — dev-agent
+# Story files track per-task state. SPEC.md tracks the story catalog.
+# This file tracks the current sprint: goal, dates, in-flight stories, risks.
+# Updated during /done.
+
+sprint: null
+goal: null
+starts: null
+ends: null
+
+stories: []
+
+risks: []
