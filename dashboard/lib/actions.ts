@@ -473,7 +473,7 @@ async function pushDashboardSecretsTo(
   // eslint-disable-next-line no-restricted-syntax -- each push re-fetches the
   // repo public key; running them in parallel gains nothing and muddles which
   // secret a failure belonged to.
-  for (const secret of resolveSecrets(process.env)) {
+  for (const secret of resolveSecrets(process.env, repo)) {
     if (secret.value === undefined) {
       skipped.push({ name: secret.name, skipReason: secret.skipReason ?? 'not configured' });
       continue;

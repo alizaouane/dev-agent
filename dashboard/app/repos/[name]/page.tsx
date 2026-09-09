@@ -23,6 +23,7 @@ import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
 import { SetupChecklist, type SetupSteps } from '@/components/setup-checklist';
 import { InstallWorkflowPanel } from '@/components/install-workflow-panel';
 import { PushSecretsPanel } from '@/components/push-secrets-panel';
+import { PROPAGATED_SECRETS, envVarForRepo } from '@/lib/propagated-secrets';
 import { PILLAR_LABELS, PILLAR_TERM } from '@/lib/verification/types';
 
 const UNFINISHED_WORK_WORKFLOW_PATH = '.github/workflows/dev-agent-unfinished-work-scout.yml';
@@ -341,7 +342,15 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
                 />
               )}
             </div>
-            <PushSecretsPanel repo={name} />
+            <PushSecretsPanel
+              repo={name}
+              sources={PROPAGATED_SECRETS.map((s) => ({
+                name: s.name,
+                envVar: s.perRepo ? envVarForRepo(s, repo.name) : s.envVar,
+                purpose: s.purpose,
+                perRepo: s.perRepo === true,
+              }))}
+            />
             <div className="rounded-md border border-border bg-card p-5">
               <h3 className="mb-1 text-base font-semibold">/swarm-override handler</h3>
               {swarmOverrideInstalled ? (
