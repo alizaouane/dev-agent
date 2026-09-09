@@ -41,6 +41,13 @@ guardrails:
     - comment-fix
 
 cost_caps:
+  # Monthly ceiling for the whole repo. The budget gate (§22.1) refuses to START
+  # a phase once this is spent, or when the phase's own cap would cross it —
+  # unlike the nightly watchdog, which can only report a drain after the fact.
+  # A consumer that wants no ceiling must set 0 deliberately rather than
+  # inherit one by omission.
+  monthly_budget_usd: 50
+  alert_threshold_pct: 80
   spec_brainstorm: { tokens_in: 100000, tokens_out: 30000, dollars: 3 }
   implement:       { tokens_in: 200000, tokens_out: 100000, dollars: 5 }
   staging_deploy:  { tokens_in: 50000,  tokens_out: 20000,  dollars: 1 }
@@ -48,6 +55,9 @@ cost_caps:
   smoke_verify:    { tokens_in: 30000,  tokens_out: 10000,  dollars: 0.5 }
   scout_digest:    { tokens_in: 100000, tokens_out: 20000,  dollars: 0.5 }
   rollback:        { tokens_in: 50000,  tokens_out: 20000,  dollars: 1 }
+  swarm_review:    { tokens_in: 80000,  tokens_out: 25000,  dollars: 1 }
+  acm:             { tokens_in: 80000,  tokens_out: 30000,  dollars: 1.5 }
+  tier2_smoke:     { tokens_in: 60000,  tokens_out: 20000,  dollars: 1 }
 
 models:
   scout: claude-haiku-4-5

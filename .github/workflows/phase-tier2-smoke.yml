@@ -23,6 +23,16 @@ name: dev-agent · phase-tier2-smoke
 on:
   workflow_call:
     inputs:
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         required: true
         type: number
@@ -49,6 +59,16 @@ on:
         required: false
   workflow_dispatch:
     inputs:
+      config_path:
+        description: 'Path to .dev-agent.yml'
+        required: false
+        type: string
+        default: '.dev-agent.yml'
+      budget_override:
+        description: 'Proceed past the monthly budget cap (recorded in the run output). Use only for recovery work such as rollback.'
+        required: false
+        type: boolean
+        default: false
       issue_number:
         required: true
         type: number
@@ -246,6 +266,17 @@ jobs:
           } > /tmp/tier2-probe/author-prompt.md
           echo "prompt rendered ($(wc -l < /tmp/tier2-probe/author-prompt.md) lines)"
 
+      # §22.1 — pre-flight budget gate, before the CLI install and the model
+      # call, so a refusal costs nothing.
+      - name: Budget gate
+        if: inputs.invocation_mode == 'live'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+          PHASE: tier2_smoke
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+
       - name: Live mode — install Claude Code CLI
         if: inputs.invocation_mode == 'live'
         run: |
@@ -266,6 +297,23 @@ jobs:
           # the workflow runs it in the next step.
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Read Write Edit Glob Grep'
           show_full_output: 'false'
+
+      # Record what this run actually cost. Before this existed the only
+      # telemetry any workflow posted was a stub with `Cost: $0`, so
+      # month-to-date spend always read zero and both the nightly watchdog and
+      # the budget gate were decorative. always() so a failed or timed-out run
+      # still records the spend it incurred.
+      - name: Emit telemetry
+        if: always() && inputs.invocation_mode == 'live'
+        env:
+          EXECUTION_FILE: ${{ steps.author.outputs.execution_file }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          PHASE: tier2_smoke
+          MODEL: claude-sonnet-4-6
+          AGENT_STATUS: ${{ steps.author.outcome == 'success' && 'success' || 'blocked' }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Live mode — run Playwright probe + emit verdict
         if: inputs.invocation_mode == 'live'
