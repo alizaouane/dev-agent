@@ -14,6 +14,7 @@ function pr(over: Partial<PullRequestState> = {}): PullRequestState {
   return {
     number: 1,
     headRefName: 'feat/dev-agent-issue-42',
+    labels: [],
     headOid: HEAD,
     isDraft: false,
     reviewDecision: 'APPROVED',
@@ -132,6 +133,27 @@ describe('triagePullRequest', () => {
   it('flags CHANGES_REQUESTED even when every check passed', () => {
     const t = triagePullRequest(pr({ reviewDecision: 'CHANGES_REQUESTED' }));
     expect(t.blockers.map((b) => b.kind)).toEqual(['changes-requested']);
+  });
+
+  it('leaves a PR labelled autopilot:off alone, however red it is', () => {
+    // The wake comment tells the operator to use this label. A label that is
+    // documented but not read is worse than none: they think they stopped it.
+    const t = triagePullRequest(
+      pr({
+        labels: ['autopilot:off'],
+        checks: [{ name: 'test', conclusion: 'FAILURE' }],
+        unresolvedThreadCount: 5,
+      }),
+    );
+    expect(t.blockers).toEqual([]);
+    expect(t.needsWork).toBe(false);
+  });
+
+  it('is not confused by an unrelated label', () => {
+    const t = triagePullRequest(
+      pr({ labels: ['kind:feature'], checks: [{ name: 'test', conclusion: 'FAILURE' }] }),
+    );
+    expect(t.needsWork).toBe(true);
   });
 
   it('leaves a draft alone', () => {

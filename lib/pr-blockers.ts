@@ -49,10 +49,15 @@ export interface ReviewState {
   isBot: boolean;
 }
 
+/** Label that pauses the autopilot on one pull request. */
+export const OFF_LABEL = 'autopilot:off';
+
 /** Everything the triage needs to know about one pull request. */
 export interface PullRequestState {
   number: number;
   headRefName: string;
+  /** The PR's label names. */
+  labels: string[];
   headOid: string;
   isDraft: boolean;
   /** GitHub's own verdict: APPROVED | CHANGES_REQUESTED | REVIEW_REQUIRED | null. */
@@ -129,8 +134,10 @@ export function staleBotReviews(pr: PullRequestState): string[] {
 /**
  * Triage one pull request into the list of things stopping it.
  *
- * A draft PR returns no blockers: a draft is a deliberate "not yet", and
- * policing it would fight the author.
+ * Two PRs return no blockers regardless of state. A draft is a deliberate
+ * "not yet", and policing it would fight the author. A PR labelled
+ * `autopilot:off` is a person saying they have taken it over — the wake
+ * comment tells them to use that label, so it has to actually work.
  *
  * @param pr - The pull request's state.
  * @returns The blockers, with flags describing what kind of attention they need.
@@ -138,7 +145,7 @@ export function staleBotReviews(pr: PullRequestState): string[] {
 export function triagePullRequest(pr: PullRequestState): PrTriage {
   const blockers: Blocker[] = [];
 
-  if (!pr.isDraft) {
+  if (!pr.isDraft && !pr.labels.includes(OFF_LABEL)) {
     const failing = pr.checks.filter(
       (c) => c.conclusion !== null && FAILED_CONCLUSIONS.includes(c.conclusion),
     );
@@ -228,12 +235,14 @@ export interface WakeDecision {
  * The compromise is the one the laptop hook already uses: re-wake on an
  * unchanged blocker set, but give up after `maxRepeats` and say so, because a
  * blocker set that has not moved in that many tries is not one more attempt
- * away from moving.
+ * away from moving. A second, looser cap on total wakeups catches the case a
+ * consecutive rule cannot see — blockers that alternate rather than repeat.
  *
  * @param signature - The current blocker signature.
  * @param priorSignatures - Signatures from this autopilot's own prior comments
  *   on the PR, oldest first.
- * @param maxRepeats - Consecutive unchanged wakeups before giving up.
+ * @param maxRepeats - Consecutive unchanged wakeups before giving up; twice
+ *   this many total wakeups also stands the autopilot down.
  * @returns Whether to wake, with the repeat count and the reason.
  */
 export function shouldWake(
@@ -246,6 +255,18 @@ export function shouldWake(
     if (priorSignatures[i] !== signature) break;
     repeats++;
   }
+
+  // A total cap as well as a consecutive one. Counting only an unchanged
+  // signature misses the shape this loop actually produces: the fixer pushes,
+  // the push stales the bot review, the bot posts a fresh review, and the
+  // signature alternates between `stale-bot-review` and `changes-requested`
+  // forever. Each flip resets the consecutive counter to zero, so a purely
+  // consecutive rule never fires — and every wake costs a model call.
+  const totalCap = maxRepeats * 2;
+  if (priorSignatures.length >= totalCap) {
+    return { wake: false, repeats: priorSignatures.length, reason: 'wedged' };
+  }
+
   if (repeats === 0) return { wake: true, repeats, reason: 'new-blockers' };
   if (repeats >= maxRepeats) return { wake: false, repeats, reason: 'wedged' };
   return { wake: true, repeats, reason: 'unchanged-blockers' };
@@ -303,8 +324,9 @@ export function renderWedgedComment(triage: PrTriage, decision: WakeDecision): s
     `<!-- signature:${triage.signature} -->`,
     '<!-- wedged -->',
     '',
-    `**Autopilot is standing down on this PR.** The same blockers have survived ` +
-      `${decision.repeats} attempts, so another one is unlikely to help:`,
+    `**Autopilot is standing down on this PR.** It has woken the fixer ` +
+      `${decision.repeats} times without clearing these, so another attempt is ` +
+      'unlikely to help:',
     '',
     ...triage.blockers.map((b) => `- ${b.detail}`),
     '',

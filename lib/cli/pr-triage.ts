@@ -87,6 +87,7 @@ interface RawPr {
     state?: string;
     commit?: { oid?: string } | null;
   }> | null;
+  labels?: Array<{ name?: string }> | null;
 }
 
 /**
@@ -119,10 +120,16 @@ export function normalizeChecks(rollup: RawPr['statusCheckRollup']): PullRequest
  */
 export function countUnresolvedThreads(repo: string, number: number): number {
   const [owner, name] = repo.split('/');
-  const query = `query($owner:String!,$name:String!,$number:Int!,$cursor:String){
+  // The cursor variable MUST be named `endCursor`: that is the name `gh api
+  // graphql --paginate` injects between requests. Called anything else, page
+  // two is never fetched — and `gh` errors on the undefined variable, which
+  // would abort the sweep for every other PR in the repo. Which is the exact
+  // failure this function exists to prevent, since an unpaginated first page
+  // reports "all resolved" while unresolved threads sit on page two.
+  const query = `query($owner:String!,$name:String!,$number:Int!,$endCursor:String){
     repository(owner:$owner,name:$name){
       pullRequest(number:$number){
-        reviewThreads(first:100,after:$cursor){
+        reviewThreads(first:100,after:$endCursor){
           pageInfo{hasNextPage endCursor}
           nodes{isResolved}
         }
@@ -162,6 +169,7 @@ export function toPullRequestState(
   return {
     number: raw.number,
     headRefName: raw.headRefName,
+    labels: (raw.labels ?? []).map((l) => l.name ?? '').filter((n) => n !== ''),
     headOid: raw.headRefOid,
     isDraft: raw.isDraft,
     reviewDecision: raw.reviewDecision,
@@ -236,7 +244,8 @@ export function runTriage(
     maxRepeats?: number;
   } = {},
 ): TriageReport {
-  const fields = 'number,headRefName,headRefOid,isDraft,reviewDecision,statusCheckRollup,reviews';
+  const fields =
+    'number,headRefName,headRefOid,isDraft,reviewDecision,statusCheckRollup,reviews,labels';
   const prs: RawPr[] = onlyPr
     ? [gh<RawPr>(['pr', 'view', String(onlyPr), '--repo', repo, '--json', fields])]
     : gh<RawPr[]>(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', fields]);

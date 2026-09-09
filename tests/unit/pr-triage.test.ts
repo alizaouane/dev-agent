@@ -76,6 +76,28 @@ describe('toPullRequestState', () => {
   it('carries the thread count straight through', () => {
     expect(toPullRequestState(raw, 4).unresolvedThreadCount).toBe(4);
   });
+
+  it('carries label names, which the autopilot:off switch depends on', () => {
+    const withLabels = { ...raw, labels: [{ name: 'autopilot:off' }, {}] };
+    expect(toPullRequestState(withLabels, 0).labels).toEqual(['autopilot:off']);
+  });
+
+  it('treats a PR with no labels as unlabelled rather than undefined', () => {
+    expect(toPullRequestState({ ...raw, labels: null }, 0).labels).toEqual([]);
+  });
+});
+
+describe('countUnresolvedThreads query', () => {
+  const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+
+  it('names its cursor variable endCursor, the only name --paginate advances', () => {
+    // gh injects the next page's cursor into a variable named exactly
+    // `endCursor`. Called anything else, page two is never fetched and gh
+    // errors on the undefined variable — aborting the sweep for every PR.
+    expect(source).toMatch(/\$endCursor:String/);
+    expect(source).toMatch(/after:\$endCursor/);
+    expect(source).not.toMatch(/after:\$cursor\b/);
+  });
 });
 
 describe('pr-autopilot.yml', () => {
@@ -190,6 +212,7 @@ describe('renderWakeComment', () => {
   const triage = triagePullRequest({
     number: 5,
     headRefName: 'dev-agent/spec-thing',
+    labels: [],
     headOid: 'head1234',
     isDraft: false,
     reviewDecision: null,
@@ -224,6 +247,7 @@ describe('renderWedgedComment', () => {
   const triage = triagePullRequest({
     number: 5,
     headRefName: 'feat/dev-agent-issue-5',
+    labels: [],
     headOid: 'head1234',
     isDraft: false,
     reviewDecision: 'CHANGES_REQUESTED',
@@ -237,7 +261,7 @@ describe('renderWedgedComment', () => {
     // working — the situation this whole mechanism exists to prevent.
     const body = renderWedgedComment(triage, { wake: false, repeats: 4, reason: 'wedged' });
     expect(body).toContain('standing down');
-    expect(body).toContain('4 attempts');
+    expect(body).toContain('woken the fixer 4 times');
     expect(body).toContain('<!-- wedged -->');
   });
 
