@@ -111,6 +111,26 @@ describe('pr-autopilot.yml', () => {
     'utf8',
   );
 
+  it('has no two cron entries that fire at the same minute', () => {
+    // `*/20` and `0 * * * *` both fire on the hour. GitHub starts two identical
+    // sweeps; the concurrency group serialises rather than drops one, so the
+    // second re-reads the same signature and counts a repeat — burning a
+    // stand-down attempt without an attempt having happened.
+    const crons = [...raw.matchAll(/cron: '([^']+)'/g)].map((m) => m[1]);
+    expect(crons.length).toBeGreaterThan(1);
+    const minutesOf = (c: string) => {
+      const f = c.split(' ')[0];
+      if (f === '*') return new Set(Array.from({ length: 60 }, (_, i) => i));
+      if (f.startsWith('*/')) {
+        const step = Number(f.slice(2));
+        return new Set(Array.from({ length: Math.ceil(60 / step) }, (_, i) => i * step));
+      }
+      return new Set(f.split(',').map(Number));
+    };
+    const [a, b] = crons.map(minutesOf);
+    expect([...a].filter((m) => b.has(m))).toEqual([]);
+  });
+
   it('runs on a schedule, so it does not need a session open', () => {
     // The whole point: the same rules ran as a laptop Stop hook, which only
     // fired while a session was live and the machine awake.

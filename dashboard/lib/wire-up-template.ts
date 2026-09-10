@@ -1016,7 +1016,12 @@ run-name: \${{ github.event_name }} → pr-autopilot sweep
 
 on:
   schedule:
-    - cron: '*/20 6-20 * * 1-5'
+    # Disjoint on purpose. \`*/20\` and \`0 * * * *\` both fire on the hour, and
+    # GitHub starts two identical sweeps. The concurrency group serialises
+    # them rather than dropping one, so the second re-reads the same blocker
+    # signature and counts a repeat — burning one of the four stand-down
+    # attempts without an attempt having happened.
+    - cron: '20,40 6-20 * * 1-5'
     - cron: '0 * * * *'
   workflow_dispatch:
     inputs:
