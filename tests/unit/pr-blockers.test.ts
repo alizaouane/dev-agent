@@ -130,6 +130,28 @@ describe('triagePullRequest', () => {
     expect(t.blockers.map((b) => b.kind)).toContain('stale-bot-review');
   });
 
+  it('flags a required-but-missing approval, which nothing else catches', () => {
+    // GitHub sets REVIEW_REQUIRED only when branch protection demands a review
+    // and none exists. Such a PR has no other blocker, so without this it
+    // reads as clean while GitHub still refuses the merge.
+    const t = triagePullRequest(pr({ reviewDecision: 'REVIEW_REQUIRED' }));
+    expect(t.blockers.map((b) => b.kind)).toEqual(['awaiting-approval']);
+  });
+
+  it('does not wake the fixer for a missing approval, which it cannot give', () => {
+    // Passive, like a running check: waking the agent here spends a model call
+    // to learn it cannot approve its own pull request.
+    const t = triagePullRequest(pr({ reviewDecision: 'REVIEW_REQUIRED' }));
+    expect(t.needsWork).toBe(false);
+    expect(t.waitingOnly).toBe(true);
+  });
+
+  it('treats a null reviewDecision as no review required', () => {
+    // Repos without required reviews report null; blocking on that would stall
+    // every PR in them forever.
+    expect(triagePullRequest(pr({ reviewDecision: null })).blockers).toEqual([]);
+  });
+
   it('flags CHANGES_REQUESTED even when every check passed', () => {
     const t = triagePullRequest(pr({ reviewDecision: 'CHANGES_REQUESTED' }));
     expect(t.blockers.map((b) => b.kind)).toEqual(['changes-requested']);

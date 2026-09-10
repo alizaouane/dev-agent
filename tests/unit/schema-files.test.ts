@@ -10,6 +10,7 @@ const labelVocabularySchema = z.object({
   kinds: z.array(z.string().regex(/^kind:[a-z-]+$/)).nonempty(),
   priorities: z.array(z.string().regex(/^priority:p[0-3]$/)).length(4),
   gates: z.array(z.string().regex(/^[a-z-]+:override$/)).nonempty(),
+  signals: z.array(z.string().regex(/^[a-z-]+$/)).nonempty(),
 });
 
 describe('schema/label-vocabulary.yml', () => {
@@ -48,6 +49,16 @@ describe('schema/label-vocabulary.yml', () => {
     expect(parsed.kinds).toEqual(
       expect.arrayContaining(['kind:user-intent', 'kind:scout-proposal', 'kind:scout-digest', 'kind:hotfix'])
     );
+  });
+
+  it('lists ready-to-merge as a signal, not a state', () => {
+    // A PR carrying it is still at whatever stage its issue says; the label is
+    // the autopilot reporting it has nothing left to fix. Filing it under
+    // `states` would let a state-label reader treat it as a pipeline stage.
+    const content = readFileSync(resolve(__dirname, '../../schema/label-vocabulary.yml'), 'utf8');
+    const parsed = yaml.load(content) as { states: string[]; signals: string[] };
+    expect(parsed.signals).toContain('ready-to-merge');
+    expect(parsed.states).not.toContain('ready-to-merge');
   });
 
   it('lists the spec-approval override as a gate label, not a state', () => {

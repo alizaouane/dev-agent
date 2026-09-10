@@ -70,7 +70,13 @@ export interface PullRequestState {
 
 /** Why a pull request is not ready, and what would clear it. */
 export interface Blocker {
-  kind: 'failing-check' | 'running-check' | 'unresolved-threads' | 'stale-bot-review' | 'changes-requested';
+  kind:
+    | 'failing-check'
+    | 'running-check'
+    | 'unresolved-threads'
+    | 'stale-bot-review'
+    | 'changes-requested'
+    | 'awaiting-approval';
   /** One sentence naming the blocker, for an issue comment or a log line. */
   detail: string;
 }
@@ -86,6 +92,15 @@ export interface PrTriage {
   waitingOnly: boolean;
   /** Stable signature of the blocker set, for detecting a stuck loop. */
   signature: string;
+  /**
+   * True when the PR was deliberately not evaluated — a draft, or opted out.
+   *
+   * Distinct from "evaluated and found clean", and the distinction is the
+   * whole point: a skipped PR has an empty blocker list because nothing was
+   * looked at, not because nothing is wrong. A caller that treats the two
+   * alike will announce a draft with red CI as ready to merge.
+   */
+  skipped: boolean;
 }
 
 /** Branch shapes dev-agent owns and may act on unattended. */
@@ -144,8 +159,9 @@ export function staleBotReviews(pr: PullRequestState): string[] {
  */
 export function triagePullRequest(pr: PullRequestState): PrTriage {
   const blockers: Blocker[] = [];
+  const skipped = pr.isDraft || pr.labels.includes(OFF_LABEL);
 
-  if (!pr.isDraft && !pr.labels.includes(OFF_LABEL)) {
+  if (!skipped) {
     const failing = pr.checks.filter(
       (c) => c.conclusion !== null && FAILED_CONCLUSIONS.includes(c.conclusion),
     );
@@ -184,11 +200,24 @@ export function triagePullRequest(pr: PullRequestState): PrTriage {
     if (pr.reviewDecision === 'CHANGES_REQUESTED') {
       blockers.push({ kind: 'changes-requested', detail: 'reviewDecision is CHANGES_REQUESTED' });
     }
+
+    // GitHub sets REVIEW_REQUIRED only when branch protection demands a review
+    // and none has been given; it is null where reviews are not required. A PR
+    // in that state has no other blocker, so without this it reads as clean
+    // and gets announced ready while GitHub still refuses the merge.
+    if (pr.reviewDecision === 'REVIEW_REQUIRED') {
+      blockers.push({
+        kind: 'awaiting-approval',
+        detail: 'branch protection requires a review, and none has been submitted',
+      });
+    }
   }
 
-  // A check that is merely running needs time, not an agent. Dispatching a fix
-  // run against it would spend a model call to discover that CI is still going.
-  const actionable = blockers.filter((b) => b.kind !== 'running-check');
+  // Some blockers need time or a person, not an agent. Waking the fixer for a
+  // running check spends a model call to learn CI is still going; waking it for
+  // a missing approval spends one to learn it cannot approve its own PR.
+  const PASSIVE: readonly Blocker['kind'][] = ['running-check', 'awaiting-approval'];
+  const actionable = blockers.filter((b) => !PASSIVE.includes(b.kind));
 
   return {
     number: pr.number,
@@ -197,6 +226,7 @@ export function triagePullRequest(pr: PullRequestState): PrTriage {
     needsWork: actionable.length > 0,
     waitingOnly: actionable.length === 0 && blockers.length > 0,
     signature: blockers.map((b) => b.kind).sort().join('|'),
+    skipped,
   };
 }
 
@@ -367,4 +397,74 @@ export function priorSignatures(comments: CommentRecord[]): string[] {
     .filter((c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes(AUTOPILOT_MARKER))
     .map((c) => c.body.match(/<!-- signature:([^>]*) -->/)?.[1]?.trim() ?? '')
     .filter((s) => s !== '');
+}
+
+/** Marker on the comment that announces a PR is ready to merge. */
+export const READY_MARKER = '<!-- dev-agent:pr-autopilot ready -->';
+
+/** Label applied to a PR the autopilot has cleared. */
+export const READY_LABEL = 'ready-to-merge';
+
+/**
+ * Whether a triaged PR is genuinely finished, as opposed to unexamined.
+ *
+ * Three things have to hold, and each rules out a way of looking clean without
+ * being clean. It must have been evaluated at all, so a draft or an opted-out
+ * PR is excluded. It must have no blockers. And it must actually have checks:
+ * a PR whose CI never ran produces no failing-check blocker either, and
+ * announcing "every check passed" over zero checks is both false and unhelpful,
+ * since branch protection will still hold the merge.
+ *
+ * @param triage - The triage verdict.
+ * @param checkCount - How many checks reported on the head commit.
+ * @returns True when the PR can honestly be called ready to merge.
+ */
+export function isReadyToMerge(triage: PrTriage, checkCount: number): boolean {
+  return !triage.skipped && triage.blockers.length === 0 && checkCount > 0;
+}
+
+/**
+ * Render the announcement that a pull request has nothing left blocking it.
+ *
+ * The autopilot was built to remove the need to go and look at a PR, but it
+ * only ever spoke up about problems. A mechanism that reports failures and
+ * stays silent on success still requires the operator to check, which is the
+ * habit it was meant to replace — silence has to mean "not finished", never
+ * "finished".
+ *
+ * Announced once per PR, not on every sweep: a comment repeated every twenty
+ * minutes is noise that trains you to ignore the channel.
+ *
+ * @param pr - The pull request, now clear of blockers.
+ * @returns The comment body.
+ */
+export function renderReadyComment(pr: PullRequestState): string {
+  return [
+    AUTOPILOT_MARKER,
+    READY_MARKER,
+    '',
+    `**#${pr.number} is ready to merge.** Every check passed, every review thread is`,
+    'resolved, and no bot review is stale against the current head.',
+    '',
+    `Head: \`${pr.headOid.slice(0, 8)}\` · checks: ${pr.checks.length} · reviews: ${pr.reviews.length}`,
+    '',
+    '_Posted once. If a later push reopens something, the autopilot will say so_',
+    '_on this thread rather than repeating this._',
+  ].join('\n');
+}
+
+/**
+ * Whether the autopilot has already announced this PR as ready.
+ *
+ * Checked against its own authorship for the same reason `priorSignatures` is:
+ * anyone can paste the marker, and a forged one would suppress the real
+ * announcement — turning the signal off precisely when it matters.
+ *
+ * @param comments - Every comment on the PR.
+ * @returns True when its own ready announcement is already present.
+ */
+export function alreadyAnnouncedReady(comments: CommentRecord[]): boolean {
+  return comments.some(
+    (c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes(READY_MARKER),
+  );
 }

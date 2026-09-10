@@ -30,3 +30,9 @@ priorities:
 # gate was bypassed and go read why.
 gates:
   - spec-approval:override
+
+# Signals the automation raises for a human to act on. Not states: a PR
+# carrying `ready-to-merge` is still at whatever stage its issue says. This one
+# is the autopilot saying it has nothing left to fix.
+signals:
+  - ready-to-merge

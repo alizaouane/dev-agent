@@ -13,7 +13,7 @@ Bootstraps the current repo as a dev-agent consumer.
 1. **Detects stack** by reading `package.json`, `supabase/config.toml`, `next.config.*`, `tsconfig.json`, etc., to infer reasonable defaults for `commands.test`, `commands.build`, `commands.typecheck`, and the staging-vs-no-staging branch model.
 2. **Generates `.dev-agent.yml`** at the repo root, merging the inferred values over `schema/defaults.yml` (loaded from the installed plugin). Preserves any existing `.dev-agent.yml` — never overwrites.
 3. **Drops 6 thin GitHub workflow wrappers** under `.github/workflows/dev-agent-*.yml`. Each is a 3–5 line `uses: alizaouane/dev-agent/.github/workflows/phase-<X>.yml@v1` reference with the issue number / config path passed through.
-4. **Creates the canonical label vocabulary** via `gh label create` — 12 state labels, 4 kind labels, 4 priority labels, and 1 gate label (per `schema/label-vocabulary.yml`, whose `states`, `kinds`, `priorities` and `gates` lists are the source of truth — read all four, do not hard-code the names here).
+4. **Creates the canonical label vocabulary** via `gh label create` — every list in `schema/label-vocabulary.yml` (`states`, `kinds`, `priorities`, `gates`, `signals`). That file is the source of truth: read every top-level list it contains rather than hard-coding names or a count here, so a list added later is provisioned without editing this command.
 5. **Opens a PR titled "chore: dev-agent onboarding"** for human review of the generated config + wrappers before merge.
 
 ## Steps
@@ -22,7 +22,7 @@ Bootstraps the current repo as a dev-agent consumer.
 2. Refuse if `.dev-agent.yml` already exists, unless invoked with `--force` (suggest the user run `/develop` instead).
 3. Read stack hints; build a starter config in memory.
 4. Write `.dev-agent.yml` and the 6 wrappers.
-5. Run `gh label create` for each canonical label, iterating every list in `schema/label-vocabulary.yml` including `gates` (idempotent: skip on `already exists`). A missing `spec-approval:override` label leaves the operator with no way to dispatch past a refused approval gate.
+5. Run `gh label create` for each canonical label, iterating **every** top-level list in `schema/label-vocabulary.yml` (idempotent: skip on `already exists`). Two that are easy to miss and both fail silently: without `spec-approval:override` the operator cannot dispatch past a refused approval gate, and without `ready-to-merge` the autopilot's label write is swallowed, so the signal it advertises never appears.
 6. Open the onboarding PR via `gh pr create`.
 
 ## What this does NOT do

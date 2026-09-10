@@ -39,8 +39,12 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
   AUTOPILOT_AUTHORS,
+  READY_LABEL,
+  alreadyAnnouncedReady,
   isDevAgentBranch,
+  isReadyToMerge,
   priorSignatures,
+  renderReadyComment,
   renderWakeComment,
   renderWedgedComment,
   shouldWake,
@@ -202,6 +206,8 @@ export interface TriageReport {
   woken: number[];
   /** PRs the sweep stood down on, having tried and not moved them. */
   wedged: number[];
+  /** PRs announced as ready to merge on this sweep. */
+  ready: number[];
 }
 
 /**
@@ -252,6 +258,32 @@ export function readComments(repo: string, number: number): CommentRecord[] {
 }
 
 /**
+ * Add or remove a label on a PR, ignoring a failure.
+ *
+ * The label is a convenience for scanning the PR list; the comment is the
+ * actual signal. A repo that has never created this label should not turn a
+ * successful sweep into a failed one.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number.
+ * @param label - Label to set.
+ * @param present - True to add, false to remove.
+ */
+export function setLabel(repo: string, number: number, label: string, present: boolean): void {
+  const flag = present ? '--add-label' : '--remove-label';
+  try {
+    execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, flag, label], {
+      encoding: 'utf8',
+    });
+  } catch (err) {
+    process.stderr.write(
+      `could not ${present ? 'add' : 'remove'} ${label} on #${number}: ` +
+        `${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  }
+}
+
+/**
  * Post a comment on a PR.
  *
  * @param repo - owner/name.
@@ -288,16 +320,45 @@ export function runTriage(
     ? [gh<RawPr>(['pr', 'view', String(onlyPr), '--repo', repo, '--json', fields])]
     : gh<RawPr[]>(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', fields]);
 
-  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [] };
+  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [], ready: [] };
   for (const raw of prs) {
     // Skip the thread query for branches we would never act on — it is the
     // expensive call in this sweep and most open PRs are not ours.
     if (!isDevAgentBranch(raw.headRefName)) continue;
-    const triage = triagePullRequest(
-      toPullRequestState(raw, countUnresolvedThreads(repo, raw.number)),
-    );
+    const state = toPullRequestState(raw, countUnresolvedThreads(repo, raw.number));
+    const triage = triagePullRequest(state);
+    const ready = isReadyToMerge(triage, state.checks.length);
+
+    // Reconcile the label on every sweep, not only when announcing. Coupling
+    // it to the one-time announcement left two holes: a failed label write was
+    // never retried, and a PR that picked up a blocker after being announced
+    // kept a `ready-to-merge` label that was no longer true — a list-scanning
+    // signal that lies is worse than none.
+    const labelled = state.labels.includes(READY_LABEL);
+    if (!dryRun && ready !== labelled) setLabel(repo, triage.number, READY_LABEL, ready);
+
     if (!triage.needsWork) {
-      if (triage.waitingOnly) report.waiting.push(triage);
+      if (triage.waitingOnly) {
+        report.waiting.push(triage);
+        continue;
+      }
+      // Nothing blocking at all. Say so, once. An autopilot that reports only
+      // problems and stays silent on success still makes you go and look,
+      // which is the habit it exists to replace.
+      //
+      // `isReadyToMerge` is what separates "finished" from "not examined": a
+      // draft, an opted-out PR, and one whose CI never ran all produce an
+      // empty blocker list too.
+      if (!ready) continue;
+
+      // The label answers "already announced?" from data already in hand.
+      // Reading every comment on every clean PR, on every sweep, forever, is a
+      // permanent cost for a question the label settles for free; the comment
+      // scan stays as the fallback for when a previous label write failed.
+      if (labelled || alreadyAnnouncedReady(readComments(repo, triage.number))) continue;
+
+      if (!dryRun) postComment(repo, triage.number, renderReadyComment(state));
+      report.ready.push(triage.number);
       continue;
     }
     report.actionable.push(triage);

@@ -4,7 +4,12 @@ import { resolve } from 'node:path';
 import { normalizeChecks, toPullRequestState } from '../../lib/cli/pr-triage';
 import {
   AUTOPILOT_MARKER,
+  READY_MARKER,
+  alreadyAnnouncedReady,
+  isReadyToMerge,
+  triagePullRequest as triage,
   priorSignatures,
+  renderReadyComment,
   renderWakeComment,
   renderWedgedComment,
   shouldWake,
@@ -105,6 +110,26 @@ describe('pr-autopilot.yml', () => {
     resolve(__dirname, '../../.github/workflows/pr-autopilot.yml'),
     'utf8',
   );
+
+  it('has no two cron entries that fire at the same minute', () => {
+    // `*/20` and `0 * * * *` both fire on the hour. GitHub starts two identical
+    // sweeps; the concurrency group serialises rather than drops one, so the
+    // second re-reads the same signature and counts a repeat — burning a
+    // stand-down attempt without an attempt having happened.
+    const crons = [...raw.matchAll(/cron: '([^']+)'/g)].map((m) => m[1]);
+    expect(crons.length).toBeGreaterThan(1);
+    const minutesOf = (c: string) => {
+      const f = c.split(' ')[0];
+      if (f === '*') return new Set(Array.from({ length: 60 }, (_, i) => i));
+      if (f.startsWith('*/')) {
+        const step = Number(f.slice(2));
+        return new Set(Array.from({ length: Math.ceil(60 / step) }, (_, i) => i * step));
+      }
+      return new Set(f.split(',').map(Number));
+    };
+    const [a, b] = crons.map(minutesOf);
+    expect([...a].filter((m) => b.has(m))).toEqual([]);
+  });
 
   it('runs on a schedule, so it does not need a session open', () => {
     // The whole point: the same rules ran as a laptop Stop hook, which only
@@ -322,5 +347,121 @@ describe('consumer workflow wrappers', () => {
     const raw = readFileSync(resolve(tplDir, 'dev-agent-pr-review.yml'), 'utf8');
     expect(raw).toMatch(/author_association/);
     expect(raw).toMatch(/OWNER","MEMBER","COLLABORATOR/);
+  });
+});
+
+describe('ready-to-merge announcement', () => {
+  const clean = {
+    number: 42,
+    headRefName: 'feat/dev-agent-issue-42',
+    labels: [],
+    headOid: 'abc1234def',
+    isDraft: false,
+    reviewDecision: 'APPROVED',
+    checks: [{ name: 'test', conclusion: 'SUCCESS' }],
+    reviews: [],
+    unresolvedThreadCount: 0,
+  };
+
+  it('says the PR is ready and names it', () => {
+    // The autopilot was built so the operator stops checking PRs by hand. One
+    // that reports only problems still makes them check, so silence has to
+    // mean "not finished" rather than "finished".
+    const body = renderReadyComment(clean);
+    expect(body).toContain('#42 is ready to merge');
+    expect(body).toContain('abc1234d');
+  });
+
+  it('does not mention the fixer, which would wake it on a finished PR', () => {
+    expect(renderReadyComment(clean)).not.toContain('@claude');
+  });
+
+  it('is recognised as its own announcement afterwards', () => {
+    const body = renderReadyComment(clean);
+    expect(alreadyAnnouncedReady([{ author: 'github-actions[bot]', body }])).toBe(true);
+  });
+
+  it('announces once, so a clean PR is not commented on every twenty minutes', () => {
+    const body = renderReadyComment(clean);
+    expect(alreadyAnnouncedReady([{ author: 'github-actions', body }])).toBe(true);
+  });
+
+  it('ignores a forged marker, which would suppress the real announcement', () => {
+    // Same reasoning as the signature check: anyone can paste the marker, and
+    // a forged one would turn the signal off exactly when it matters.
+    expect(alreadyAnnouncedReady([{ author: 'drive-by', body: READY_MARKER }])).toBe(false);
+  });
+
+  it('treats an unannounced clean PR as needing the announcement', () => {
+    expect(alreadyAnnouncedReady([{ author: 'github-actions', body: 'unrelated' }])).toBe(false);
+  });
+});
+
+describe('isReadyToMerge', () => {
+  /** Triage a PR with the given overrides. */
+  const t = (over: Record<string, unknown> = {}) =>
+    triage({
+      number: 1,
+      headRefName: 'feat/dev-agent-issue-1',
+      labels: [],
+      headOid: 'abc1234def',
+      isDraft: false,
+      reviewDecision: 'APPROVED',
+      checks: [{ name: 'test', conclusion: 'SUCCESS' }],
+      reviews: [],
+      unresolvedThreadCount: 0,
+      ...over,
+    } as never);
+
+  it('is true for an examined PR with passing checks and no blockers', () => {
+    expect(isReadyToMerge(t(), 1)).toBe(true);
+  });
+
+  it('is false for a draft, however clean it looks', () => {
+    // A draft is never examined, so its empty blocker list means "not looked
+    // at". Announcing it ready would be announcing a PR with red CI as done.
+    const d = t({ isDraft: true, checks: [{ name: 'test', conclusion: 'FAILURE' }] });
+    expect(d.blockers).toEqual([]);
+    expect(d.skipped).toBe(true);
+    expect(isReadyToMerge(d, 1)).toBe(false);
+  });
+
+  it('is false for a PR the operator opted out of', () => {
+    // Someone labelled it to take it out of the autopilot's hands. Commenting
+    // and labelling it anyway is the opposite of honouring that.
+    const off = t({ labels: ['autopilot:off'], checks: [{ name: 'x', conclusion: 'FAILURE' }] });
+    expect(off.skipped).toBe(true);
+    expect(isReadyToMerge(off, 1)).toBe(false);
+  });
+
+  it('is false when no check has reported at all', () => {
+    // Zero checks produces no failing-check blocker either. "Every check
+    // passed" over zero checks is false, and branch protection would hold the
+    // merge regardless.
+    expect(isReadyToMerge(t({ checks: [] }), 0)).toBe(false);
+  });
+
+  it('is false while a blocker remains', () => {
+    expect(isReadyToMerge(t({ unresolvedThreadCount: 2 }), 1)).toBe(false);
+  });
+
+  it('is false while GitHub still requires a review', () => {
+    expect(isReadyToMerge(t({ reviewDecision: 'REVIEW_REQUIRED' }), 1)).toBe(false);
+  });
+});
+
+describe('pr-autopilot label reconciliation', () => {
+  const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+
+  it('reconciles the label every sweep, not only when announcing', () => {
+    // Coupling the label to the one-time announcement left two holes: a failed
+    // write was never retried, and a PR that picked up a blocker after being
+    // announced kept a label that was no longer true.
+    expect(source).toMatch(/ready !== labelled/);
+    expect(source).toMatch(/setLabel\(repo, triage\.number, READY_LABEL, ready\)/);
+  });
+
+  it('can remove the label, not only add it', () => {
+    expect(source).toMatch(/--remove-label/);
   });
 });
