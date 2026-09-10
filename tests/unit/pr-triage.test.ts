@@ -424,4 +424,24 @@ describe('isReadyToMerge', () => {
   it('is false while a blocker remains', () => {
     expect(isReadyToMerge(t({ unresolvedThreadCount: 2 }), 1)).toBe(false);
   });
+
+  it('is false while GitHub still requires a review', () => {
+    expect(isReadyToMerge(t({ reviewDecision: 'REVIEW_REQUIRED' }), 1)).toBe(false);
+  });
+});
+
+describe('pr-autopilot label reconciliation', () => {
+  const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+
+  it('reconciles the label every sweep, not only when announcing', () => {
+    // Coupling the label to the one-time announcement left two holes: a failed
+    // write was never retried, and a PR that picked up a blocker after being
+    // announced kept a label that was no longer true.
+    expect(source).toMatch(/ready !== labelled/);
+    expect(source).toMatch(/setLabel\(repo, triage\.number, READY_LABEL, ready\)/);
+  });
+
+  it('can remove the label, not only add it', () => {
+    expect(source).toMatch(/--remove-label/);
+  });
 });

@@ -70,7 +70,13 @@ export interface PullRequestState {
 
 /** Why a pull request is not ready, and what would clear it. */
 export interface Blocker {
-  kind: 'failing-check' | 'running-check' | 'unresolved-threads' | 'stale-bot-review' | 'changes-requested';
+  kind:
+    | 'failing-check'
+    | 'running-check'
+    | 'unresolved-threads'
+    | 'stale-bot-review'
+    | 'changes-requested'
+    | 'awaiting-approval';
   /** One sentence naming the blocker, for an issue comment or a log line. */
   detail: string;
 }
@@ -194,11 +200,24 @@ export function triagePullRequest(pr: PullRequestState): PrTriage {
     if (pr.reviewDecision === 'CHANGES_REQUESTED') {
       blockers.push({ kind: 'changes-requested', detail: 'reviewDecision is CHANGES_REQUESTED' });
     }
+
+    // GitHub sets REVIEW_REQUIRED only when branch protection demands a review
+    // and none has been given; it is null where reviews are not required. A PR
+    // in that state has no other blocker, so without this it reads as clean
+    // and gets announced ready while GitHub still refuses the merge.
+    if (pr.reviewDecision === 'REVIEW_REQUIRED') {
+      blockers.push({
+        kind: 'awaiting-approval',
+        detail: 'branch protection requires a review, and none has been submitted',
+      });
+    }
   }
 
-  // A check that is merely running needs time, not an agent. Dispatching a fix
-  // run against it would spend a model call to discover that CI is still going.
-  const actionable = blockers.filter((b) => b.kind !== 'running-check');
+  // Some blockers need time or a person, not an agent. Waking the fixer for a
+  // running check spends a model call to learn CI is still going; waking it for
+  // a missing approval spends one to learn it cannot approve its own PR.
+  const PASSIVE: readonly Blocker['kind'][] = ['running-check', 'awaiting-approval'];
+  const actionable = blockers.filter((b) => !PASSIVE.includes(b.kind));
 
   return {
     number: pr.number,

@@ -258,24 +258,27 @@ export function readComments(repo: string, number: number): CommentRecord[] {
 }
 
 /**
- * Add a label to a PR, ignoring a failure.
+ * Add or remove a label on a PR, ignoring a failure.
  *
  * The label is a convenience for scanning the PR list; the comment is the
  * actual signal. A repo that has never created this label should not turn a
- * successful announcement into a failed sweep.
+ * successful sweep into a failed one.
  *
  * @param repo - owner/name.
  * @param number - PR number.
- * @param label - Label to add.
+ * @param label - Label to set.
+ * @param present - True to add, false to remove.
  */
-export function addLabel(repo: string, number: number, label: string): void {
+export function setLabel(repo: string, number: number, label: string, present: boolean): void {
+  const flag = present ? '--add-label' : '--remove-label';
   try {
-    execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, '--add-label', label], {
+    execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, flag, label], {
       encoding: 'utf8',
     });
   } catch (err) {
     process.stderr.write(
-      `could not add ${label} to #${number}: ${err instanceof Error ? err.message : String(err)}\n`,
+      `could not ${present ? 'add' : 'remove'} ${label} on #${number}: ` +
+        `${err instanceof Error ? err.message : String(err)}\n`,
     );
   }
 }
@@ -324,6 +327,16 @@ export function runTriage(
     if (!isDevAgentBranch(raw.headRefName)) continue;
     const state = toPullRequestState(raw, countUnresolvedThreads(repo, raw.number));
     const triage = triagePullRequest(state);
+    const ready = isReadyToMerge(triage, state.checks.length);
+
+    // Reconcile the label on every sweep, not only when announcing. Coupling
+    // it to the one-time announcement left two holes: a failed label write was
+    // never retried, and a PR that picked up a blocker after being announced
+    // kept a `ready-to-merge` label that was no longer true — a list-scanning
+    // signal that lies is worse than none.
+    const labelled = state.labels.includes(READY_LABEL);
+    if (!dryRun && ready !== labelled) setLabel(repo, triage.number, READY_LABEL, ready);
+
     if (!triage.needsWork) {
       if (triage.waitingOnly) {
         report.waiting.push(triage);
@@ -336,21 +349,15 @@ export function runTriage(
       // `isReadyToMerge` is what separates "finished" from "not examined": a
       // draft, an opted-out PR, and one whose CI never ran all produce an
       // empty blocker list too.
-      if (!isReadyToMerge(triage, state.checks.length)) continue;
+      if (!ready) continue;
 
       // The label answers "already announced?" from data already in hand.
       // Reading every comment on every clean PR, on every sweep, forever, is a
       // permanent cost for a question the label settles for free; the comment
       // scan stays as the fallback for when a previous label write failed.
-      const announced =
-        state.labels.includes(READY_LABEL) ||
-        alreadyAnnouncedReady(readComments(repo, triage.number));
-      if (announced) continue;
+      if (labelled || alreadyAnnouncedReady(readComments(repo, triage.number))) continue;
 
-      if (!dryRun) {
-        postComment(repo, triage.number, renderReadyComment(state));
-        addLabel(repo, triage.number, READY_LABEL);
-      }
+      if (!dryRun) postComment(repo, triage.number, renderReadyComment(state));
       report.ready.push(triage.number);
       continue;
     }
