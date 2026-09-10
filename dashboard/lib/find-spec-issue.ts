@@ -26,10 +26,12 @@ export interface SpecIssue {
   labels: string[];
   /** The plan the issue's own body names, which may be a stale one. */
   planPath: string | null;
+  /** Whether the issue is still open. */
+  open: boolean;
 }
 
 /**
- * Find every open issue whose body declares this spec.
+ * Find every issue whose body declares this spec, open or closed.
  *
  * All of them, not just the oldest. A repo that already carries the duplicate
  * this change exists to stop has an old issue still at `state:spec-ready` and
@@ -46,21 +48,26 @@ export interface SpecIssue {
  * @param owner - Repo owner.
  * @param repo - Repo name.
  * @param specPath - Repo-relative spec path to match.
- * @returns Matching open issues, oldest first. Empty when there are none.
+ * @returns Matching issues, open and closed, oldest first. Empty when there
+ *   are none.
  * @throws Whatever the listing throws — an unreadable issue list is not the
  *   same as an absent issue, and treating it as one files the duplicate this
  *   exists to prevent.
  */
-export async function findOpenIssuesForSpec(
+export async function findIssuesForSpec(
   octokit: Octokit,
   owner: string,
   repo: string,
   specPath: string,
 ): Promise<SpecIssue[]> {
+  // Closed issues count. A spec that has already been through the pipeline
+  // keeps its approval artifact on disk while its `state:done` issue is
+  // closed, so an open-only lookup finds nothing, files a fresh issue, and
+  // implements shipped work a second time. History is the whole point here.
   const issues = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
-    state: 'open',
+    state: 'all',
     per_page: 100,
   });
 
@@ -80,6 +87,7 @@ export async function findOpenIssuesForSpec(
       body: issue.body ?? null,
       labels: issue.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
       planPath: parseSpecRefs(issue.body)?.plan_path ?? null,
+      open: issue.state === 'open',
     }));
 }
 
@@ -88,12 +96,14 @@ export async function findOpenIssuesForSpec(
  *
  * Presence of `state:spec-ready` is not enough: an issue can carry two state
  * labels when an earlier label flip half-applied, and one that also says
- * `state:implementing` is work in progress rather than work waiting.
+ * `state:implementing` is work in progress rather than work waiting. A closed
+ * issue is never waiting, whatever it is labelled.
  *
  * @param issue - A matched issue.
  * @returns True only when `state:spec-ready` is its sole state label.
  */
 export function isWaitingToStart(issue: SpecIssue): boolean {
+  if (!issue.open) return false;
   const states = issue.labels.filter((l) => l.startsWith('state:'));
   return states.length === 1 && states[0] === 'state:spec-ready';
 }

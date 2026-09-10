@@ -95,11 +95,18 @@ describe('fetchActiveRunsForIssue strict', () => {
   it('rethrows a listing failure instead of reporting no runs', async () => {
     // The default is right for the visibility panel and wrong for a dispatch
     // guard: "could not list" is not "nothing running".
+    const listWorkflowRuns = vi
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 }));
     const octokit = {
-      actions: {
-        listWorkflowRuns: vi
-          .fn()
-          .mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 })),
+      actions: { listWorkflowRuns },
+      paginate: {
+        iterator: () => ({
+          // eslint-disable-next-line @typescript-eslint/require-await
+          async *[Symbol.asyncIterator]() {
+            yield { data: await listWorkflowRuns() };
+          },
+        }),
       },
     } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
     await expect(
@@ -112,19 +119,24 @@ describe('fetchActiveRunsForIssue strict', () => {
     // GitHub has more pre-execution statuses than queued/in_progress/waiting.
     // Listing only the ones it knows makes the guard report clear for the
     // ones it does not, which is how a duplicate dispatch gets through.
+    const runs = [
+      {
+        id: 1,
+        status: 'requested',
+        display_title: 'implement → issue #7 (live)',
+        html_url: 'u',
+        created_at: '2026-09-10T00:00:00Z',
+      },
+    ];
     const octokit = {
       actions: {
-        listWorkflowRuns: vi.fn().mockResolvedValue({
-          data: {
-            workflow_runs: [
-              {
-                id: 1,
-                status: 'requested',
-                display_title: 'implement → issue #7 (live)',
-                html_url: 'u',
-                created_at: '2026-09-10T00:00:00Z',
-              },
-            ],
+        listWorkflowRuns: vi.fn().mockResolvedValue({ data: { workflow_runs: runs } }),
+      },
+      paginate: {
+        iterator: () => ({
+          // eslint-disable-next-line @typescript-eslint/require-await
+          async *[Symbol.asyncIterator]() {
+            yield { data: runs };
           },
         }),
       },
@@ -132,5 +144,60 @@ describe('fetchActiveRunsForIssue strict', () => {
     await expect(fetchActiveRunsForIssue(octokit, 'q', 'r', 7)).resolves.toEqual([]);
     const strict = await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
     expect(strict).toHaveLength(1);
+  });
+});
+
+describe('fetchActiveRunsForIssue strict pagination', () => {
+  it('throws rather than reporting clear when there is more to scan', () => {
+    // A run this never looked at is unknown, not absent. Stopping at a page
+    // limit and returning [] is the guard passing without checking.
+    const full = Array.from({ length: 100 }, (_, i) => ({
+      id: i,
+      status: 'completed',
+      display_title: 'implement → issue #999 (live)',
+      html_url: 'u',
+      created_at: '2026-09-10T00:00:00Z',
+    }));
+    const octokit = {
+      actions: { listWorkflowRuns: vi.fn() },
+      paginate: {
+        iterator: () => ({
+          // eslint-disable-next-line @typescript-eslint/require-await
+          async *[Symbol.asyncIterator]() {
+            for (;;) yield { data: full };
+          },
+        }),
+      },
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    return expect(
+      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
+    ).rejects.toThrow(/exhaustively/);
+  });
+
+  it('reads past the first page to find an older queued run', () => {
+    const page = (runs: unknown[]) => ({ data: runs });
+    const octokit = {
+      actions: { listWorkflowRuns: vi.fn() },
+      paginate: {
+        iterator: () => ({
+          // eslint-disable-next-line @typescript-eslint/require-await
+          async *[Symbol.asyncIterator]() {
+            yield page([]);
+            yield page([
+              {
+                id: 5,
+                status: 'queued',
+                display_title: 'implement → issue #7 (live)',
+                html_url: 'u',
+                created_at: '2026-09-01T00:00:00Z',
+              },
+            ]);
+          },
+        }),
+      },
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    return expect(
+      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
+    ).resolves.toHaveLength(1);
   });
 });

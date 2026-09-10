@@ -41,10 +41,11 @@ export type ActiveRun = {
  *
  * @param options - `strict` switches this from best-effort visibility to a
  *   guard fit for a mutation: a listing failure rethrows instead of returning
- *   empty, the window widens to 100 runs, and every status GitHub has not
- *   marked `completed` counts as active — `requested` and `pending` included,
- *   which the default filter drops. An unreadable or partly-read run list is
- *   not an empty one, and a guard that cannot see is not a guard.
+ *   empty, every page is read rather than only the newest few, and every
+ *   status GitHub has not marked `completed` counts as active — `requested`
+ *   and `pending` included, which the default filter drops. A scan that hits
+ *   its page limit with more to read throws too. An unreadable or partly-read
+ *   run list is not an empty one, and a guard that cannot see is not a guard.
  */
 export async function fetchActiveRunsForIssue(
   octokit: Octokit,
@@ -64,14 +65,49 @@ export async function fetchActiveRunsForIssue(
   // the Actions API must NOT take down the whole feature page — log
   // and return empty so the page still renders without the "Running
   // now" card.
-  let resp;
+  // How many pages of 100 a strict scan will read before giving up. Reaching
+  // it is not "nothing found" — a run this never looked at is unknown, not
+  // absent — so the scan throws rather than reporting clear.
+  const STRICT_MAX_PAGES = 10;
+
+  let runs: Array<{
+    id: number;
+    status?: string | null;
+    display_title?: string | null;
+    created_at: string;
+    html_url: string;
+  }>;
   try {
-    resp = await octokit.actions.listWorkflowRuns({
-      owner,
-      repo,
-      workflow_id: 'dev-agent.yml',
-      per_page: options.strict ? 100 : 20,
-    });
+    if (options.strict) {
+      runs = [];
+      let pages = 0;
+      const iterator = octokit.paginate.iterator(octokit.actions.listWorkflowRuns, {
+        owner,
+        repo,
+        workflow_id: 'dev-agent.yml',
+        per_page: 100,
+      });
+      for await (const page of iterator) {
+        runs.push(...page.data);
+        pages += 1;
+        if (pages >= STRICT_MAX_PAGES) {
+          if (page.data.length === 100) {
+            throw new Error(
+              `could not check ${owner}/${repo}#${issueNumber} exhaustively: more than ${STRICT_MAX_PAGES * 100} workflow runs to scan`,
+            );
+          }
+          break;
+        }
+      }
+    } else {
+      const resp = await octokit.actions.listWorkflowRuns({
+        owner,
+        repo,
+        workflow_id: 'dev-agent.yml',
+        per_page: 20,
+      });
+      runs = resp.data.workflow_runs;
+    }
   } catch (err) {
     const status = (err as { status?: number }).status;
     // A caller guarding a dispatch cannot treat "could not list" as "nothing
@@ -100,7 +136,7 @@ export async function fetchActiveRunsForIssue(
     options.strict
       ? status !== 'completed'
       : status === 'queued' || status === 'in_progress' || status === 'waiting';
-  return resp.data.workflow_runs
+  return runs
     .filter((r) => isActive(r.status ?? null))
     .filter((r) => issueMarkerRe.test(r.display_title ?? ''))
     .map((r) => ({

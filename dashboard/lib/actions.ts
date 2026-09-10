@@ -30,7 +30,7 @@ import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
-import { findOpenIssuesForSpec, isWaitingToStart, stateLabel, withSpecRefs } from './find-spec-issue';
+import { findIssuesForSpec, isWaitingToStart, stateLabel, withSpecRefs } from './find-spec-issue';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -906,7 +906,7 @@ export async function dispatchFromSpec(
     // same spec and leave the original sitting in the queue for ever, so the
     // existing issue is dispatched instead of a new one.
     const matching = await wrapStep('looking for the issue this spec was filed under', () =>
-      findOpenIssuesForSpec(octokit, owner, repo, spec_path),
+      findIssuesForSpec(octokit, owner, repo, spec_path),
     );
 
     // Every match is inspected, not just the oldest. A repo that already has
@@ -918,8 +918,14 @@ export async function dispatchFromSpec(
     // the work not having started.
     const started = matching.find((i) => !isWaitingToStart(i));
     if (started) {
+      // A closed issue means this spec already went through the pipeline. Its
+      // approval artifact stays on disk afterwards, so nothing else here would
+      // notice, and the panel would happily implement shipped work again.
+      const why = started.open
+        ? `is at ${stateLabel(started) ?? 'an unknown state'}`
+        : 'is closed, so this spec has already been through the pipeline';
       return {
-        error: `work has already started on this spec — issue #${started.number} is at ${stateLabel(started) ?? 'an unknown state'}`,
+        error: `work has already started on this spec — issue #${started.number} ${why}`,
         issue_url: started.html_url,
       };
     }
@@ -952,15 +958,12 @@ export async function dispatchFromSpec(
 
     // When none of them names it, the approval is the authority and the body
     // is brought into line — the implement workflow reads these lines, so
-    // leaving them stale would hand the agent the wrong plan.
-    if (existing && existing.planPath !== wanted) {
-      const reconciled = withSpecRefs(existing.body ?? '', spec_path, wanted);
-      await wrapStep('bringing the issue in line with the approved plan', () =>
-        octokit.issues.update({ owner, repo, issue_number: existing.number, body: reconciled }),
-      );
-      existing.body = reconciled;
-      existing.planPath = wanted;
-    }
+    // leaving them stale would hand the agent the wrong plan. Computed here,
+    // written only after the gate passes: a refused Start work must not leave
+    // the handoff issue rewritten to point at a pair nobody approved.
+    const needsReconcile = existing !== null && existing.planPath !== wanted;
+    const reconciledBody =
+      needsReconcile && existing ? withSpecRefs(existing.body ?? '', spec_path, wanted) : null;
 
     // Gated against whatever will actually be dispatched. On the reuse path
     // that is the real issue, so an `spec-approval:override` label a human put
@@ -972,7 +975,7 @@ export async function dispatchFromSpec(
         owner,
         repo,
         ref: default_branch,
-        issueBody: existing?.body ?? body,
+        issueBody: reconciledBody ?? existing?.body ?? body,
         labels: existing?.labels ?? [],
       }),
     );
@@ -984,6 +987,11 @@ export async function dispatchFromSpec(
     if (existing) {
       issue_number = existing.number;
       issueUrl = existing.html_url;
+      if (reconciledBody !== null) {
+        await wrapStep('bringing the issue in line with the approved plan', () =>
+          octokit.issues.update({ owner, repo, issue_number, body: reconciledBody }),
+        );
+      }
     } else {
       const created = await wrapStep('creating spec-ready issue', () =>
         octokit.issues.create({

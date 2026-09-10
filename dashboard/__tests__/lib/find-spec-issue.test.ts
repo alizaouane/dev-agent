@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Octokit } from '@octokit/rest';
-import { findOpenIssuesForSpec, isWaitingToStart, withSpecRefs } from '@/lib/find-spec-issue';
+import { findIssuesForSpec, isWaitingToStart, withSpecRefs } from '@/lib/find-spec-issue';
 
 const SPEC = 'docs/superpowers/specs/2026-09-09-a-design.md';
 
@@ -19,41 +19,42 @@ function issue(over: Record<string, unknown> = {}) {
     html_url: 'https://github.com/q/r/issues/42',
     body: `Spec: ${SPEC}\nPlan: docs/superpowers/plans/2026-09-09-a.md\n`,
     labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+    state: 'open',
     ...over,
   };
 }
 
-describe('findOpenIssuesForSpec', () => {
+describe('findIssuesForSpec', () => {
   it('finds the issue intake already filed for this spec', async () => {
     // Without this the panel filed a second issue for work already queued,
     // starting a duplicate run and stranding the original.
-    const found = await findOpenIssuesForSpec(makeOctokit([issue()]), 'q', 'r', SPEC);
+    const found = await findIssuesForSpec(makeOctokit([issue()]), 'q', 'r', SPEC);
     expect(found[0].number).toBe(42);
     expect(found[0].labels).toEqual(['state:spec-ready', 'kind:feature']);
   });
 
   it('returns nothing when no open issue names the spec', async () => {
     const other = issue({ body: 'Spec: docs/superpowers/specs/2026-01-01-b-design.md\n' });
-    expect(await findOpenIssuesForSpec(makeOctokit([other]), 'q', 'r', SPEC)).toEqual([]);
+    expect(await findIssuesForSpec(makeOctokit([other]), 'q', 'r', SPEC)).toEqual([]);
   });
 
   it('ignores a pull request that happens to quote the path', async () => {
     const pr = issue({ number: 7, pull_request: { url: 'https://api/pulls/7' } });
-    expect(await findOpenIssuesForSpec(makeOctokit([pr]), 'q', 'r', SPEC)).toEqual([]);
+    expect(await findIssuesForSpec(makeOctokit([pr]), 'q', 'r', SPEC)).toEqual([]);
   });
 
   it('ignores a path that only appears inside a fenced block', async () => {
     // Same rule the approval gate applies, so the panel cannot decide an issue
     // is about one spec while the gate reads it as another.
     const quoted = issue({ body: `Example:\n\n\`\`\`\nSpec: ${SPEC}\n\`\`\`\n` });
-    expect(await findOpenIssuesForSpec(makeOctokit([quoted]), 'q', 'r', SPEC)).toEqual([]);
+    expect(await findIssuesForSpec(makeOctokit([quoted]), 'q', 'r', SPEC)).toEqual([]);
   });
 
   it('returns every duplicate, oldest first, rather than collapsing them', async () => {
     // A repo already carrying the duplicate this exists to stop has an old
     // spec-ready issue beside a newer one that is implementing. Returning
     // only the oldest discards the evidence that work has started.
-    const found = await findOpenIssuesForSpec(
+    const found = await findIssuesForSpec(
       makeOctokit([
         issue({ number: 91, labels: [{ name: 'state:implementing' }] }),
         issue({ number: 42 }),
@@ -62,7 +63,19 @@ describe('findOpenIssuesForSpec', () => {
       'r',
       SPEC,
     );
-    expect(found.map((i) => i.number)).toEqual([42, 91]);
+    expect(found.map((i: { number: number }) => i.number)).toEqual([42, 91]);
+  });
+
+  it('returns closed issues too, so shipped work is visible', async () => {
+    // The approval artifact outlives the pipeline. Without the closed
+    // state:done issue there is nothing left to say the spec already shipped.
+    const found = await findIssuesForSpec(
+      makeOctokit([issue({ number: 12, state: 'closed', labels: [{ name: 'state:done' }] })]),
+      'q',
+      'r',
+      SPEC,
+    );
+    expect(found[0].open).toBe(false);
   });
 
   it('propagates a listing failure rather than reporting no issue', async () => {
@@ -72,17 +85,18 @@ describe('findOpenIssuesForSpec', () => {
       paginate: vi.fn().mockRejectedValue(new Error('rate limited')),
       issues: { listForRepo: vi.fn() },
     } as unknown as Octokit;
-    await expect(findOpenIssuesForSpec(octokit, 'q', 'r', SPEC)).rejects.toThrow('rate limited');
+    await expect(findIssuesForSpec(octokit, 'q', 'r', SPEC)).rejects.toThrow('rate limited');
   });
 });
 
 describe('isWaitingToStart', () => {
-  const withLabels = (labels: string[]) => ({
+  const withLabels = (labels: string[], open = true) => ({
     number: 1,
     html_url: 'u',
     body: null,
     labels,
     planPath: null,
+    open,
   });
 
   it('accepts an issue whose only state is spec-ready', () => {
@@ -97,6 +111,12 @@ describe('isWaitingToStart', () => {
 
   it('rejects an issue with no state label at all', () => {
     expect(isWaitingToStart(withLabels(['kind:feature']))).toBe(false);
+  });
+
+  it('rejects a closed issue however it is labelled', () => {
+    // A shipped spec keeps its approval artifact but its issue is closed.
+    // Treating that as startable re-implements work that already landed.
+    expect(isWaitingToStart(withLabels(['state:spec-ready'], false))).toBe(false);
   });
 });
 

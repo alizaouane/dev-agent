@@ -5,7 +5,15 @@ import { WIRE_UP_FILES } from '@/lib/wire-up-template';
 const mockOctokit = {
   // Defaults to "no issue names this spec", so existing dispatchFromSpec cases
   // keep exercising the create path. The reuse path has its own cases below.
-  paginate: vi.fn(async () => [] as unknown[]),
+  paginate: Object.assign(vi.fn(async () => [] as unknown[]), {
+    // The strict active-run scan pages through runs; default to one empty page.
+    iterator: () => ({
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *[Symbol.asyncIterator]() {
+        yield { data: (await mockOctokit.actions.listWorkflowRuns()).data.workflow_runs };
+      },
+    }),
+  }),
   repos: {
     getCollaboratorPermissionLevel: vi.fn(),
     getContent: vi.fn(),
@@ -206,6 +214,7 @@ describe('dispatchExistingIssue', () => {
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
         body: APPROVED_BODY,
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
       },
     });
     mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
@@ -260,6 +269,7 @@ describe('dispatchExistingIssue', () => {
         number: 42,
         labels: [{ name: 'state:scoping' }],
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
       },
     });
     const fd = new FormData();
@@ -376,6 +386,7 @@ describe('dispatchExistingIssue', () => {
         ],
         body: APPROVED_BODY,
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
       },
     });
     const fd = new FormData();
@@ -422,6 +433,7 @@ describe('dispatchFromSpec', () => {
       data: {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
       },
     });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
@@ -496,6 +508,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:bug' }, { name: 'quick-dev' }],
       },
@@ -520,6 +533,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:bug' }, { name: 'quick-dev' }],
       },
@@ -544,6 +558,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:implementing' }, { name: 'kind:feature' }],
       },
@@ -568,6 +583,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
@@ -606,12 +622,14 @@ describe('dispatchFromSpec', () => {
       {
         number: 42,
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
       {
         number: 91,
         html_url: 'https://github.com/x/y/issues/91',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:implementing' }, { name: 'kind:feature' }],
       },
@@ -635,6 +653,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
@@ -660,6 +679,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'state:implementing' }],
       },
@@ -683,6 +703,7 @@ describe('dispatchFromSpec', () => {
       {
         number: 77,
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
@@ -705,12 +726,14 @@ describe('dispatchFromSpec', () => {
       {
         number: 42,
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
       {
         number: 91,
         html_url: 'https://github.com/x/y/issues/91',
+        state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
@@ -726,6 +749,57 @@ describe('dispatchFromSpec', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
       expect.objectContaining({ inputs: expect.objectContaining({ issue_number: '91' }) }),
     );
+  });
+
+  it('refuses a spec whose issue is closed, rather than shipping it twice', async () => {
+    // The approval artifact outlives the pipeline, so nothing on disk says
+    // this spec already landed. Its closed issue is the only record.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 12,
+        html_url: 'https://github.com/x/y/issues/12',
+        state: 'closed',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:done' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('closed') }));
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('leaves a stale issue body alone when the gate refuses the dispatch', async () => {
+    // Rewriting first meant a refused Start work left the handoff issue
+    // pointing at a pair nobody had approved.
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === APPROVED_APPROVAL) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { type: 'file', content: Buffer.from('x', 'utf8').toString('base64') } };
+    });
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual({ error: expect.stringContaining('work cannot start') });
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
   });
 
   it('starts a planless spec, which quick-dev produces and the picker offers', async () => {
