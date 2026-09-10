@@ -31,6 +31,17 @@ import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
 import { findIssuesForSpec, isWaitingToStart, stateLabel, withSpecRefs } from './find-spec-issue';
+
+/**
+ * Label that authorises one implement run past the workflow's dedupe gate.
+ *
+ * The gate exists to discard a dispatch that has been overtaken. A person
+ * pressing Re-dispatch is not an overtaken dispatch, and the workflow cannot
+ * tell the two apart from the issue's state alone — both look like an issue
+ * past spec-ready, often with a PR already open. The label carries that
+ * intent through, and the workflow removes it so it never authorises twice.
+ */
+export const FORCE_IMPLEMENT_LABEL = 'dev-agent:force-implement';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -1570,6 +1581,40 @@ export async function redispatchPhase(
       if (!gate.allow) {
         return { error: `work cannot start — ${gate.message}` };
       }
+    }
+
+    // An operator re-dispatching implement is asking for it deliberately, and
+    // the workflow's dedupe gate would otherwise refuse: the issue is past
+    // spec-ready by definition here, and often already has a PR. The label
+    // says so in a way the workflow can read whatever generation of wrapper
+    // the repo has — a new workflow input would not reach repos wired up
+    // before it existed. The workflow removes it, so it authorises one run.
+    if (phase === 'implement') {
+      await wrapStep('marking this as a deliberate retry', async () => {
+        try {
+          await octokit.issues.addLabels({
+            owner,
+            repo,
+            issue_number,
+            labels: [FORCE_IMPLEMENT_LABEL],
+          });
+        } catch {
+          // The label may not exist yet in a repo wired up earlier.
+          await octokit.issues.createLabel({
+            owner,
+            repo,
+            name: FORCE_IMPLEMENT_LABEL,
+            color: 'd93f0b',
+            description: 'One deliberate implement retry; the workflow removes it',
+          });
+          await octokit.issues.addLabels({
+            owner,
+            repo,
+            issue_number,
+            labels: [FORCE_IMPLEMENT_LABEL],
+          });
+        }
+      });
     }
 
     await octokit.actions.createWorkflowDispatch({

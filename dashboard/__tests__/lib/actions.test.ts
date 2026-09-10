@@ -19,6 +19,8 @@ const mockOctokit = {
   },
   issues: {
     create: vi.fn(),
+    addLabels: vi.fn(),
+    createLabel: vi.fn(),
     listForRepo: vi.fn(),
     get: vi.fn(),
     setLabels: vi.fn(),
@@ -1847,6 +1849,60 @@ describe('redispatchPhase', () => {
     fd.append('invocation_mode', 'live');
     expect(await redispatchPhase(fd)).toBeUndefined();
     expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+  });
+
+  it('marks a deliberate implement retry so the workflow gate lets it through', async () => {
+    // The workflow discards a dispatch it judges overtaken, and a retry looks
+    // exactly like one: past spec-ready, usually with a PR already open.
+    // Without this the dashboard reported a successful dispatch that the
+    // workflow then silently dropped.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    mockOctokit.issues.addLabels.mockResolvedValueOnce({});
+    const { redispatchPhase, FORCE_IMPLEMENT_LABEL } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    await redispatchPhase(fd);
+    expect(mockOctokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ issue_number: 42, labels: [FORCE_IMPLEMENT_LABEL] }),
+    );
+  });
+
+  it('creates the retry label in a repo wired up before it existed', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    mockOctokit.issues.addLabels
+      .mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }))
+      .mockResolvedValueOnce({});
+    mockOctokit.issues.createLabel.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    await redispatchPhase(fd);
+    expect(mockOctokit.issues.createLabel).toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+  });
+
+  it('does not mark the post-PR phases, which the gate never blocks', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'staging-deploy');
+    fd.append('invocation_mode', 'live');
+    await redispatchPhase(fd);
+    expect(mockOctokit.issues.addLabels).not.toHaveBeenCalled();
   });
 
   it('does not gate the post-PR phases, which act on work already shipped', async () => {

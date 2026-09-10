@@ -75,6 +75,20 @@ jobs:
           STATE=$(jq -r '.state' <<<"$ISSUE")
           LABELS=$(jq -r '[.labels[].name] | join(",")' <<<"$ISSUE")
 
+          # A person pressing Re-dispatch is not an overtaken dispatch, and
+          # from the issue's state alone the two look identical — both are
+          # past spec-ready and often already have a PR. The dashboard says
+          # which it is with a label, because a new workflow input would not
+          # reach repos wired up before it existed. The implement job removes
+          # it, so it authorises exactly one run.
+          case ",$LABELS," in
+            *,dev-agent:force-implement,*)
+              echo "issue #$ISSUE_NUMBER carries an explicit retry request; proceeding"
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
           # Anything past implementing means an earlier run already produced
           # the work. A closed issue means the same and then some.
           if [ "$STATE" = "CLOSED" ]; then
@@ -137,21 +151,36 @@ jobs:
       # especially important here. v1.1 flips to block-mode after audit data.
       # `dedupe` ran before this job queued behind the concurrency group, so
       # its answer is as old as the wait. Re-asked here, once the slot is
-      # actually held: by now the run that was ahead has finished and moved
-      # the issue on, which is exactly the case worth catching. Cancelling
-      # rather than skipping keeps this to one decision instead of a
-      # condition on every step below.
-      - name: Discard this dispatch if it was overtaken while queued
+      # actually held: by now the run that was ahead has finished and opened
+      # the PR, which is exactly the case worth catching.
+      #
+      # Every step below is conditioned on this rather than the run being
+      # cancelled. `gh run cancel` needs `actions: write`, a reusable workflow
+      # cannot grant itself more than its caller does, and repos wired up
+      # before today's wrapper do not grant it — so cancelling would 403 and
+      # leave the duplicate marked failed instead of discarded.
+      - name: Check whether this dispatch was overtaken while queued
+        id: slot
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          RUN_ID: ${{ github.run_id }}
         run: |
           set -euo pipefail
           ISSUE=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json state,labels)
           STATE=$(jq -r '.state' <<<"$ISSUE")
           LABELS=$(jq -r '[.labels[].name] | join(",")' <<<"$ISSUE")
+          # Consume the retry authorisation here, where the job has write
+          # access to the issue, so it covers exactly this run.
+          case ",$LABELS," in
+            *,dev-agent:force-implement,*)
+              gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label dev-agent:force-implement || true
+              echo "explicit retry; proceeding"
+              echo "overtaken=no" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+
           OVERTAKEN=no
           [ "$STATE" = "CLOSED" ] && OVERTAKEN=yes
           case ",$LABELS," in
@@ -164,20 +193,19 @@ jobs:
             OVERTAKEN=yes
           fi
           if [ "$OVERTAKEN" = "yes" ]; then
-            echo "issue #$ISSUE_NUMBER moved on while this run waited ($STATE, $LABELS); cancelling"
-            gh run cancel "$RUN_ID" --repo "$REPO"
-            # Give the cancellation time to land so no later step starts.
-            sleep 60
-            exit 1
+            echo "issue #$ISSUE_NUMBER moved on while this run waited ($STATE, $LABELS); discarding this dispatch"
           fi
+          echo "overtaken=$OVERTAKEN" >> "$GITHUB_OUTPUT"
 
       - name: Harden runner (egress audit)
+        if: steps.slot.outputs.overtaken != 'true'
         uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root — agent edits, type-checks, tests against this.
       - uses: actions/checkout@v4
+        if: steps.slot.outputs.overtaken != 'true'
         with: { fetch-depth: 0 }
 
       # Hide workflow-generated paths from the consumer's git state
@@ -191,6 +219,7 @@ jobs:
       # for tracking purposes; nothing is committed to the consumer's
       # actual .gitignore.
       - name: Reserve workflow artifacts from agent git state
+        if: steps.slot.outputs.overtaken != 'true'
         run: |
           set -euo pipefail
           {
@@ -205,6 +234,7 @@ jobs:
       # exist yet and claude-code-action creates it fresh — the existing
       # flow continues unchanged.
       - name: Prefetch feature branch (for ACM manifest)
+        if: steps.slot.outputs.overtaken != 'true'
         id: prefetch
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -223,6 +253,7 @@ jobs:
       # invokes via `.dev-agent-engine/node_modules/.bin/tsx ...`). Pinned
       # to v1 so workflow code and CLI code move together.
       - name: Checkout dev-agent engine
+        if: steps.slot.outputs.overtaken != 'true'
         uses: actions/checkout@v4
         with:
           repository: alizaouane/dev-agent
@@ -230,16 +261,19 @@ jobs:
           path: .dev-agent-engine
 
       - uses: actions/setup-node@v4
+        if: steps.slot.outputs.overtaken != 'true'
         with: { node-version: '20', cache: 'npm' }
 
       # Consumer deps so the agent can run lint/test/build against the
       # consumer's package.json.
       - run: npm ci
+        if: steps.slot.outputs.overtaken != 'true'
 
       # Engine deps (tsx, js-yaml, handlebars, ...) installed in the
       # subdirectory so consumer deps stay clean. CLI binaries land
       # in .dev-agent-engine/node_modules/.bin/.
       - name: Install engine deps
+        if: steps.slot.outputs.overtaken != 'true'
         working-directory: .dev-agent-engine
         run: npm ci
 
@@ -249,6 +283,7 @@ jobs:
       # before any model call so a refusal costs nothing. Fails closed: if
       # spend cannot be read while a budget is configured, the run stops.
       - name: Budget gate
+        if: steps.slot.outputs.overtaken != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -258,6 +293,7 @@ jobs:
         run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Convert .dev-agent.yml to JSON for jq
+        if: steps.slot.outputs.overtaken != 'true'
         id: cfg
         env:
           CONFIG_PATH: ${{ inputs.config_path }}
@@ -268,6 +304,7 @@ jobs:
           jq -e . /tmp/config.json > /dev/null
 
       - name: Read issue
+        if: steps.slot.outputs.overtaken != 'true'
         id: issue
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -320,6 +357,7 @@ jobs:
       #
       # Placed before the prompt render, so an unapproved spec costs nothing.
       - name: Verify spec approval
+        if: steps.slot.outputs.overtaken != 'true'
         env:
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
           PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
@@ -384,6 +422,7 @@ jobs:
           fi
 
       - name: Render system prompt
+        if: steps.slot.outputs.overtaken != 'true'
         id: prompt
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -415,6 +454,7 @@ jobs:
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-prompt.ts implement > /tmp/system-prompt.md
 
       - name: Build agent prompt (system + spec + issue context)
+        if: steps.slot.outputs.overtaken != 'true'
         id: build
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -461,7 +501,7 @@ jobs:
           echo "prompt_path=/tmp/agent-prompt.md" >> "$GITHUB_OUTPUT"
 
       - name: Skip live agent invocation (stub mode)
-        if: inputs.invocation_mode == 'stub'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'stub')
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -479,7 +519,7 @@ jobs:
       # and the existing flow runs unchanged.
       - name: ACM pre-flight (detect manifest)
         id: acm-preflight
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         run: |
           set -euo pipefail
           if [ -f .dev-agent/acm-manifest.json ]; then
@@ -500,7 +540,7 @@ jobs:
       # installer drops the binary at exactly that path and adds it
       # to PATH for subsequent steps.
       - name: Install Claude Code CLI
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         run: |
           set -euo pipefail
           curl -fsSL https://claude.ai/install.sh | bash
@@ -508,7 +548,7 @@ jobs:
 
       - name: Run Claude Code (live agent)
         id: claude
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -530,7 +570,7 @@ jobs:
       # the budget gate were decorative. always() so a failed or timed-out run
       # still records the spend it incurred.
       - name: Emit telemetry
-        if: always() && inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -558,7 +598,7 @@ jobs:
       # label `acm-failed` so the operator can revise + re-run.
       - name: ACM gate (verify tests green + locks intact + spec stable)
         id: acm-gate
-        if: inputs.invocation_mode == 'live' && steps.acm-preflight.outputs.gate_active == 'true' && always()
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live' && steps.acm-preflight.outputs.gate_active == 'true' && always())
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -601,7 +641,7 @@ jobs:
       # verdict; for now, the value is in the audit trail + PR body.
       - name: Self-review verification (advisory)
         id: self-review
-        if: inputs.invocation_mode == 'live' && always()
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live' && always())
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -647,7 +687,7 @@ jobs:
       # mismatches once typical FP rates have been audited on real PRs.
       - name: Risk-annotation audit (advisory)
         id: risk-audit
-        if: inputs.invocation_mode == 'live' && always()
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live' && always())
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -687,7 +727,7 @@ jobs:
           fi
 
       - name: ACM gate — comment + label on fail
-        if: inputs.invocation_mode == 'live' && steps.acm-gate.outputs.verdict == 'fail'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live' && steps.acm-gate.outputs.verdict == 'fail')
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -726,7 +766,7 @@ jobs:
       # dedicated label + comment before tsc fails further down.
       - name: Apply-audit (TS/JS syntax of changed files)
         id: apply-audit
-        if: inputs.invocation_mode == 'live' && always()
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live' && always())
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -775,7 +815,7 @@ jobs:
       #      off, the gh pr create call 403s and we leave a hint
       #      comment so the operator knows.
       - name: Salvage agent's work (commit + push + open PR fallback)
-        if: inputs.invocation_mode == 'live' && success()
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live' && success())
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
@@ -858,7 +898,7 @@ jobs:
 
       - name: Comment telemetry + flip state
         id: telemetry
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -884,7 +924,7 @@ jobs:
           echo "pr_url=https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
       - name: Append SESSION_LOG.md entry
-        if: always() && inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
         env:
           PHASE: implement
           ISSUE_NUMBER: ${{ inputs.issue_number }}
