@@ -120,6 +120,19 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
   const hasSecret = (name: string): CheckState =>
     probe.secretNames === null ? 'unknown' : probe.secretNames.includes(name) ? 'met' : 'missing';
 
+  // The gate accepts either pairing, so readiness has to as well. Checking
+  // only the connection string meant an operator who followed the remedy's
+  // own second suggestion was still told the repo was not ready — a check
+  // that cannot be cleared by doing what it asks.
+  const driftCredentialState: CheckState = (() => {
+    if (probe.secretNames === null) return 'unknown';
+    if (probe.secretNames.includes('SUPABASE_DB_URL')) return 'met';
+    const hasTokenPair =
+      probe.secretNames.includes('SUPABASE_ACCESS_TOKEN') &&
+      probe.secretNames.includes('SUPABASE_PROJECT_REF');
+    return hasTokenPair ? 'met' : 'missing';
+  })();
+
   const missingLabels =
     probe.labels === null ? null : REQUIRED_LABELS.filter((l) => !probe.labels!.includes(l));
   const labelState: CheckState =
@@ -199,7 +212,7 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
       // the moment the check could not run.
       state:
         probe.hasMigrations === 'present'
-          ? hasSecret('SUPABASE_DB_URL')
+          ? driftCredentialState
           : probe.hasMigrations === 'absent'
             ? 'not-applicable'
             : 'unknown',

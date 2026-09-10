@@ -91,6 +91,26 @@ describe('assessRepo', () => {
     expect(stateOf(p, 'db_url')).toBe('missing');
   });
 
+  it('accepts the account-token route the remedy itself suggests', () => {
+    // The gate runs on either pairing. Accepting only the connection string
+    // meant an operator who followed the remedy's second suggestion was still
+    // told the repo was not ready — a check that cannot be cleared by doing
+    // what it asks.
+    const p = probe({
+      secretNames: ['ANTHROPIC_API_KEY', 'SUPABASE_ACCESS_TOKEN', 'SUPABASE_PROJECT_REF'],
+    });
+    expect(stateOf(p, 'db_url')).toBe('met');
+    expect(summarizeReadiness(assessRepo(p)).ready).toBe(true);
+  });
+
+  it('rejects half of the token route, which is what whatsapp-console has', () => {
+    // The token without the project ref satisfies neither pairing, so the gate
+    // skips and its run still goes green. That is the live state that exposed
+    // this row in the first place.
+    const p = probe({ secretNames: ['ANTHROPIC_API_KEY', 'SUPABASE_ACCESS_TOKEN'] });
+    expect(stateOf(p, 'db_url')).toBe('missing');
+  });
+
   it("names the repo's own variable in the database remedy", () => {
     // The suffix rule is what stalls this step; the row has to spell it out.
     const row = assessRepo(probe({ secretNames: [] })).find((r) => r.id === 'db_url')!;
