@@ -55,7 +55,45 @@ describe('listSpecAndPlanFiles', () => {
   it('returns empty arrays when no spec/plan dirs exist', async () => {
     getContent.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
     const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
-    expect(result).toEqual({ specs: [], plans: [] });
+    expect(result).toEqual({
+      specs: [],
+      plans: [],
+      approvals: [],
+      blobShas: {},
+      unreadable: false,
+    });
+  });
+
+  it('marks the listing unreadable when a directory fails for any other reason', async () => {
+    // Approval artifacts come back through this listing, so an unreadable
+    // directory reported as an empty one makes a rate limit look like a repo
+    // with nothing approved — the outage-as-decision shape again.
+    getContent.mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 }));
+    const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
+    expect(result.unreadable).toBe(true);
+    expect(result.specs).toEqual([]);
+  });
+
+  it('separates approval artifacts from the specs they sit beside', async () => {
+    // They live in the same directory, so one listing returns both. The
+    // picker needs them to know which specs can actually start, and reading
+    // the directory twice for that would be a wasted round trip.
+    getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path !== 'docs/superpowers/specs') {
+        throw Object.assign(new Error('Not Found'), { status: 404 });
+      }
+      return {
+        data: [
+          { type: 'file', name: '2026-09-09-a-design.md' },
+          { type: 'file', name: '2026-09-09-a-design.approval.json' },
+        ],
+      };
+    });
+    const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
+    expect(result.specs).toEqual(['docs/superpowers/specs/2026-09-09-a-design.md']);
+    expect(result.approvals).toEqual([
+      'docs/superpowers/specs/2026-09-09-a-design.approval.json',
+    ]);
   });
 
   it('treats a non-404 error on one dir as that dir being empty (continues other dirs)', async () => {
@@ -72,5 +110,27 @@ describe('listSpecAndPlanFiles', () => {
     const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
     expect(result.specs).toEqual(['docs/specs/a.md']);
     expect(result.plans).toEqual([]);
+  });
+  it('carries the blob SHA of every listed file, and only real ones', async () => {
+    // The SHAs come back free with the listing and let the approval verifier
+    // skip re-reading unchanged files. An entry without one is left out
+    // rather than keyed on undefined.
+    getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === 'docs/superpowers/specs') {
+        return {
+          data: [
+            { type: 'file', name: 'a-design.md', sha: 'sha-a' },
+            { type: 'file', name: 'a-design.approval.json', sha: 'sha-appr' },
+            { type: 'file', name: 'b-design.md' },
+          ],
+        };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
+    expect(result.blobShas).toEqual({
+      'docs/superpowers/specs/a-design.md': 'sha-a',
+      'docs/superpowers/specs/a-design.approval.json': 'sha-appr',
+    });
   });
 });

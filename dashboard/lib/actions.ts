@@ -31,6 +31,13 @@ import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
 import {
+  FORCE_IMPLEMENT_LABEL,
+  findIssuesForSpec,
+  isWaitingToStart,
+  stateLabel,
+  withSpecRefs,
+} from './find-spec-issue';
+import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
   type SchedulePreset,
@@ -820,6 +827,12 @@ export async function dispatchExistingIssue(
  * then dispatches the workflow immediately and flips the label to
  * `state:implementing`.
  *
+ * Reuses the `state:spec-ready` issue intake already filed for the spec when
+ * there is one, which on the normal path there always is — both skills file
+ * it as they record the approval, and the issue body itself points at this
+ * button. Creating a second issue started duplicate work against one spec and
+ * left the first waiting for someone who was never coming.
+ *
  * Returns `{ error }` for surface-able failures (missing file, wrong
  * input) and throws for write-perm refusal — same contract as
  * `dispatchExistingIssue`.
@@ -838,10 +851,16 @@ export async function dispatchFromSpec(
     const spec_path = (formData.get('spec_path') as string).trim();
     const plan_path = (formData.get('plan_path') as string).trim();
     const title = (formData.get('title') as string).trim();
+    // Only what the user actually typed. The fallback in `title` names a new
+    // issue; renaming an issue that already exists on the strength of a
+    // default nobody chose would be an edit they did not ask for.
+    const custom_title = ((formData.get('custom_title') as string) ?? '').trim();
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
     if (!spec_path) return { error: 'spec_path is required' };
-    if (!plan_path) return { error: 'plan_path is required' };
     if (!title) return { error: 'title is required' };
+    // The plan is optional. quick-dev writes a spec and no plan, and the
+    // implement agent derives its own task list from the spec — requiring one
+    // here made every planless spec unstartable while the picker offered it.
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
@@ -860,22 +879,29 @@ export async function dispatchFromSpec(
         error: `spec_path not found on ${default_branch}: ${spec_path}`,
       };
     }
-    const planExists = await fileExistsOnBranch(octokit, owner, repo, plan_path, default_branch);
-    if (!planExists) {
-      return {
-        error: `plan_path not found on ${default_branch}: ${plan_path}`,
-      };
+    if (plan_path) {
+      const planExists = await fileExistsOnBranch(octokit, owner, repo, plan_path, default_branch);
+      if (!planExists) {
+        return {
+          error: `plan_path not found on ${default_branch}: ${plan_path}`,
+        };
+      }
     }
 
     const body = [
       `Spec: ${spec_path}`,
-      `Plan: ${plan_path}`,
+      // Omitted entirely rather than left blank: the workflow and the approval
+      // gate both read this line, and an empty one names a plan that is not
+      // there.
+      ...(plan_path ? [`Plan: ${plan_path}`] : []),
       '',
       '## TL;DR',
       '',
-      `Implementing the spec at \`${spec_path}\` per the plan at \`${plan_path}\`.`,
+      plan_path
+        ? `Implementing the spec at \`${spec_path}\` per the plan at \`${plan_path}\`.`
+        : `Implementing the spec at \`${spec_path}\`. No separate plan; the agent derives its own task list.`,
       '',
-      'Filed from the dashboard "Start from existing spec" panel.',
+      'Filed from the dashboard "Start work on an approved spec" panel.',
     ].join('\n');
 
     // Same approval gate as `dispatchExistingIssue`, run BEFORE the issue
@@ -884,31 +910,116 @@ export async function dispatchFromSpec(
     // would otherwise be the one route into the implement workflow that
     // never passes an approval check. There is no issue yet and therefore
     // no override label: an unapproved spec has to go back through intake.
+    // Both intake skills file a `state:spec-ready` issue as soon as they
+    // record the approval, and that issue's own body tells you to press this
+    // button. Creating another one here would start a second run against the
+    // same spec and leave the original sitting in the queue for ever, so the
+    // existing issue is dispatched instead of a new one.
+    const matching = await wrapStep('looking for the issue this spec was filed under', () =>
+      findIssuesForSpec(octokit, owner, repo, spec_path),
+    );
+
+    // Every match is inspected, not just the oldest. A repo that already has
+    // the duplicate this reuse exists to stop carries an old spec-ready issue
+    // alongside a newer one that is implementing, and looking only at the
+    // oldest clears the guard by reading the wrong issue. `isWaitingToStart`
+    // also rejects an issue carrying two state labels, which a half-applied
+    // flip leaves behind: `state:spec-ready` being present is not the same as
+    // the work not having started.
+    const started = matching.find((i) => !isWaitingToStart(i));
+    if (started) {
+      // A closed issue means this spec already went through the pipeline. Its
+      // approval artifact stays on disk afterwards, so nothing else here would
+      // notice, and the panel would happily implement shipped work again.
+      const why = started.open
+        ? `is at ${stateLabel(started) ?? 'an unknown state'}`
+        : 'is closed, so this spec has already been through the pipeline';
+      return {
+        error: `work has already started on this spec — issue #${started.number} ${why}`,
+        issue_url: started.html_url,
+      };
+    }
+
+    // Same guards `dispatchExistingIssue` applies, because this is now the
+    // same operation: dispatching an issue that already exists.
+    for (const candidate of matching) {
+      // A previous click whose dispatch succeeded but whose label flip failed
+      // leaves the issue at state:spec-ready with a run in flight. Reading
+      // that label alone would queue a duplicate run against the same branch.
+      // Fail-closed, because a run list this cannot read is not an empty one.
+      const activeRuns = await wrapStep('checking for runs already in flight', () =>
+        fetchActiveRunsForIssue(octokit, owner, repo, candidate.number, { strict: true }),
+      );
+      if (activeRuns.length > 0) {
+        const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
+        return {
+          error: `dispatch refused — issue #${candidate.number} already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish.`,
+          issue_url: candidate.html_url,
+        };
+      }
+    }
+
+    // Prefer an issue that already names the approved pair. Matching on the
+    // spec alone can land on one whose `Plan:` line points at a path the plan
+    // has since moved away from, and gating that stale body produces a
+    // path-mismatch refusal the user can neither see nor fix from here.
+    const wanted = plan_path || null;
+    const existing = matching.find((i) => i.planPath === wanted) ?? matching[0] ?? null;
+
+    // When none of them names it, the approval is the authority and the body
+    // is brought into line — the implement workflow reads these lines, so
+    // leaving them stale would hand the agent the wrong plan. Computed here,
+    // written only after the gate passes: a refused Start work must not leave
+    // the handoff issue rewritten to point at a pair nobody approved.
+    const needsReconcile = existing !== null && existing.planPath !== wanted;
+    const reconciledBody =
+      needsReconcile && existing ? withSpecRefs(existing.body ?? '', spec_path, wanted) : null;
+
+    // Gated against whatever will actually be dispatched. On the reuse path
+    // that is the real issue, so an `spec-approval:override` label a human put
+    // on it counts — on the create path there is no issue and no override, and
+    // an unapproved spec has to go back through intake.
     const gate = await wrapStep('checking spec approval', () =>
       evaluateSpecApproval({
         octokit,
         owner,
         repo,
         ref: default_branch,
-        issueBody: body,
-        labels: [],
+        issueBody: reconciledBody ?? existing?.body ?? body,
+        labels: existing?.labels ?? [],
       }),
     );
     if (!gate.allow) {
       return { error: `work cannot start — ${gate.message}` };
     }
 
-    const created = await wrapStep('creating spec-ready issue', () =>
-      octokit.issues.create({
-        owner,
-        repo,
-        title,
-        body,
-        labels: ['kind:feature', 'state:spec-ready'],
-      }),
-    );
-    const issue_number = created.data.number;
-    issueUrl = created.data.html_url;
+    let issue_number: number;
+    if (existing) {
+      issue_number = existing.number;
+      issueUrl = existing.html_url;
+      // Body and title in one call when both need changing, so a reused issue
+      // is never left half-updated.
+      const patch: { body?: string; title?: string } = {};
+      if (reconciledBody !== null) patch.body = reconciledBody;
+      if (custom_title && custom_title !== existing.title) patch.title = custom_title;
+      if (Object.keys(patch).length > 0) {
+        await wrapStep('bringing the issue in line with the approved spec', () =>
+          octokit.issues.update({ owner, repo, issue_number, ...patch }),
+        );
+      }
+    } else {
+      const created = await wrapStep('creating spec-ready issue', () =>
+        octokit.issues.create({
+          owner,
+          repo,
+          title,
+          body,
+          labels: ['kind:feature', 'state:spec-ready'],
+        }),
+      );
+      issue_number = created.data.number;
+      issueUrl = created.data.html_url;
+    }
 
     await wrapStep('dispatching implement workflow', () =>
       octokit.actions.createWorkflowDispatch({
@@ -926,8 +1037,14 @@ export async function dispatchFromSpec(
 
     // Strip every state:* label and add state:implementing. Same rule as
     // dispatchExistingIssue — keeps downstream consumers from having to
-    // disambiguate between two state labels.
-    const nextLabels = ['kind:feature', 'state:implementing'];
+    // disambiguate between two state labels. A reused issue keeps its own
+    // non-state labels: `quick-dev` and `kind:*` say how the work was filed,
+    // and overwriting them with a hardcoded `kind:feature` would relabel a
+    // bug as a feature on the way past.
+    const keptLabels = (existing?.labels ?? ['kind:feature']).filter(
+      (l) => !l.startsWith('state:'),
+    );
+    const nextLabels = [...keptLabels, 'state:implementing'];
     try {
       await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
     } catch (err) {
@@ -1459,6 +1576,40 @@ export async function redispatchPhase(
       if (!gate.allow) {
         return { error: `work cannot start — ${gate.message}` };
       }
+    }
+
+    // An operator re-dispatching implement is asking for it deliberately, and
+    // the workflow's dedupe gate would otherwise refuse: the issue is past
+    // spec-ready by definition here, and often already has a PR. The label
+    // says so in a way the workflow can read whatever generation of wrapper
+    // the repo has — a new workflow input would not reach repos wired up
+    // before it existed. The workflow removes it, so it authorises one run.
+    if (phase === 'implement') {
+      await wrapStep('marking this as a deliberate retry', async () => {
+        try {
+          await octokit.issues.addLabels({
+            owner,
+            repo,
+            issue_number,
+            labels: [FORCE_IMPLEMENT_LABEL],
+          });
+        } catch {
+          // The label may not exist yet in a repo wired up earlier.
+          await octokit.issues.createLabel({
+            owner,
+            repo,
+            name: FORCE_IMPLEMENT_LABEL,
+            color: 'd93f0b',
+            description: 'One deliberate implement retry; the workflow removes it',
+          });
+          await octokit.issues.addLabels({
+            owner,
+            repo,
+            issue_number,
+            labels: [FORCE_IMPLEMENT_LABEL],
+          });
+        }
+      });
     }
 
     await octokit.actions.createWorkflowDispatch({

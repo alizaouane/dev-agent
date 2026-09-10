@@ -19,6 +19,8 @@ import { ScanWithPmButton } from '@/components/scan-with-pm-button';
 import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { StartFromSpecPanel } from '@/components/start-from-spec-panel';
+import { pairSpecsAndPlans } from '@/lib/spec-pairs';
+import { verifySpecPairs } from '@/lib/verify-spec-pairs';
 import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
 import { RepoReadiness } from '@/components/repo-readiness';
 import { assessRepo, summarizeReadiness } from '@/lib/onboarding';
@@ -97,9 +99,35 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       ? listSpecAndPlanFiles(octokit, repo.owner, repo.name, repo.default_branch).catch(() => ({
           specs: [],
           plans: [],
+          approvals: [],
+          blobShas: {},
+          unreadable: true,
         }))
-      : Promise.resolve({ specs: [], plans: [] }),
+      : Promise.resolve({
+          specs: [],
+          plans: [],
+          approvals: [],
+          blobShas: {},
+          unreadable: false,
+        }),
   ]);
+
+  // Paired here rather than in the panel, so the page owns the derivation and
+  // the panel owns the rendering.
+  //
+  // Then verified: the presence of an approval file is not approval. The gate
+  // also checks the verdict, the paths, the schema version, and a hash over
+  // the spec and plan — so a stale approval passes a filename check and fails
+  // dispatch. Only pairs that already have an artifact are read, so a repo
+  // with hundreds of unapproved specs costs nothing here.
+  const specPairs = await verifySpecPairs(
+    octokit,
+    repo.owner,
+    repo.name,
+    repo.default_branch,
+    pairSpecsAndPlans(specPlanFiles.specs, specPlanFiles.plans, specPlanFiles.approvals),
+    specPlanFiles.blobShas,
+  ).catch(() => []);
 
   // Probed, not inferred. The previous checklist ticked boxes from earlier
   // steps having run, which reports what should be true rather than what is —
@@ -123,13 +151,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
         <PageHeader
           title={name}
           descriptor="Everything about this repo on one page."
-          actions={
-            <Button asChild size="lg" variant="accent">
-              <Link href="/intent" data-no-style>
-                Brainstorm new work on {name}
-              </Link>
-            </Button>
-          }
+          // No "Brainstorm new work" action. Like the ones removed from the
+          // nav and the home page, it led to /intent, whose whole content is
+          // that brainstorming happens in Claude Code. This page's own
+          // readiness panel and start-work panel say what to do here.
+          actions={null}
         />
         <p className="-mt-4 mb-2 text-xs text-muted-foreground">
           {repo.wired_up ? 'Wired ✓' : 'Not wired'} · default branch {repo.default_branch} ·{' '}
@@ -159,8 +185,8 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
         <section>
           <StartFromSpecPanel
             repo={name}
-            specs={specPlanFiles.specs}
-            plans={specPlanFiles.plans}
+            pairs={specPairs}
+            listingIncomplete={specPlanFiles.unreadable}
           />
         </section>
       ) : null}

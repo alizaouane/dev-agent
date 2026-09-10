@@ -3,6 +3,14 @@ import { hashSpecAndPlan } from '@/lib/spec-approval';
 import { WIRE_UP_FILES } from '@/lib/wire-up-template';
 
 const mockOctokit = {
+  // Defaults to "no issue names this spec", so existing dispatchFromSpec cases
+  // keep exercising the create path. The reuse path has its own cases below.
+  // Serves both the issue listing and the strict active-run scan. Issue
+  // fixtures are queued with mockResolvedValueOnce; anything else falls
+  // through to the workflow runs the test has staged.
+  paginate: vi.fn(
+    async () => (await mockOctokit.actions.listWorkflowRuns()).data.workflow_runs as unknown[],
+  ),
   repos: {
     getCollaboratorPermissionLevel: vi.fn(),
     getContent: vi.fn(),
@@ -11,6 +19,9 @@ const mockOctokit = {
   },
   issues: {
     create: vi.fn(),
+    addLabels: vi.fn(),
+    createLabel: vi.fn(),
+    listForRepo: vi.fn(),
     get: vi.fn(),
     setLabels: vi.fn(),
     createComment: vi.fn(),
@@ -202,6 +213,7 @@ describe('dispatchExistingIssue', () => {
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
         body: APPROVED_BODY,
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
       },
     });
     mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
@@ -215,7 +227,7 @@ describe('dispatchExistingIssue', () => {
     // octokit.actions.listWorkflowRuns under the hood, so an empty
     // response makes the guard pass through.
     mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
-      data: { workflow_runs: [] },
+      data: { workflow_runs: [], total_count: 0 },
     });
   });
 
@@ -256,6 +268,7 @@ describe('dispatchExistingIssue', () => {
         number: 42,
         labels: [{ name: 'state:scoping' }],
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
       },
     });
     const fd = new FormData();
@@ -372,6 +385,7 @@ describe('dispatchExistingIssue', () => {
         ],
         body: APPROVED_BODY,
         html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
       },
     });
     const fd = new FormData();
@@ -417,13 +431,15 @@ describe('dispatchFromSpec', () => {
     mockOctokit.issues.create.mockResolvedValue({
       data: {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
       },
     });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
     mockOctokit.issues.setLabels.mockResolvedValue({});
     mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
-      data: { workflow_runs: [] },
+      data: { workflow_runs: [], total_count: 0 },
     });
   });
 
@@ -482,6 +498,408 @@ describe('dispatchFromSpec', () => {
     expect(result).toEqual({ error: expect.stringContaining('work cannot start') });
     expect(mockOctokit.issues.create).not.toHaveBeenCalled();
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('dispatches the issue intake already filed instead of a second one', async () => {
+    // Both intake skills file a state:spec-ready issue when they record the
+    // approval, and that issue tells you to press this button. Creating
+    // another started duplicate work and stranded the original in the queue.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:bug' }, { name: 'quick-dev' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ inputs: expect.objectContaining({ issue_number: '77' }) }),
+    );
+  });
+
+  it('keeps a reused issue kind and drops only its state label', async () => {
+    // Overwriting with a hardcoded kind:feature would relabel a bug as a
+    // feature on the way past, and lose the quick-dev provenance marker.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:bug' }, { name: 'quick-dev' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ['kind:bug', 'quick-dev', 'state:implementing'] }),
+    );
+  });
+
+  it('refuses to re-dispatch an issue that has already moved past spec-ready', async () => {
+    // Reuse made this the same operation as dispatchExistingIssue, so it needs
+    // the same guard: without it the button queued a second implement run onto
+    // a feature branch that already had work on it.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:implementing' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('state:implementing') }),
+    );
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses when a run is already in flight for the reused issue', async () => {
+    // A previous click whose dispatch succeeded but whose label flip failed
+    // leaves the issue at spec-ready with a run going. The label alone lies.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const inFlight = [
+      {
+        id: 1,
+        status: 'in_progress',
+        display_title: 'implement → issue #77 (live)',
+        html_url: 'https://github.com/x/y/actions/runs/1',
+        created_at: new Date().toISOString(),
+      },
+    ];
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
+      data: { workflow_runs: inFlight, total_count: 1 },
+    });
+    mockOctokit.paginate.mockResolvedValueOnce(inFlight);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('active run') }),
+    );
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses when a newer duplicate has already started, not just the oldest', async () => {
+    // The duplicate this reuse exists to stop leaves an old spec-ready issue
+    // beside a newer implementing one. Inspecting only the oldest clears the
+    // guard by reading the wrong issue.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 42,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+      {
+        number: 91,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/91',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:implementing' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('#91') }));
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses when it cannot read the run list, rather than assuming none', async () => {
+    // fetchActiveRunsForIssue returns [] on any Actions API failure, which is
+    // right for a visibility panel and wrong for a dispatch guard: a transient
+    // 403 would otherwise wave a second run through.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.actions.listWorkflowRuns.mockRejectedValueOnce(
+      Object.assign(new Error('rate limited'), { status: 403 }),
+    );
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.any(String) }));
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses an issue carrying both spec-ready and a started state', async () => {
+    // A half-applied label flip leaves both. Testing only for spec-ready
+    // being present dispatched an issue already being implemented.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'state:implementing' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('#77') }));
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('brings a reused issue naming a stale plan in line with the approval', async () => {
+    // The plan moved between the supported trees after the issue was filed.
+    // Gating the stale body produced a path-mismatch refusal the user could
+    // neither see nor fix from the dashboard.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.issues.update.mockResolvedValue({});
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    const updated = mockOctokit.issues.update.mock.calls.at(-1)![0].body as string;
+    expect(updated).toContain(`Plan: ${APPROVED_PLAN}`);
+    expect(updated).not.toContain('docs/plans/stale.md');
+  });
+
+  it('prefers the issue that already names the approved pair', async () => {
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 42,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/42',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+      {
+        number: 91,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/91',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ inputs: expect.objectContaining({ issue_number: '91' }) }),
+    );
+  });
+
+  it('refuses a spec whose issue is closed, rather than shipping it twice', async () => {
+    // The approval artifact outlives the pipeline, so nothing on disk says
+    // this spec already landed. Its closed issue is the only record.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 12,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/12',
+        state: 'closed',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:done' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('closed') }));
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('leaves a stale issue body alone when the gate refuses the dispatch', async () => {
+    // Rewriting first meant a refused Start work left the handoff issue
+    // pointing at a pair nobody had approved.
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === APPROVED_APPROVAL) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { type: 'file', content: Buffer.from('x', 'utf8').toString('base64') } };
+    });
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual({ error: expect.stringContaining('work cannot start') });
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
+  });
+
+  it('renames a reused issue when the user typed a different title', async () => {
+    // The panel presents the field on both paths; ignoring it on the reuse
+    // path meant the title most people type silently did nothing.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.issues.update.mockResolvedValue({});
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'A better title');
+    fd.append('custom_title', 'A better title');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ issue_number: 77, title: 'A better title' }),
+    );
+  });
+
+  it('leaves a reused issue title alone when the box was left blank', async () => {
+    // The fallback title is the spec's name, not a choice anyone made.
+    // Renaming on the strength of it is an edit the user did not ask for.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Approved spec');
+    fd.append('custom_title', '');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
+  });
+
+  it('starts a planless spec, which quick-dev produces and the picker offers', async () => {
+    // Requiring a plan made every "(no plan)" option unstartable while the
+    // picker presented it as ready — a choice that could only fail.
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === APPROVED_PLAN) throw Object.assign(new Error('Not Found'), { status: 404 });
+      const files: Record<string, string> = {
+        [APPROVED_SPEC]: APPROVED_SPEC_TEXT,
+        [APPROVED_APPROVAL]: JSON.stringify({
+          schema_version: 1,
+          spec_path: APPROVED_SPEC,
+          plan_path: null,
+          spec_sha256: hashSpecAndPlan(APPROVED_SPEC_TEXT, null),
+          review_verdict: 'ok',
+          review_rounds: 1,
+          approved_by: 'tester@example.com',
+          approved_at: '2026-05-01T00:00:00.000Z',
+        }),
+      };
+      const content = files[path];
+      if (content === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { type: 'file', content: Buffer.from(content, 'utf8').toString('base64') } };
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', '');
+    fd.append('title', 'Planless feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    const body = mockOctokit.issues.create.mock.calls.at(-1)![0].body as string;
+    // The Plan line is omitted rather than left blank: the workflow and the
+    // gate both read it, and an empty one names a plan that is not there.
+    expect(body).toContain(`Spec: ${APPROVED_SPEC}`);
+    expect(body).not.toContain('Plan:');
   });
 
   it('refuses when spec_path does not exist on the default branch', async () => {
@@ -835,7 +1253,7 @@ describe('getLatestScanRun', () => {
 
   it('returns all-null when the workflow has no runs', async () => {
     mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
-      data: { workflow_runs: [] },
+      data: { workflow_runs: [], total_count: 0 },
     });
     const { getLatestScanRun } = await import('@/lib/actions');
     const fd = new FormData();
@@ -1431,6 +1849,61 @@ describe('redispatchPhase', () => {
     fd.append('invocation_mode', 'live');
     expect(await redispatchPhase(fd)).toBeUndefined();
     expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+  });
+
+  it('marks a deliberate implement retry so the workflow gate lets it through', async () => {
+    // The workflow discards a dispatch it judges overtaken, and a retry looks
+    // exactly like one: past spec-ready, usually with a PR already open.
+    // Without this the dashboard reported a successful dispatch that the
+    // workflow then silently dropped.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    mockOctokit.issues.addLabels.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const { FORCE_IMPLEMENT_LABEL } = await import('@/lib/find-spec-issue');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    await redispatchPhase(fd);
+    expect(mockOctokit.issues.addLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ issue_number: 42, labels: [FORCE_IMPLEMENT_LABEL] }),
+    );
+  });
+
+  it('creates the retry label in a repo wired up before it existed', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    mockOctokit.issues.addLabels
+      .mockRejectedValueOnce(Object.assign(new Error('Not Found'), { status: 404 }))
+      .mockResolvedValueOnce({});
+    mockOctokit.issues.createLabel.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'implement');
+    fd.append('invocation_mode', 'live');
+    await redispatchPhase(fd);
+    expect(mockOctokit.issues.createLabel).toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+  });
+
+  it('does not mark the post-PR phases, which the gate never blocks', async () => {
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
+    const { redispatchPhase } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '42');
+    fd.append('phase', 'staging-deploy');
+    fd.append('invocation_mode', 'live');
+    await redispatchPhase(fd);
+    expect(mockOctokit.issues.addLabels).not.toHaveBeenCalled();
   });
 
   it('does not gate the post-PR phases, which act on work already shipped', async () => {

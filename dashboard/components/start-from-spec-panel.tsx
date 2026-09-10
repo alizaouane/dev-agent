@@ -1,137 +1,194 @@
 'use client';
 
-import { useState, useTransition } from 'react';
+import { useMemo, useState, useTransition } from 'react';
 import { Button } from '@/components/ui/button';
 import { dispatchFromSpec } from '@/lib/actions';
+import type { SpecPair } from '@/lib/spec-pairs';
 
 /**
- * Per-repo panel that lets the user start implementation from a spec +
- * plan that already live on the default branch — without going through
- * the `/develop` flow. Used for specs authored before `/develop`
- * existed, or any other path that left spec+plan committed without a
- * matching `state:spec-ready` issue.
+ * Per-repo panel for starting work on a spec that is already approved.
  *
- * On submit, calls `dispatchFromSpec` which creates the missing issue
- * and immediately dispatches `phase=implement`. The server action's
- * `{ error }` contract is honored the same way as
- * `FeatureApproveButton`.
+ * It used to offer two independent dropdowns, one of specs and one of plans,
+ * each defaulting to the first file in its own list. On a real repo that meant
+ * a September spec sitting beside a March plan, with nothing to stop you
+ * dispatching that pair. Specs and plans are written together and named
+ * together, so they are now offered together, matched on the shared topic.
+ *
+ * It also used to offer every spec in the repo. Since work can only start on a
+ * spec carrying a recorded approval, offering the other 250 was offering
+ * choices that could only fail — the server action refuses them, but only
+ * after a round trip and an error message. Only approved pairs are listed, and
+ * when there are none the panel says where approval happens instead of
+ * presenting an empty control.
  */
 export function StartFromSpecPanel({
   repo,
-  specs,
-  plans,
+  pairs,
+  listingIncomplete = false,
 }: {
   repo: string;
-  specs: string[];
-  plans: string[];
+  /** Every spec on the default branch, paired with its plan. */
+  pairs: SpecPair[];
+  /**
+   * True when a spec or plan directory could not be read. Specs missing for
+   * that reason never reach the verifier, so nothing else here would know
+   * the list is short.
+   */
+  listingIncomplete?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
-  const [specPath, setSpecPath] = useState(specs[0] ?? '');
-  const [planPath, setPlanPath] = useState(plans[0] ?? '');
-  const [title, setTitle] = useState('');
 
-  const noSpecsOrPlans = specs.length === 0 || plans.length === 0;
+  const approved = useMemo(() => pairs.filter((p) => p.approved), [pairs]);
+  // Separate from "not approved". These are specs whose approval could not be
+  // read at all — a rate limit, an expired token. Folding them into the
+  // unapproved count would report an outage as a decision nobody made.
+  const unverified = useMemo(() => pairs.filter((p) => p.unverified).length, [pairs]);
+  // Counted apart from the unapproved ones. A spec whose approval could not be
+  // read is not a spec nobody approved, and saying "none of them approved"
+  // over a rate limit is the outage-as-decision claim this panel keeps having
+  // to avoid making.
+  const unapproved = pairs.length - approved.length - unverified;
+  const incomplete = unverified > 0 || listingIncomplete;
+  // Keyed on the spec path, not the slug: two specs can share a slug across
+  // the legacy and superpowers trees, and a picker keyed on slug would render
+  // them as one option and dispatch whichever it found first.
+  const [key, setKey] = useState(approved[0]?.key ?? '');
+  const selected = approved.find((p) => p.key === key) ?? approved[0];
+  const [title, setTitle] = useState('');
 
   return (
     <div className="rounded-md border border-border bg-card p-5">
-      <h3 className="mb-1 text-base font-semibold">
-        Start implementation from an existing spec
-      </h3>
-      <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
-        Pick a spec and plan already committed to the default branch. Filing an
-        issue and dispatching the implement workflow happen in one click — no{' '}
-        <code>/develop</code> session required. Use this for specs authored
-        before <code>/develop</code> existed, or any other case where spec +
-        plan are already in place.
-      </p>
+      <h3 className="mb-1 text-base font-semibold">Start work on an approved spec</h3>
 
-      {noSpecsOrPlans ? (
-        <p className="text-sm text-muted-foreground">
-          No spec or plan files found under{' '}
-          <code>docs/superpowers/specs/</code>, <code>docs/specs/</code>,{' '}
-          <code>docs/superpowers/plans/</code>, or <code>docs/plans/</code> on
-          the default branch. Commit spec + plan first, then come back.
+      {approved.length === 0 ? (
+        <p className="max-w-2xl text-sm text-muted-foreground">
+          Nothing here yet. A spec becomes startable once it has been reviewed
+          and you have approved it, which happens in your Claude Code session —
+          pitch the work there, and the approval is recorded next to the spec.
+          {unapproved > 0 ? (
+            <>
+              {' '}
+              This repo has {unapproved} spec{unapproved === 1 ? '' : 's'} on the
+              default branch without an approval.
+            </>
+          ) : null}
+          {unverified > 0 ? (
+            <>
+              {' '}
+              Another {unverified} carr{unverified === 1 ? 'ies' : 'y'} an
+              approval that could not be read just now.
+            </>
+          ) : null}
+          {incomplete ? (
+            <>
+              {' '}
+              <span className="text-destructive">
+                Some of this repo could not be read just now, so what is listed
+                here may be short. Reload in a moment.
+              </span>
+            </>
+          ) : null}
         </p>
       ) : (
-        <form
-          action={(formData) => {
-            setError(null);
-            startTransition(async () => {
-              try {
-                const result = await dispatchFromSpec(formData);
-                if (result && 'error' in result) {
-                  setError(result.error);
+        <>
+          <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
+            Starts the implement workflow on the issue your Claude Code session
+            filed for this spec, or files one if there isn&apos;t one yet. The
+            spec and its plan are paired for you.
+            {incomplete ? (
+              <>
+                {' '}
+                <span className="text-destructive">
+                  Some of this repo could not be read just now, so approved specs
+                  may be missing from this list. Reload in a moment.
+                </span>
+              </>
+            ) : null}
+          </p>
+          <form
+            action={(formData) => {
+              setError(null);
+              startTransition(async () => {
+                try {
+                  const result = await dispatchFromSpec(formData);
+                  if (result && 'error' in result) setError(result.error);
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  if (msg.includes('NEXT_REDIRECT')) throw e;
+                  setError(msg);
                 }
-              } catch (e) {
-                const msg = e instanceof Error ? e.message : String(e);
-                if (msg.includes('NEXT_REDIRECT')) throw e;
-                setError(msg);
-              }
-            });
-          }}
-          className="flex flex-col gap-3"
-        >
-          <input type="hidden" name="repo" value={repo} />
+              });
+            }}
+            className="flex flex-col gap-3"
+          >
+            <input type="hidden" name="repo" value={repo} />
+            <input type="hidden" name="spec_path" value={selected?.specPath ?? ''} />
+            <input type="hidden" name="plan_path" value={selected?.planPath ?? ''} />
 
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Spec</span>
-            <select
-              name="spec_path"
-              value={specPath}
-              onChange={(e) => setSpecPath(e.target.value)}
-              required
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-            >
-              {specs.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </label>
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">Approved spec</span>
+              <select
+                value={selected?.key ?? ''}
+                onChange={(e) => setKey(e.target.value)}
+                className="rounded border border-border bg-background px-2 py-1"
+              >
+                {approved.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.title}
+                    {p.planPath ? '' : ' (no plan)'}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Plan</span>
-            <select
-              name="plan_path"
-              value={planPath}
-              onChange={(e) => setPlanPath(e.target.value)}
-              required
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-            >
-              {plans.map((p) => (
-                <option key={p} value={p}>
-                  {p}
-                </option>
-              ))}
-            </select>
-          </label>
+            {selected ? (
+              <p className="text-xs text-muted-foreground">
+                <code>{selected.specPath}</code>
+                {selected.planPath ? (
+                  <>
+                    {' · '}
+                    <code>{selected.planPath}</code>
+                  </>
+                ) : (
+                  ' · no matching plan; the agent derives its own task list'
+                )}
+              </p>
+            ) : null}
 
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">Title</span>
-            <input
-              type="text"
-              name="title"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="e.g. CSV export on the reports page"
-              required
-              className="rounded-md border border-border bg-background px-2 py-1.5 text-sm"
-            />
-            <span className="text-xs text-muted-foreground">
-              Shows up as the GitHub issue title.
-            </span>
-          </label>
+            {/*
+              Two fields, because the two paths want different things. `title`
+              names a new issue and falls back to the spec's own name, so
+              leaving the box untouched is a valid answer rather than a
+              validation error. `custom_title` carries only what was actually
+              typed, so reusing an issue renames it when the user asked for a
+              different title and leaves it alone when they did not.
+            */}
+            <input type="hidden" name="title" value={title.trim() || selected?.title || ''} />
+            <input type="hidden" name="custom_title" value={title.trim()} />
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">Issue title</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={selected?.title ?? ''}
+                aria-label="Issue title"
+                className="rounded border border-border bg-background px-2 py-1"
+              />
+              <span className="text-xs text-muted-foreground">
+                Leave blank to keep the spec&apos;s own name, or the title of the
+                issue your session already filed.
+              </span>
+            </label>
 
-          <Button type="submit" disabled={pending} className="self-start">
-            {pending ? 'Starting…' : 'File issue and start implementation'}
-          </Button>
-
-          {error ? (
-            <span className="max-w-md text-xs text-destructive">{error}</span>
-          ) : null}
-        </form>
+            <div>
+              <Button type="submit" disabled={pending || !selected}>
+                {pending ? 'Starting…' : 'Start work'}
+              </Button>
+            </div>
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+          </form>
+        </>
       )}
     </div>
   );

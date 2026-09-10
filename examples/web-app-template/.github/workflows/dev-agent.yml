@@ -37,6 +37,18 @@ on:
         type: string
         default: live
 
+# One run per issue and phase at a time. The dashboard checks for runs in
+# flight before it dispatches, but a check followed by a dispatch is not
+# atomic: two clicks landing together can both see nothing running and both
+# enqueue. GitHub serialises on this key, so the second waits for the first
+# instead of a second agent working the same branch.
+#
+# cancel-in-progress stays false deliberately — an implement run that is
+# midway through committing should finish, not be killed by a duplicate.
+concurrency:
+  group: dev-agent-${{ inputs.phase }}-${{ inputs.issue_number }}
+  cancel-in-progress: false
+
 # Granted at the workflow level so the called reusable workflows can
 # request these permissions for their own jobs. Reusable workflows
 # can never elevate above what the caller grants — a caller with
