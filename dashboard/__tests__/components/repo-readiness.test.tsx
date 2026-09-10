@@ -38,9 +38,9 @@ describe('<RepoReadiness>', () => {
 
   it('says why a gap matters, not just that it exists', () => {
     // A row reading "Database connection string ☐" gets skipped. One saying
-    // the gate reports and passes gets acted on.
+    // the gate skips while the run goes green gets acted on.
     renderFor({ secretNames: ['ANTHROPIC_API_KEY'] });
-    expect(screen.getByText(/reports and passes/)).toBeInTheDocument();
+    expect(screen.getByText(/skips and the run still goes green/)).toBeInTheDocument();
   });
 
   it('names the exact variable to set for this repo', () => {

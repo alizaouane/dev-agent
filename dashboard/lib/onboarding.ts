@@ -120,6 +120,19 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
   const hasSecret = (name: string): CheckState =>
     probe.secretNames === null ? 'unknown' : probe.secretNames.includes(name) ? 'met' : 'missing';
 
+  // The gate accepts either pairing, so readiness has to as well. Checking
+  // only the connection string meant an operator who followed the remedy's
+  // own second suggestion was still told the repo was not ready — a check
+  // that cannot be cleared by doing what it asks.
+  const driftCredentialState: CheckState = (() => {
+    if (probe.secretNames === null) return 'unknown';
+    if (probe.secretNames.includes('SUPABASE_DB_URL')) return 'met';
+    const hasTokenPair =
+      probe.secretNames.includes('SUPABASE_ACCESS_TOKEN') &&
+      probe.secretNames.includes('SUPABASE_PROJECT_REF');
+    return hasTokenPair ? 'met' : 'missing';
+  })();
+
   const missingLabels =
     probe.labels === null ? null : REQUIRED_LABELS.filter((l) => !probe.labels!.includes(l));
   const labelState: CheckState =
@@ -182,16 +195,24 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
       // This one is first among equals: without it the drift gate does not
       // fail, it reports and passes. A missing gate that looks green is worse
       // than an absent one, because it is counted as coverage.
+      // Precise about the mechanism, because the earlier wording said the
+      // gate "cannot connect" and it does not get that far: with neither
+      // credential pairing present it skips, prints a notice, and the run goes
+      // green. Verified against a live run in whatsapp-console.
       consequence:
-        'The schema-drift gate cannot connect, so it reports and passes. The repo looks covered while nothing is checked.',
-      remedy: `Set ${probe.dbSecretName} on the dashboard, then press "Push dashboard secrets".`,
+        'The schema-drift gate skips and the run still goes green, so the repo looks covered while the database is never compared against its migrations.',
+      remedy:
+        `Set ${probe.dbSecretName} on the dashboard, then press "Push dashboard secrets". ` +
+        'Or, if you would rather not handle a database password, set the repo secrets ' +
+        'SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF instead — the gate accepts either ' +
+        'pairing, but that token reaches every project on the account, so it is the fallback.',
       required: true,
       // An unreadable migrations directory is not proof the repo has none.
       // Calling it not-applicable there would report a repo ready at exactly
       // the moment the check could not run.
       state:
         probe.hasMigrations === 'present'
-          ? hasSecret('SUPABASE_DB_URL')
+          ? driftCredentialState
           : probe.hasMigrations === 'absent'
             ? 'not-applicable'
             : 'unknown',

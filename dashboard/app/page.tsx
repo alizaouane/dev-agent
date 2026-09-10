@@ -54,8 +54,11 @@ export default async function HomePage() {
         }
         helpTerm="home-page"
         actions={
-          <Link href="/intent" data-no-style>
-            <Button variant="accent" size="lg">Brainstorm new work</Button>
+          // Links to the repo list, not to /intent. The old button promised
+          // brainstorming and delivered a page explaining that brainstorming
+          // moved to Claude Code. Starting work begins by choosing a repo.
+          <Link href="/repos" data-no-style>
+            <Button variant="accent" size="lg">Open a repo</Button>
           </Link>
         }
       />
@@ -86,8 +89,8 @@ export default async function HomePage() {
         {bands.inMotion.length === 0 ? (
           <EmptyState
             title="No active runs."
-            body="Start one with Brainstorm new work or pick from PM proposes below."
-            cta={{ label: 'Brainstorm', href: '/intent' }}
+            body="Work starts in Claude Code: pitch a feature there, approve the spec once the review is clean, then press Start work here."
+            cta={{ label: 'Open a repo', href: '/repos' }}
           />
         ) : (
           <div className="flex flex-col gap-2">
