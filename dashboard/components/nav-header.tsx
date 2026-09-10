@@ -97,11 +97,13 @@ export function NavHeaderShell({
           <NavLinks />
         </div>
         <div className="flex items-center gap-3">
-          <Button asChild variant="accent" size="sm">
-            <Link href="/intent" data-no-style>
-              Brainstorm new work
-            </Link>
-          </Button>
+          {/*
+            No "Brainstorm new work" button here. It linked to /intent, which
+            exists only to say brainstorming happens in Claude Code — a
+            prominent call to action leading to a page that tells you it cannot
+            help is worse than no button. /intent remains reachable from the
+            nav for anyone who wants the explanation.
+          */}
           <HelpPanel />
           {username && signOutForm}
         </div>

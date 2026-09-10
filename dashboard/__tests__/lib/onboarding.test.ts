@@ -97,11 +97,22 @@ describe('assessRepo', () => {
     expect(row.remedy).toContain('SUPABASE_DB_URL__ALIZAOUANE__CALIENTE_BOOKING_APP');
   });
 
-  it('says the drift gate passes rather than fails without a URL', () => {
-    // The distinction that matters: an absent gate is visible, a gate that
-    // reports and passes is counted as coverage.
+  it('says the drift gate goes green rather than fails without a URL', () => {
+    // The distinction that matters: an absent gate is visible, a gate whose
+    // run goes green is counted as coverage. Verified against a live run —
+    // with neither credential pairing it skips before attempting to connect.
     const row = assessRepo(probe()).find((r) => r.id === 'db_url')!;
-    expect(row.consequence).toContain('reports and passes');
+    expect(row.consequence).toContain('skips');
+    expect(row.consequence).toContain('green');
+  });
+
+  it('offers the account-token route as well as the connection string', () => {
+    // The gate accepts either pairing. Naming only one sends an operator who
+    // does not want to handle a database password to a dead end.
+    const row = assessRepo(probe({ secretNames: [] })).find((r) => r.id === 'db_url')!;
+    expect(row.remedy).toContain('SUPABASE_ACCESS_TOKEN');
+    expect(row.remedy).toContain('SUPABASE_PROJECT_REF');
+    expect(row.remedy).toContain('fallback');
   });
 
   it('flags a missing fixer workflow, which makes mentioning the agent silent', () => {

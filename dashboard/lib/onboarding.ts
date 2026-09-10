@@ -182,9 +182,17 @@ export function assessRepo(probe: RepoProbe): RequirementStatus[] {
       // This one is first among equals: without it the drift gate does not
       // fail, it reports and passes. A missing gate that looks green is worse
       // than an absent one, because it is counted as coverage.
+      // Precise about the mechanism, because the earlier wording said the
+      // gate "cannot connect" and it does not get that far: with neither
+      // credential pairing present it skips, prints a notice, and the run goes
+      // green. Verified against a live run in whatsapp-console.
       consequence:
-        'The schema-drift gate cannot connect, so it reports and passes. The repo looks covered while nothing is checked.',
-      remedy: `Set ${probe.dbSecretName} on the dashboard, then press "Push dashboard secrets".`,
+        'The schema-drift gate skips and the run still goes green, so the repo looks covered while the database is never compared against its migrations.',
+      remedy:
+        `Set ${probe.dbSecretName} on the dashboard, then press "Push dashboard secrets". ` +
+        'Or, if you would rather not handle a database password, set the repo secrets ' +
+        'SUPABASE_ACCESS_TOKEN and SUPABASE_PROJECT_REF instead — the gate accepts either ' +
+        'pairing, but that token reaches every project on the account, so it is the fallback.',
       required: true,
       // An unreadable migrations directory is not proof the repo has none.
       // Calling it not-applicable there would report a repo ready at exactly
