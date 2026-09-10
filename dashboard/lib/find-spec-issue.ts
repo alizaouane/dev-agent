@@ -24,6 +24,8 @@ export interface SpecIssue {
   body: string | null;
   /** Current labels, including any approval override a human added. */
   labels: string[];
+  /** The plan the issue's own body names, which may be a stale one. */
+  planPath: string | null;
 }
 
 /**
@@ -77,7 +79,68 @@ export async function findOpenIssuesForSpec(
       html_url: issue.html_url,
       body: issue.body ?? null,
       labels: issue.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
+      planPath: parseSpecRefs(issue.body)?.plan_path ?? null,
     }));
+}
+
+/**
+ * Whether an issue is still waiting to be started.
+ *
+ * Presence of `state:spec-ready` is not enough: an issue can carry two state
+ * labels when an earlier label flip half-applied, and one that also says
+ * `state:implementing` is work in progress rather than work waiting.
+ *
+ * @param issue - A matched issue.
+ * @returns True only when `state:spec-ready` is its sole state label.
+ */
+export function isWaitingToStart(issue: SpecIssue): boolean {
+  const states = issue.labels.filter((l) => l.startsWith('state:'));
+  return states.length === 1 && states[0] === 'state:spec-ready';
+}
+
+/**
+ * Rewrite the `Spec:` and `Plan:` lines of a handoff issue body.
+ *
+ * A reused issue can name a plan that has since moved between the supported
+ * trees. The approval is the authority on which pair was approved, and the
+ * implement workflow reads these lines, so the body is brought into line with
+ * the approval rather than being dispatched stale — which the gate would
+ * refuse on a path mismatch the user cannot see or fix from the dashboard.
+ *
+ * Lines inside fenced blocks are left alone, matching what `parseSpecRefs`
+ * reads, so an example in the body is never mistaken for the real reference.
+ *
+ * @param body - The issue body as filed.
+ * @param specPath - The approved spec path.
+ * @param planPath - The approved plan path, or null when there is no plan.
+ * @returns The body with its reference lines replaced.
+ */
+export function withSpecRefs(
+  body: string,
+  specPath: string,
+  planPath: string | null,
+): string {
+  const lines = body.split(/\r?\n/);
+  const fences = lines.flatMap((line, i) => (/^ {0,3}(```|~~~)/.test(line) ? [i] : []));
+  const fenced = new Set<number>();
+  for (let i = 0; i + 1 < fences.length; i += 2) {
+    for (let n = fences[i]; n <= fences[i + 1]; n++) fenced.add(n);
+  }
+  const specLine = lines.findIndex(
+    (l, i) => !fenced.has(i) && /^\s*Spec:\s*\S+\.md\s*$/.test(l),
+  );
+  const planLine = lines.findIndex(
+    (l, i) => !fenced.has(i) && /^\s*Plan:\s*\S+\.md\s*$/.test(l),
+  );
+  const out = [...lines];
+  if (specLine !== -1) out[specLine] = `Spec: ${specPath}`;
+  if (planLine !== -1) {
+    if (planPath) out[planLine] = `Plan: ${planPath}`;
+    else out.splice(planLine, 1);
+  } else if (planPath && specLine !== -1) {
+    out.splice(specLine + 1, 0, `Plan: ${planPath}`);
+  }
+  return out.join('\n');
 }
 
 /**

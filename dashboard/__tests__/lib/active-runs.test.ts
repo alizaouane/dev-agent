@@ -91,7 +91,7 @@ describe('fetchActiveRunsForIssue', () => {
   });
 });
 
-describe('fetchActiveRunsForIssue failClosed', () => {
+describe('fetchActiveRunsForIssue strict', () => {
   it('rethrows a listing failure instead of reporting no runs', async () => {
     // The default is right for the visibility panel and wrong for a dispatch
     // guard: "could not list" is not "nothing running".
@@ -103,8 +103,34 @@ describe('fetchActiveRunsForIssue failClosed', () => {
       },
     } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
     await expect(
-      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { failClosed: true }),
+      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
     ).rejects.toThrow('rate limited');
     await expect(fetchActiveRunsForIssue(octokit, 'q', 'r', 7)).resolves.toEqual([]);
+  });
+
+  it('counts every non-completed status, not only the three it knows', async () => {
+    // GitHub has more pre-execution statuses than queued/in_progress/waiting.
+    // Listing only the ones it knows makes the guard report clear for the
+    // ones it does not, which is how a duplicate dispatch gets through.
+    const octokit = {
+      actions: {
+        listWorkflowRuns: vi.fn().mockResolvedValue({
+          data: {
+            workflow_runs: [
+              {
+                id: 1,
+                status: 'requested',
+                display_title: 'implement → issue #7 (live)',
+                html_url: 'u',
+                created_at: '2026-09-10T00:00:00Z',
+              },
+            ],
+          },
+        }),
+      },
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    await expect(fetchActiveRunsForIssue(octokit, 'q', 'r', 7)).resolves.toEqual([]);
+    const strict = await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
+    expect(strict).toHaveLength(1);
   });
 });

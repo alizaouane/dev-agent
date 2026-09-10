@@ -30,7 +30,7 @@ import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
-import { findOpenIssuesForSpec, stateLabel } from './find-spec-issue';
+import { findOpenIssuesForSpec, isWaitingToStart, stateLabel, withSpecRefs } from './find-spec-issue';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -912,8 +912,11 @@ export async function dispatchFromSpec(
     // Every match is inspected, not just the oldest. A repo that already has
     // the duplicate this reuse exists to stop carries an old spec-ready issue
     // alongside a newer one that is implementing, and looking only at the
-    // oldest clears the guard by reading the wrong issue.
-    const started = matching.find((i) => !i.labels.includes('state:spec-ready'));
+    // oldest clears the guard by reading the wrong issue. `isWaitingToStart`
+    // also rejects an issue carrying two state labels, which a half-applied
+    // flip leaves behind: `state:spec-ready` being present is not the same as
+    // the work not having started.
+    const started = matching.find((i) => !isWaitingToStart(i));
     if (started) {
       return {
         error: `work has already started on this spec — issue #${started.number} is at ${stateLabel(started) ?? 'an unknown state'}`,
@@ -929,7 +932,7 @@ export async function dispatchFromSpec(
       // that label alone would queue a duplicate run against the same branch.
       // Fail-closed, because a run list this cannot read is not an empty one.
       const activeRuns = await wrapStep('checking for runs already in flight', () =>
-        fetchActiveRunsForIssue(octokit, owner, repo, candidate.number, { failClosed: true }),
+        fetchActiveRunsForIssue(octokit, owner, repo, candidate.number, { strict: true }),
       );
       if (activeRuns.length > 0) {
         const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
@@ -940,7 +943,24 @@ export async function dispatchFromSpec(
       }
     }
 
-    const existing = matching[0] ?? null;
+    // Prefer an issue that already names the approved pair. Matching on the
+    // spec alone can land on one whose `Plan:` line points at a path the plan
+    // has since moved away from, and gating that stale body produces a
+    // path-mismatch refusal the user can neither see nor fix from here.
+    const wanted = plan_path || null;
+    const existing = matching.find((i) => i.planPath === wanted) ?? matching[0] ?? null;
+
+    // When none of them names it, the approval is the authority and the body
+    // is brought into line — the implement workflow reads these lines, so
+    // leaving them stale would hand the agent the wrong plan.
+    if (existing && existing.planPath !== wanted) {
+      const reconciled = withSpecRefs(existing.body ?? '', spec_path, wanted);
+      await wrapStep('bringing the issue in line with the approved plan', () =>
+        octokit.issues.update({ owner, repo, issue_number: existing.number, body: reconciled }),
+      );
+      existing.body = reconciled;
+      existing.planPath = wanted;
+    }
 
     // Gated against whatever will actually be dispatched. On the reuse path
     // that is the real issue, so an `spec-approval:override` label a human put

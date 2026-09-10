@@ -39,16 +39,19 @@ export type ActiveRun = {
  * Status filter: GitHub's API treats `queued`/`in_progress`/`waiting`
  * as the in-flight bucket. Anything else is `completed`.
  *
- * @param options - `failClosed` rethrows a listing failure instead of
- *   returning empty. Pass it from anything that dispatches: an unreadable run
- *   list is not an empty one, and a guard that cannot see is not a guard.
+ * @param options - `strict` switches this from best-effort visibility to a
+ *   guard fit for a mutation: a listing failure rethrows instead of returning
+ *   empty, the window widens to 100 runs, and every status GitHub has not
+ *   marked `completed` counts as active — `requested` and `pending` included,
+ *   which the default filter drops. An unreadable or partly-read run list is
+ *   not an empty one, and a guard that cannot see is not a guard.
  */
 export async function fetchActiveRunsForIssue(
   octokit: Octokit,
   owner: string,
   repo: string,
   issueNumber: number,
-  options: { failClosed?: boolean } = {},
+  options: { strict?: boolean } = {},
 ): Promise<ActiveRun[]> {
   // listWorkflowRuns supports `status` filter, but only one value at a
   // time. Pull recent runs (per_page=20 is plenty — anything older than
@@ -67,15 +70,15 @@ export async function fetchActiveRunsForIssue(
       owner,
       repo,
       workflow_id: 'dev-agent.yml',
-      per_page: 20,
+      per_page: options.strict ? 100 : 20,
     });
   } catch (err) {
     const status = (err as { status?: number }).status;
     // A caller guarding a dispatch cannot treat "could not list" as "nothing
     // running" — that is how the guard passes without checking and a second
     // run lands on a branch already being worked. Visibility callers still
-    // degrade to empty; mutation callers ask to fail closed.
-    if (options.failClosed) throw err;
+    // degrade to empty; mutation callers ask for strict.
+    if (options.strict) throw err;
     if (status !== 404) {
       console.warn(
         `fetchActiveRunsForIssue: ${owner}/${repo}#${issueNumber} — listWorkflowRuns failed (status=${status ?? 'unknown'}); panel will be hidden.`,
@@ -89,8 +92,16 @@ export async function fetchActiveRunsForIssue(
   // so issue #12 doesn't match a run named for #123. Pre-built once
   // per call, applied to each run.
   const issueMarkerRe = new RegExp(`#${issueNumber}(?!\\d)`);
+  // Strict callers enumerate the terminal state instead of the live ones.
+  // GitHub has more pre-execution statuses than the three below — `requested`
+  // and `pending` among them — and a guard that lists only the ones it knows
+  // reports clear for the ones it does not.
+  const isActive = (status: string | null): boolean =>
+    options.strict
+      ? status !== 'completed'
+      : status === 'queued' || status === 'in_progress' || status === 'waiting';
   return resp.data.workflow_runs
-    .filter((r) => r.status === 'queued' || r.status === 'in_progress' || r.status === 'waiting')
+    .filter((r) => isActive(r.status ?? null))
     .filter((r) => issueMarkerRe.test(r.display_title ?? ''))
     .map((r) => ({
       id: r.id,

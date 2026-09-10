@@ -653,6 +653,81 @@ describe('dispatchFromSpec', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
+  it('refuses an issue carrying both spec-ready and a started state', async () => {
+    // A half-applied label flip leaves both. Testing only for spec-ready
+    // being present dispatched an issue already being implemented.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'state:implementing' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('#77') }));
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('brings a reused issue naming a stale plan in line with the approval', async () => {
+    // The plan moved between the supported trees after the issue was filed.
+    // Gating the stale body produced a path-mismatch refusal the user could
+    // neither see nor fix from the dashboard.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.issues.update.mockResolvedValue({});
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    const updated = mockOctokit.issues.update.mock.calls.at(-1)![0].body as string;
+    expect(updated).toContain(`Plan: ${APPROVED_PLAN}`);
+    expect(updated).not.toContain('docs/plans/stale.md');
+  });
+
+  it('prefers the issue that already names the approved pair', async () => {
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 42,
+        html_url: 'https://github.com/x/y/issues/42',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+      {
+        number: 91,
+        html_url: 'https://github.com/x/y/issues/91',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ inputs: expect.objectContaining({ issue_number: '91' }) }),
+    );
+  });
+
   it('starts a planless spec, which quick-dev produces and the picker offers', async () => {
     // Requiring a plan made every "(no plan)" option unstartable while the
     // picker presented it as ready — a choice that could only fail.
