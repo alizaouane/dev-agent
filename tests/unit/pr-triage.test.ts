@@ -92,6 +92,42 @@ describe('toPullRequestState', () => {
   });
 });
 
+describe('the open-PR query', () => {
+  const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+
+  /** The GraphQL query text itself, without the surrounding prose. */
+  const query = source.slice(
+    source.indexOf('query($owner:String!,$name:String!,$endCursor:String){\n    repository'),
+    source.indexOf("--jq', '.data.repository.pullRequests.nodes[]'"),
+  );
+
+  it('never asks for fields the triage does not read', () => {
+    // `gh pr list --json statusCheckRollup` expands to a fixed fragment that
+    // also pulls the check suite's workflow run — a field nothing here reads,
+    // and one the workflow token cannot see without `actions: read`. The whole
+    // query then fails and every PR goes untriaged. Two live sweeps were lost
+    // to that, each time by granting one more permission to satisfy a field we
+    // did not want. Asserted against the query text, not the file, so the
+    // explanation above does not trip it.
+    expect(query.length).toBeGreaterThan(100);
+    expect(query).not.toMatch(/checkSuite/);
+    expect(query).not.toMatch(/workflowRun/);
+    expect(source).not.toMatch(/--json'[^\n]*statusCheckRollup/);
+  });
+
+  it('asks every bounded connection whether there is another page', () => {
+    // Without this the sweep cannot tell a short list from a truncated one,
+    // and truncation reads as "nothing wrong" — the failure this whole
+    // mechanism keeps producing.
+    expect([...query.matchAll(/pageInfo\{hasNextPage\}/g)]).toHaveLength(3);
+  });
+
+  it('asks only for the check fields the triage reads', () => {
+    expect(source).toMatch(/\.\.\. on CheckRun\{name status conclusion\}/);
+    expect(source).toMatch(/\.\.\. on StatusContext\{context state\}/);
+  });
+});
+
 describe('countUnresolvedThreads query', () => {
   const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
 
@@ -457,6 +493,11 @@ describe('isReadyToMerge', () => {
 
   it('is false while GitHub still requires a review', () => {
     expect(isReadyToMerge(t({ reviewDecision: 'REVIEW_REQUIRED' }), 1)).toBe(false);
+  });
+
+  it('is false when the PR was only partly read', () => {
+    // A failing check on page two would otherwise be announced as ready.
+    expect(isReadyToMerge(t({ truncated: true }), 1)).toBe(false);
   });
 });
 

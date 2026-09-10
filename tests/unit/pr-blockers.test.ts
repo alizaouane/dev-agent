@@ -157,6 +157,21 @@ describe('triagePullRequest', () => {
     expect(t.blockers.map((b) => b.kind)).toEqual(['changes-requested']);
   });
 
+  it('will not act on a PR it could only partly read', () => {
+    // Labels, reviews and checks arrive as bounded pages. The unseen entry
+    // could be the opt-out label as easily as the failing check, so a partial
+    // read must neither wake the fixer nor let the PR read as finished.
+    const t = triagePullRequest(pr({ truncated: true }));
+    expect(t.blockers.map((b) => b.kind)).toEqual(['incomplete-data']);
+    expect(t.needsWork).toBe(false);
+    expect(t.waitingOnly).toBe(true);
+  });
+
+  it('says which PR was only partly read, rather than failing silently', () => {
+    const t = triagePullRequest(pr({ truncated: true }));
+    expect(t.blockers[0].detail).toContain('truncated');
+  });
+
   it('leaves a PR labelled autopilot:off alone, however red it is', () => {
     // The wake comment tells the operator to use this label. A label that is
     // documented but not read is worse than none: they think they stopped it.
