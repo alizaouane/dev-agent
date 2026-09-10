@@ -653,6 +653,59 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-implement.yml — duplicate-dispatch gate', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+
+    it('emits the value its conditions compare against', () => {
+      // The check wrote `overtaken=yes` while every step tested for 'true',
+      // so the gate was inert. The two have to agree.
+      expect(raw).toMatch(/echo "overtaken=\$OVERTAKEN"/);
+      expect(raw).toMatch(/OVERTAKEN=true/);
+      expect(raw).toMatch(/OVERTAKEN=false/);
+      expect(raw).not.toMatch(/overtaken=yes|overtaken=no/);
+    });
+
+    it('gates every step in the implement job on that verdict', () => {
+      // Cancelling the run needs `actions: write`, which callers do not
+      // grant, so skipping is the only mechanism available.
+      const implement = raw.slice(raw.indexOf('  implement:'));
+      const steps = implement.match(/^ {6}- (name:|uses:|run:)/gm) ?? [];
+      const guards = implement.match(/steps\.slot\.outputs\.overtaken != 'true'/g) ?? [];
+      // Every step but the check itself.
+      expect(guards.length).toBe(steps.length - 1);
+    });
+
+    it('lists the states implement starts from, not the ones it does not', () => {
+      // Naming the later states meant every state added afterwards read as
+      // fine to implement, and two of the four originally named were not
+      // repository states at all.
+      const starts = raw.match(/state:spec-ready\|state:implementing\|state:acm-building/g) ?? [];
+      expect(starts.length).toBe(2);
+      expect(raw).not.toMatch(/\*,state:pr-review,\*/);
+    });
+
+    it('requires exactly one state label in both checks', () => {
+      // A half-applied flip leaves two, and "any allowed label present"
+      // reads `implementing,pr-review` as ready to implement.
+      const counted = raw.match(/wc -w \| tr -d ' '\)" != "1"/g) ?? [];
+      expect(counted.length).toBe(2);
+    });
+
+    it('counts a PR in any state as evidence the work was done', () => {
+      // Closing a PR does not un-write the commits behind it.
+      expect(raw).not.toMatch(/gh pr list[^\n]*--state open/);
+      const anyState = raw.match(/gh pr list[^\n]*--state all/g) ?? [];
+      expect(anyState.length).toBe(2);
+    });
+
+    it('treats consuming the retry label as what authorises the retry', () => {
+      // With `|| true` a failed removal left the label attached and every
+      // later dispatch took the same early exit, past every other check.
+      expect(raw).toMatch(/if gh issue edit "\$ISSUE_NUMBER" --repo "\$REPO" --remove-label dev-agent:force-implement; then/);
+      expect(raw).not.toMatch(/--remove-label dev-agent:force-implement \|\| true/);
+    });
+  });
+
   describe('phase-implement.yml — Risk-annotation audit (Pillar 5 advisory)', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 

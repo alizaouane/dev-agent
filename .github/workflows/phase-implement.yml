@@ -100,10 +100,22 @@ jobs:
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          case ",$LABELS," in
-            *,state:spec-ready,*|*,state:implementing,*|*,state:acm-building,*) ;;
+
+          # Exactly one state label, and it has to be one implement starts
+          # from. A half-applied flip leaves two, and matching on "any allowed
+          # label present" reads `implementing,pr-review` as ready to
+          # implement — the label that should stop it sitting right beside the
+          # one that lets it through.
+          STATES=$(jq -r '[.labels[].name | select(startswith("state:"))] | join(" ")' <<<"$ISSUE")
+          if [ "$(printf '%s' "$STATES" | wc -w | tr -d ' ')" != "1" ]; then
+            echo "issue #$ISSUE_NUMBER has state labels [$STATES]; discarding this dispatch"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case "$STATES" in
+            state:spec-ready|state:implementing|state:acm-building) ;;
             *)
-              echo "issue #$ISSUE_NUMBER is not at a state implement starts from ($LABELS); discarding this dispatch"
+              echo "issue #$ISSUE_NUMBER is at $STATES, not a state implement starts from; discarding this dispatch"
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
@@ -116,10 +128,13 @@ jobs:
           # reading that label as "still to do" would repeat the work on a
           # branch that already has it. The PR is the artifact; the label is
           # a report of it, and reports fail.
+          # Any PR from that branch, not just an open one: closing a PR does
+          # not un-write the commits behind it, so a closed one is still
+          # evidence that a run produced the work.
           BRANCH="feat/dev-agent-issue-${ISSUE_NUMBER}"
-          PRS=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length')
+          PRS=$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq 'length')
           if [ "$PRS" != "0" ]; then
-            echo "issue #$ISSUE_NUMBER already has an open PR from $BRANCH; discarding this dispatch"
+            echo "issue #$ISSUE_NUMBER already has a PR from $BRANCH; discarding this dispatch"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -179,10 +194,18 @@ jobs:
           # access to the issue, so it covers exactly this run.
           case ",$LABELS," in
             *,dev-agent:force-implement,*)
-              gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label dev-agent:force-implement || true
-              echo "explicit retry; proceeding"
-              echo "overtaken=false" >> "$GITHUB_OUTPUT"
-              exit 0
+              # The authorisation is one-shot only if consuming it is what
+              # authorises the run. With `|| true` a failed removal left the
+              # label in place and every later dispatch took this same early
+              # exit, walking past the closed-issue, state and PR checks for
+              # good. Removing it is now the gate: if that fails, this run is
+              # not authorised and falls through to the ordinary checks.
+              if gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label dev-agent:force-implement; then
+                echo "explicit retry; proceeding"
+                echo "overtaken=false" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "could not consume the retry authorisation; falling through to the ordinary checks"
               ;;
           esac
 
@@ -190,14 +213,21 @@ jobs:
           # against. Emitting anything else makes the whole gate inert.
           OVERTAKEN=false
           [ "$STATE" = "CLOSED" ] && OVERTAKEN=true
-          case ",$LABELS," in
-            *,state:spec-ready,*|*,state:implementing,*|*,state:acm-building,*) ;;
-            *) OVERTAKEN=true ;;
-          esac
+          STATES=$(jq -r '[.labels[].name | select(startswith("state:"))] | join(" ")' <<<"$ISSUE")
+          if [ "$(printf '%s' "$STATES" | wc -w | tr -d ' ')" != "1" ]; then
+            OVERTAKEN=true
+          else
+            case "$STATES" in
+              state:spec-ready|state:implementing|state:acm-building) ;;
+              *) OVERTAKEN=true ;;
+            esac
+          fi
           # Same reason as in `dedupe`: the run ahead may have opened the PR
           # and then failed to move the label, and the PR is the artifact.
+          # Any PR, not just an open one — closing a PR does not un-write the
+          # commits, and a closed one is still evidence the work was done.
           BRANCH="feat/dev-agent-issue-${ISSUE_NUMBER}"
-          if [ "$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length')" != "0" ]; then
+          if [ "$(gh pr list --repo "$REPO" --head "$BRANCH" --state all --json number --jq 'length')" != "0" ]; then
             OVERTAKEN=true
           fi
           if [ "$OVERTAKEN" = "true" ]; then

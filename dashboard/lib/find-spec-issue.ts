@@ -14,6 +14,20 @@ import { parseSpecRefs } from './spec-approval-gate';
  * and an original left in the queue with nobody coming back for it.
  */
 
+/**
+ * Label that authorises one implement run past the workflow's dedupe gate.
+ *
+ * The gate exists to discard a dispatch that has been overtaken. A person
+ * pressing Re-dispatch is not an overtaken dispatch, and the workflow cannot
+ * tell the two apart from the issue's state alone — both look like an issue
+ * past spec-ready, often with a PR already open. The label carries that
+ * intent through, and the workflow removes it so it never authorises twice.
+ *
+ * It lives here rather than beside the action that applies it because a
+ * `"use server"` module may only export async functions.
+ */
+export const FORCE_IMPLEMENT_LABEL = 'dev-agent:force-implement';
+
 /** An open issue that already names a given spec. */
 export interface SpecIssue {
   /** Issue number. */

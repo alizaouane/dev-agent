@@ -1859,7 +1859,8 @@ describe('redispatchPhase', () => {
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValueOnce({});
     mockOctokit.issues.addLabels.mockResolvedValueOnce({});
-    const { redispatchPhase, FORCE_IMPLEMENT_LABEL } = await import('@/lib/actions');
+    const { redispatchPhase } = await import('@/lib/actions');
+    const { FORCE_IMPLEMENT_LABEL } = await import('@/lib/find-spec-issue');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('issue', '42');

@@ -30,18 +30,13 @@ import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
-import { findIssuesForSpec, isWaitingToStart, stateLabel, withSpecRefs } from './find-spec-issue';
-
-/**
- * Label that authorises one implement run past the workflow's dedupe gate.
- *
- * The gate exists to discard a dispatch that has been overtaken. A person
- * pressing Re-dispatch is not an overtaken dispatch, and the workflow cannot
- * tell the two apart from the issue's state alone — both look like an issue
- * past spec-ready, often with a PR already open. The label carries that
- * intent through, and the workflow removes it so it never authorises twice.
- */
-export const FORCE_IMPLEMENT_LABEL = 'dev-agent:force-implement';
+import {
+  FORCE_IMPLEMENT_LABEL,
+  findIssuesForSpec,
+  isWaitingToStart,
+  stateLabel,
+  withSpecRefs,
+} from './find-spec-issue';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
