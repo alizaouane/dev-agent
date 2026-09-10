@@ -1218,17 +1218,66 @@ describe('installWorkflow', () => {
     );
   });
 
-  it('returns an error when the workflow is already installed (idempotency guard)', async () => {
+  it('refuses when the installed file is already up to date', async () => {
+    const { INSTALLABLE_WORKFLOWS } = await import('@/lib/wire-up-template');
     mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
-    // File already exists.
-    mockOctokit.repos.getContent.mockResolvedValueOnce({ data: { type: 'file' } });
+    mockOctokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        type: 'file',
+        sha: 'existing-sha',
+        content: Buffer.from(INSTALLABLE_WORKFLOWS['bug-scout'].content, 'utf8').toString('base64'),
+      },
+    });
 
     const { installWorkflow } = await import('@/lib/actions');
     const fd = new FormData();
     fd.append('repo', 'q/r');
     fd.append('workflow', 'bug-scout');
     await expect(installWorkflow(fd)).resolves.toEqual({
-      error: expect.stringMatching(/already installed/),
+      error: expect.stringMatching(/up to date/),
+    });
+    expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
+  });
+
+  it('upgrades an installed file whose content has changed', async () => {
+    // A wrapper is the caller of a reusable workflow, so it caps that
+    // workflow's token permissions. Refusing every existing file left
+    // consumers with no way to receive a fix to a wrapper they already had —
+    // which is how the missing `checks: read` would have stayed broken in
+    // every repo despite being corrected in the template.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockResolvedValueOnce({
+      data: {
+        type: 'file',
+        sha: 'stale-sha',
+        content: Buffer.from('# an older version of this wrapper\n', 'utf8').toString('base64'),
+      },
+    });
+
+    const { installWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'bug-scout');
+    await installWorkflow(fd);
+    // The sha is required on update; without it GitHub 422s mid-flow.
+    expect(mockOctokit.repos.createOrUpdateFileContents).toHaveBeenCalledWith(
+      expect.objectContaining({ sha: 'stale-sha', message: expect.stringContaining('update') }),
+    );
+  });
+
+  it('does not overwrite a file it failed to read', async () => {
+    // A non-404 read error must not be treated as absence: writing then would
+    // clobber a file whose contents are unknown.
+    mockOctokit.repos.get.mockResolvedValueOnce({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockRejectedValueOnce(
+      Object.assign(new Error('Bad credentials'), { status: 401 }),
+    );
+    const { installWorkflow } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('workflow', 'bug-scout');
+    await expect(installWorkflow(fd)).resolves.toEqual({
+      error: expect.stringContaining('Bad credentials'),
     });
     expect(mockOctokit.repos.createOrUpdateFileContents).not.toHaveBeenCalled();
   });
