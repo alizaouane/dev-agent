@@ -73,8 +73,9 @@ export function StartFromSpecPanel({
       ) : (
         <>
           <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
-            Files an issue and starts the implement workflow in one step. The spec
-            and its plan are paired for you.
+            Starts the implement workflow on the issue your Claude Code session
+            filed for this spec, or files one if there isn&apos;t one yet. The
+            spec and its plan are paired for you.
             {unverified > 0 ? (
               <>
                 {' '}

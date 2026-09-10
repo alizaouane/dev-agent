@@ -66,6 +66,12 @@ function cacheVerdict(key: string, verdict: boolean): void {
 /**
  * Build the content-addressed key for a pair, when every blob SHA is known.
  *
+ * The paths are part of the key, not just the bytes: the gate compares the
+ * approval's recorded spec and plan paths against the ones being dispatched,
+ * so the same three blobs copied into the other tree are a different decision.
+ * Keying on content alone would let the original path's `true` be reused for
+ * the copy, and the picker would offer a pair the server gate then refuses.
+ *
  * Missing any of the three SHAs means the key would not describe the content,
  * so there is no key and the pair is read rather than served from cache.
  *
@@ -86,7 +92,7 @@ function cacheKey(
   const approval = blobShas[approvalPath];
   const plan = planPath === null ? '-' : blobShas[planPath];
   if (spec === undefined || approval === undefined || plan === undefined) return null;
-  return `${spec}:${plan}:${approval}`;
+  return `${specPath}|${planPath ?? '-'}|${spec}:${plan}:${approval}`;
 }
 
 /**

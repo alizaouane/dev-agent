@@ -238,4 +238,30 @@ describe('verifySpecPairs', () => {
     );
     expect(out[0].approved).toBe(true);
   });
+  it('does not reuse a cached verdict for the same bytes at a different path', async () => {
+    // The gate compares the approval's recorded paths too, so the same three
+    // blobs copied into the other tree are a different decision. Keying on
+    // content alone offered a pair the server gate then refuses.
+    const shas = { [SPEC]: 'sha-s', [PLAN]: 'sha-p', [APPROVAL]: 'sha-a' };
+    const warm = makeOctokit({ [SPEC]: SPEC_TEXT, [PLAN]: PLAN_TEXT, [APPROVAL]: approvalJson() });
+    expect((await verifySpecPairs(warm, 'q', 'r', 'main', [pair()], shas))[0].approved).toBe(true);
+
+    const COPY = 'docs/specs/2026-09-09-a-design.md';
+    const COPY_PLAN = 'docs/plans/2026-09-09-a.md';
+    const COPY_APPROVAL = 'docs/specs/2026-09-09-a-design.approval.json';
+    const copied = makeOctokit({
+      [COPY]: SPEC_TEXT,
+      [COPY_PLAN]: PLAN_TEXT,
+      [COPY_APPROVAL]: approvalJson(),
+    });
+    const out = await verifySpecPairs(
+      copied,
+      'q',
+      'r',
+      'main',
+      [pair({ specPath: COPY, planPath: COPY_PLAN, key: COPY })],
+      { [COPY]: 'sha-s', [COPY_PLAN]: 'sha-p', [COPY_APPROVAL]: 'sha-a' },
+    );
+    expect(out[0].approved).toBe(false);
+  });
 });

@@ -3,6 +3,9 @@ import { hashSpecAndPlan } from '@/lib/spec-approval';
 import { WIRE_UP_FILES } from '@/lib/wire-up-template';
 
 const mockOctokit = {
+  // Defaults to "no issue names this spec", so existing dispatchFromSpec cases
+  // keep exercising the create path. The reuse path has its own cases below.
+  paginate: vi.fn(async () => [] as unknown[]),
   repos: {
     getCollaboratorPermissionLevel: vi.fn(),
     getContent: vi.fn(),
@@ -11,6 +14,7 @@ const mockOctokit = {
   },
   issues: {
     create: vi.fn(),
+    listForRepo: vi.fn(),
     get: vi.fn(),
     setLabels: vi.fn(),
     createComment: vi.fn(),
@@ -482,6 +486,54 @@ describe('dispatchFromSpec', () => {
     expect(result).toEqual({ error: expect.stringContaining('work cannot start') });
     expect(mockOctokit.issues.create).not.toHaveBeenCalled();
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('dispatches the issue intake already filed instead of a second one', async () => {
+    // Both intake skills file a state:spec-ready issue when they record the
+    // approval, and that issue tells you to press this button. Creating
+    // another started duplicate work and stranded the original in the queue.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:bug' }, { name: 'quick-dev' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.create).not.toHaveBeenCalled();
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({ inputs: expect.objectContaining({ issue_number: '77' }) }),
+    );
+  });
+
+  it('keeps a reused issue kind and drops only its state label', async () => {
+    // Overwriting with a hardcoded kind:feature would relabel a bug as a
+    // feature on the way past, and lose the quick-dev provenance marker.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:bug' }, { name: 'quick-dev' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: ['kind:bug', 'quick-dev', 'state:implementing'] }),
+    );
   });
 
   it('starts a planless spec, which quick-dev produces and the picker offers', async () => {

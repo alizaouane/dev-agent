@@ -30,6 +30,7 @@ import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
+import { findOpenIssueForSpec } from './find-spec-issue';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -820,6 +821,12 @@ export async function dispatchExistingIssue(
  * then dispatches the workflow immediately and flips the label to
  * `state:implementing`.
  *
+ * Reuses the `state:spec-ready` issue intake already filed for the spec when
+ * there is one, which on the normal path there always is — both skills file
+ * it as they record the approval, and the issue body itself points at this
+ * button. Creating a second issue started duplicate work against one spec and
+ * left the first waiting for someone who was never coming.
+ *
  * Returns `{ error }` for surface-able failures (missing file, wrong
  * input) and throws for write-perm refusal — same contract as
  * `dispatchExistingIssue`.
@@ -893,31 +900,50 @@ export async function dispatchFromSpec(
     // would otherwise be the one route into the implement workflow that
     // never passes an approval check. There is no issue yet and therefore
     // no override label: an unapproved spec has to go back through intake.
+    // Both intake skills file a `state:spec-ready` issue as soon as they
+    // record the approval, and that issue's own body tells you to press this
+    // button. Creating another one here would start a second run against the
+    // same spec and leave the original sitting in the queue for ever, so the
+    // existing issue is dispatched instead of a new one.
+    const existing = await wrapStep('looking for the issue this spec was filed under', () =>
+      findOpenIssueForSpec(octokit, owner, repo, spec_path),
+    );
+
+    // Gated against whatever will actually be dispatched. On the reuse path
+    // that is the real issue, so an `spec-approval:override` label a human put
+    // on it counts — on the create path there is no issue and no override, and
+    // an unapproved spec has to go back through intake.
     const gate = await wrapStep('checking spec approval', () =>
       evaluateSpecApproval({
         octokit,
         owner,
         repo,
         ref: default_branch,
-        issueBody: body,
-        labels: [],
+        issueBody: existing?.body ?? body,
+        labels: existing?.labels ?? [],
       }),
     );
     if (!gate.allow) {
       return { error: `work cannot start — ${gate.message}` };
     }
 
-    const created = await wrapStep('creating spec-ready issue', () =>
-      octokit.issues.create({
-        owner,
-        repo,
-        title,
-        body,
-        labels: ['kind:feature', 'state:spec-ready'],
-      }),
-    );
-    const issue_number = created.data.number;
-    issueUrl = created.data.html_url;
+    let issue_number: number;
+    if (existing) {
+      issue_number = existing.number;
+      issueUrl = existing.html_url;
+    } else {
+      const created = await wrapStep('creating spec-ready issue', () =>
+        octokit.issues.create({
+          owner,
+          repo,
+          title,
+          body,
+          labels: ['kind:feature', 'state:spec-ready'],
+        }),
+      );
+      issue_number = created.data.number;
+      issueUrl = created.data.html_url;
+    }
 
     await wrapStep('dispatching implement workflow', () =>
       octokit.actions.createWorkflowDispatch({
@@ -935,8 +961,14 @@ export async function dispatchFromSpec(
 
     // Strip every state:* label and add state:implementing. Same rule as
     // dispatchExistingIssue — keeps downstream consumers from having to
-    // disambiguate between two state labels.
-    const nextLabels = ['kind:feature', 'state:implementing'];
+    // disambiguate between two state labels. A reused issue keeps its own
+    // non-state labels: `quick-dev` and `kind:*` say how the work was filed,
+    // and overwriting them with a hardcoded `kind:feature` would relabel a
+    // bug as a feature on the way past.
+    const keptLabels = (existing?.labels ?? ['kind:feature']).filter(
+      (l) => !l.startsWith('state:'),
+    );
+    const nextLabels = [...keptLabels, 'state:implementing'];
     try {
       await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
     } catch (err) {
