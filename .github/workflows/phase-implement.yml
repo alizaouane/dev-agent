@@ -59,6 +59,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       issues: read
+      pull-requests: read
     outputs:
       proceed: ${{ steps.check.outputs.proceed }}
     steps:
@@ -88,6 +89,22 @@ jobs:
               exit 0
               ;;
           esac
+
+          # An open PR from this issue's branch means an earlier run already
+          # produced the work, whatever the labels say. The final transition
+          # at the end of this workflow is `gh issue edit ... || true`, so a
+          # completed run can leave the issue sitting at state:implementing —
+          # reading that label as "still to do" would repeat the work on a
+          # branch that already has it. The PR is the artifact; the label is
+          # a report of it, and reports fail.
+          BRANCH="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          PRS=$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length')
+          if [ "$PRS" != "0" ]; then
+            echo "issue #$ISSUE_NUMBER already has an open PR from $BRANCH; discarding this dispatch"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           echo "proceed=true" >> "$GITHUB_OUTPUT"
 
   implement:
@@ -140,6 +157,12 @@ jobs:
           case ",$LABELS," in
             *,state:pr-review,*|*,state:done,*|*,state:staging,*|*,state:prod,*) OVERTAKEN=yes ;;
           esac
+          # Same reason as in `dedupe`: the run ahead may have opened the PR
+          # and then failed to move the label, and the PR is the artifact.
+          BRANCH="feat/dev-agent-issue-${ISSUE_NUMBER}"
+          if [ "$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length')" != "0" ]; then
+            OVERTAKEN=yes
+          fi
           if [ "$OVERTAKEN" = "yes" ]; then
             echo "issue #$ISSUE_NUMBER moved on while this run waited ($STATE, $LABELS); cancelling"
             gh run cancel "$RUN_ID" --repo "$REPO"

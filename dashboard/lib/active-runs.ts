@@ -65,12 +65,18 @@ async function listRunsInWindow(
       `could not list ${owner}/${repo} workflow runs completely: ${total} runs in a one-minute window exceeds what pagination reaches`,
     );
   }
+  // Both halves include the midpoint. Starting the newer half after it would
+  // leave an interval covered by neither query — and a run created in that
+  // gap is invisible, which is the whole failure this splitting prevents. An
+  // overlap costs a duplicate, and duplicates are removed by id below.
   const mid = new Date(from.getTime() + Math.floor(span / 2));
   const [older, newer] = await Promise.all([
     listRunsInWindow(octokit, owner, repo, from, mid),
-    listRunsInWindow(octokit, owner, repo, new Date(mid.getTime() + 1000), to),
+    listRunsInWindow(octokit, owner, repo, mid, to),
   ]);
-  return [...older, ...newer];
+  const byId = new Map<number, WorkflowRunLike>();
+  for (const run of [...older, ...newer]) byId.set(run.id, run);
+  return [...byId.values()];
 }
 
 /**

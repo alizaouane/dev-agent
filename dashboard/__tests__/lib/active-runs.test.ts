@@ -182,7 +182,29 @@ describe('fetchActiveRunsForIssue strict', () => {
     } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
     const out = await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
     expect(listWorkflowRuns.mock.calls.length).toBeGreaterThan(1);
-    expect(out).toHaveLength(2);
+    // Both halves include the midpoint, so the same run comes back twice and
+    // is deduplicated by id. An overlap is safe; a gap would hide a run.
+    expect(out).toHaveLength(1);
+  });
+
+  it('leaves no interval uncovered when it splits a window', async () => {
+    // A gap between the halves is a run nobody looks at, which is exactly
+    // what splitting exists to prevent.
+    let asked = 0;
+    const asks: Array<{ created: string }> = [];
+    const listWorkflowRuns = vi.fn(async (params: { created: string }) => {
+      asks.push(params);
+      asked += 1;
+      return { data: { workflow_runs: [], total_count: asked === 1 ? 4000 : 0 } };
+    });
+    const octokit = {
+      actions: { listWorkflowRuns },
+      paginate: vi.fn(async () => []),
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
+    const windows = asks.map((a) => a.created.split('..')).slice(1);
+    const [olderHalf, newerHalf] = windows;
+    expect(olderHalf[1]).toBe(newerHalf[0]);
   });
 
   it('throws when splitting can no longer establish completeness', async () => {
