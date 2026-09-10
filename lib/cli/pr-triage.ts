@@ -82,6 +82,8 @@ interface RawPr {
     commit?: { oid?: string } | null;
   }> | null;
   labels?: Array<{ name?: string }> | null;
+  /** True when any nested connection had a further page we did not read. */
+  truncated?: boolean;
 }
 
 /**
@@ -108,16 +110,19 @@ export function readOpenPullRequests(repo: string): RawPr[] {
         pageInfo{hasNextPage endCursor}
         nodes{
           number headRefName isDraft reviewDecision
-          labels(first:50){nodes{name}}
+          labels(first:100){pageInfo{hasNextPage} nodes{name}}
           commits(last:1){nodes{commit{
             oid
-            statusCheckRollup{contexts(first:100){nodes{
-              __typename
-              ... on CheckRun{name status conclusion}
-              ... on StatusContext{context state}
-            }}}
+            statusCheckRollup{contexts(first:100){
+              pageInfo{hasNextPage}
+              nodes{
+                __typename
+                ... on CheckRun{name status conclusion}
+                ... on StatusContext{context state}
+              }
+            }}
           }}}
-          reviews(last:30){nodes{author{login} state commit{oid}}}
+          reviews(last:100){pageInfo{hasNextPage} nodes{author{login} state commit{oid}}}
         }
       }
     }
@@ -142,11 +147,19 @@ export function readOpenPullRequests(repo: string): RawPr[] {
         headRefName: string;
         isDraft: boolean;
         reviewDecision: string | null;
-        labels?: { nodes?: Array<{ name?: string }> };
-        commits?: { nodes?: Array<{ commit?: { oid?: string; statusCheckRollup?: { contexts?: { nodes?: unknown[] } } } }> };
-        reviews?: { nodes?: Array<{ author?: { login?: string } | null; state?: string; commit?: { oid?: string } | null }> };
+        labels?: { pageInfo?: { hasNextPage?: boolean }; nodes?: Array<{ name?: string }> };
+        commits?: { nodes?: Array<{ commit?: { oid?: string; statusCheckRollup?: { contexts?: { pageInfo?: { hasNextPage?: boolean }; nodes?: unknown[] } } } }> };
+        reviews?: { pageInfo?: { hasNextPage?: boolean }; nodes?: Array<{ author?: { login?: string } | null; state?: string; commit?: { oid?: string } | null }> };
       };
       const commit = n.commits?.nodes?.[0]?.commit;
+      // Each of these is a bounded page. A truncated one is not evidence of
+      // absence — the unseen entry could be the opt-out label, the stale
+      // review, or the failing check — so the caller is told the view is
+      // partial rather than being handed a confident-looking subset.
+      const truncated =
+        n.labels?.pageInfo?.hasNextPage === true ||
+        n.reviews?.pageInfo?.hasNextPage === true ||
+        commit?.statusCheckRollup?.contexts?.pageInfo?.hasNextPage === true;
       return {
         number: n.number,
         headRefName: n.headRefName,
@@ -157,6 +170,7 @@ export function readOpenPullRequests(repo: string): RawPr[] {
         statusCheckRollup: (commit?.statusCheckRollup?.contexts?.nodes ?? []) as RawPr['statusCheckRollup'],
         reviews: n.reviews?.nodes ?? [],
         labels: n.labels?.nodes ?? [],
+        truncated,
       };
     });
 }
@@ -258,6 +272,7 @@ export function toPullRequestState(
       };
     }),
     unresolvedThreadCount,
+    truncated: raw.truncated,
   };
 }
 

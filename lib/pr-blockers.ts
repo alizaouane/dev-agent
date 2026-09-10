@@ -66,6 +66,17 @@ export interface PullRequestState {
   reviews: ReviewState[];
   /** Count of unresolved review threads, gathered across ALL pages. */
   unresolvedThreadCount: number;
+  /**
+   * True when a nested connection was truncated, so this view of the PR is
+   * partial.
+   *
+   * Labels, reviews and checks all arrive as bounded pages. A truncated page
+   * is not evidence of absence: the hidden label could be the operator's
+   * opt-out, the hidden review could be the stale one, the hidden check could
+   * be the failing one. Acting on a partial view can therefore both wake the
+   * fixer on a PR someone took over, and announce a red PR as ready.
+   */
+  truncated?: boolean;
 }
 
 /** Why a pull request is not ready, and what would clear it. */
@@ -76,7 +87,8 @@ export interface Blocker {
     | 'unresolved-threads'
     | 'stale-bot-review'
     | 'changes-requested'
-    | 'awaiting-approval';
+    | 'awaiting-approval'
+    | 'incomplete-data';
   /** One sentence naming the blocker, for an issue comment or a log line. */
   detail: string;
 }
@@ -205,6 +217,17 @@ export function triagePullRequest(pr: PullRequestState): PrTriage {
     // and none has been given; it is null where reviews are not required. A PR
     // in that state has no other blocker, so without this it reads as clean
     // and gets announced ready while GitHub still refuses the merge.
+    // Passive, so it neither wakes the fixer nor lets the PR read as ready.
+    // Both directions matter: the unseen page could hold the opt-out label as
+    // easily as the failing check.
+    if (pr.truncated) {
+      blockers.push({
+        kind: 'incomplete-data',
+        detail:
+          'labels, reviews or checks were truncated, so this PR was only partly read',
+      });
+    }
+
     if (pr.reviewDecision === 'REVIEW_REQUIRED') {
       blockers.push({
         kind: 'awaiting-approval',
@@ -216,7 +239,11 @@ export function triagePullRequest(pr: PullRequestState): PrTriage {
   // Some blockers need time or a person, not an agent. Waking the fixer for a
   // running check spends a model call to learn CI is still going; waking it for
   // a missing approval spends one to learn it cannot approve its own PR.
-  const PASSIVE: readonly Blocker['kind'][] = ['running-check', 'awaiting-approval'];
+  const PASSIVE: readonly Blocker['kind'][] = [
+    'running-check',
+    'awaiting-approval',
+    'incomplete-data',
+  ];
   const actionable = blockers.filter((b) => !PASSIVE.includes(b.kind));
 
   return {

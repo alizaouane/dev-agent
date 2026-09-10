@@ -115,6 +115,13 @@ describe('the open-PR query', () => {
     expect(source).not.toMatch(/--json'[^\n]*statusCheckRollup/);
   });
 
+  it('asks every bounded connection whether there is another page', () => {
+    // Without this the sweep cannot tell a short list from a truncated one,
+    // and truncation reads as "nothing wrong" — the failure this whole
+    // mechanism keeps producing.
+    expect([...query.matchAll(/pageInfo\{hasNextPage\}/g)]).toHaveLength(3);
+  });
+
   it('asks only for the check fields the triage reads', () => {
     expect(source).toMatch(/\.\.\. on CheckRun\{name status conclusion\}/);
     expect(source).toMatch(/\.\.\. on StatusContext\{context state\}/);
@@ -486,6 +493,11 @@ describe('isReadyToMerge', () => {
 
   it('is false while GitHub still requires a review', () => {
     expect(isReadyToMerge(t({ reviewDecision: 'REVIEW_REQUIRED' }), 1)).toBe(false);
+  });
+
+  it('is false when the PR was only partly read', () => {
+    // A failing check on page two would otherwise be announced as ready.
+    expect(isReadyToMerge(t({ truncated: true }), 1)).toBe(false);
   });
 });
 
