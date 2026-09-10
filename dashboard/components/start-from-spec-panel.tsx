@@ -24,10 +24,17 @@ import type { SpecPair } from '@/lib/spec-pairs';
 export function StartFromSpecPanel({
   repo,
   pairs,
+  listingIncomplete = false,
 }: {
   repo: string;
   /** Every spec on the default branch, paired with its plan. */
   pairs: SpecPair[];
+  /**
+   * True when a spec or plan directory could not be read. Specs missing for
+   * that reason never reach the verifier, so nothing else here would know
+   * the list is short.
+   */
+  listingIncomplete?: boolean;
 }) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
@@ -37,6 +44,7 @@ export function StartFromSpecPanel({
   // read at all — a rate limit, an expired token. Folding them into the
   // unapproved count would report an outage as a decision nobody made.
   const unverified = useMemo(() => pairs.filter((p) => p.unverified).length, [pairs]);
+  const incomplete = unverified > 0 || listingIncomplete;
   // Keyed on the spec path, not the slug: two specs can share a slug across
   // the legacy and superpowers trees, and a picker keyed on slug would render
   // them as one option and dispatch whichever it found first.
@@ -60,12 +68,12 @@ export function StartFromSpecPanel({
               the default branch, none of them approved.
             </>
           ) : null}
-          {unverified > 0 ? (
+          {incomplete ? (
             <>
               {' '}
               <span className="text-destructive">
-                {unverified} approval{unverified === 1 ? '' : 's'} could not be
-                read just now, so this list may be short. Reload in a moment.
+                Some of this repo could not be read just now, so what is listed
+                here may be short. Reload in a moment.
               </span>
             </>
           ) : null}
@@ -76,13 +84,12 @@ export function StartFromSpecPanel({
             Starts the implement workflow on the issue your Claude Code session
             filed for this spec, or files one if there isn&apos;t one yet. The
             spec and its plan are paired for you.
-            {unverified > 0 ? (
+            {incomplete ? (
               <>
                 {' '}
                 <span className="text-destructive">
-                  {unverified} further approval{unverified === 1 ? '' : 's'} could
-                  not be read just now and {unverified === 1 ? 'is' : 'are'} missing
-                  from this list. Reload in a moment.
+                  Some of this repo could not be read just now, so approved specs
+                  may be missing from this list. Reload in a moment.
                 </span>
               </>
             ) : null}

@@ -101,8 +101,15 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           plans: [],
           approvals: [],
           blobShas: {},
+          unreadable: true,
         }))
-      : Promise.resolve({ specs: [], plans: [], approvals: [], blobShas: {} }),
+      : Promise.resolve({
+          specs: [],
+          plans: [],
+          approvals: [],
+          blobShas: {},
+          unreadable: false,
+        }),
   ]);
 
   // Paired here rather than in the panel, so the page owns the derivation and
@@ -176,7 +183,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       {/* Band 1.5 — Start from existing spec */}
       {repo.wired_up ? (
         <section>
-          <StartFromSpecPanel repo={name} pairs={specPairs} />
+          <StartFromSpecPanel
+            repo={name}
+            pairs={specPairs}
+            listingIncomplete={specPlanFiles.unreadable}
+          />
         </section>
       ) : null}
 

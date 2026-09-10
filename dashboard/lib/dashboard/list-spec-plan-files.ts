@@ -12,21 +12,40 @@ interface ListedFile {
   sha: string;
 }
 
+/** What one directory listing produced, and whether it could be read at all. */
+interface DirListing {
+  /** Files found. Empty when the directory is absent or unreadable. */
+  files: ListedFile[];
+  /** True when the read failed for a reason other than the directory's absence. */
+  unreadable: boolean;
+}
+
 async function listFilesInDir(
   octokit: Octokit,
   owner: string,
   repo: string,
   path: string,
   ref: string,
-): Promise<ListedFile[]> {
+): Promise<DirListing> {
   try {
     const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
-    if (!Array.isArray(data)) return [];
-    return data
-      .filter((d) => d.type === 'file' && (d.name.endsWith('.md') || d.name.endsWith('.approval.json')))
-      .map((d) => ({ path: `${path}/${d.name}`, sha: d.sha }));
-  } catch {
-    return [];
+    if (!Array.isArray(data)) return { files: [], unreadable: false };
+    return {
+      files: data
+        .filter(
+          (d) => d.type === 'file' && (d.name.endsWith('.md') || d.name.endsWith('.approval.json')),
+        )
+        .map((d) => ({ path: `${path}/${d.name}`, sha: d.sha })),
+      unreadable: false,
+    };
+  } catch (err) {
+    // A directory that is not there and a directory that could not be read
+    // are different facts. Approval artifacts come back through this listing,
+    // so folding the second into the first makes a rate limit look like a
+    // repo with nothing approved — the outage-as-decision shape the verifier
+    // exists to prevent, reintroduced one layer down.
+    if ((err as { status?: number }).status === 404) return { files: [], unreadable: false };
+    return { files: [], unreadable: true };
   }
 }
 
@@ -40,6 +59,10 @@ async function listFilesInDir(
  *
  * Blob SHAs come back in the same listing at no extra cost, and let the
  * approval verifier skip re-reading files whose content has not changed.
+ *
+ * `unreadable` is set when a directory failed to read for any reason other
+ * than not existing, so the panel can say the list may be short instead of
+ * reporting an outage as a repo with nothing approved.
  */
 export async function listSpecAndPlanFiles(
   octokit: Octokit,
@@ -51,15 +74,16 @@ export async function listSpecAndPlanFiles(
   plans: string[];
   approvals: string[];
   blobShas: Record<string, string>;
+  unreadable: boolean;
 }> {
-  const [specs, plans] = await Promise.all([
-    Promise.all(SPEC_DIRS.map((d) => listFilesInDir(octokit, owner, repo, d, ref))).then(
-      (r) => r.flat(),
-    ),
-    Promise.all(PLAN_DIRS.map((d) => listFilesInDir(octokit, owner, repo, d, ref))).then(
-      (r) => r.flat(),
-    ),
-  ]);
+  const listings = await Promise.all(
+    [...SPEC_DIRS, ...PLAN_DIRS].map((d) => listFilesInDir(octokit, owner, repo, d, ref)),
+  );
+  const specListings = listings.slice(0, SPEC_DIRS.length);
+  const planListings = listings.slice(SPEC_DIRS.length);
+  const specs = specListings.flatMap((l) => l.files);
+  const plans = planListings.flatMap((l) => l.files);
+  const unreadable = listings.some((l) => l.unreadable);
   // Approval artifacts live beside the specs they cover, so they come back in
   // the same listing. Split them out rather than fetching the directory twice:
   // the picker needs to know which specs can actually start, and the gate
@@ -77,5 +101,6 @@ export async function listSpecAndPlanFiles(
     plans: plans.map((f) => f.path).filter((p) => p.endsWith('.md')),
     approvals: specPaths.filter((p) => p.endsWith('.approval.json')),
     blobShas,
+    unreadable,
   };
 }

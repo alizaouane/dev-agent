@@ -96,7 +96,9 @@ describe('fetchActiveRunsForIssue strict', () => {
   const clientFor = (runs: unknown[], paginate?: ReturnType<typeof vi.fn>) =>
     ({
       actions: {
-        listWorkflowRuns: vi.fn().mockResolvedValue({ data: { workflow_runs: runs } }),
+        listWorkflowRuns: vi
+          .fn()
+          .mockResolvedValue({ data: { workflow_runs: runs, total_count: runs.length } }),
       },
       paginate: paginate ?? vi.fn(async () => runs),
     }) as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
@@ -142,14 +144,58 @@ describe('fetchActiveRunsForIssue strict', () => {
     // A run older than GitHub's 35-day maximum cannot still be running, and
     // bounding on that rather than a page count keeps a repo with thousands
     // of completed runs behind it from becoming undispatchable.
-    const paginate = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
-    await fetchActiveRunsForIssue(clientFor([], paginate), 'q', 'r', 7, { strict: true });
-    const params = paginate.mock.calls[0][1] as unknown as { created: string };
-    expect(params.created).toMatch(/^>=\d{4}-\d{2}-\d{2}$/);
-    const since = new Date(params.created.slice(2));
-    const days = (Date.now() - since.getTime()) / 86_400_000;
+    const listWorkflowRuns = vi
+      .fn()
+      .mockResolvedValue({ data: { workflow_runs: [], total_count: 0 } });
+    const octokit = {
+      actions: { listWorkflowRuns },
+      paginate: vi.fn(async () => []),
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
+    const { created } = listWorkflowRuns.mock.calls[0][0] as { created: string };
+    const [from] = created.split('..');
+    const days = (Date.now() - new Date(from).getTime()) / 86_400_000;
     expect(days).toBeGreaterThan(34);
     expect(days).toBeLessThan(37);
+  });
+
+  it('splits the window when one query cannot page through it all', async () => {
+    // GitHub stops paginating a filtered run listing at 1000, so a busy
+    // window hides older runs behind the cap. Splitting until each query
+    // fits is the difference between a complete answer and a quiet one.
+    const active = {
+      id: 9,
+      status: 'queued',
+      display_title: 'implement → issue #7 (live)',
+      html_url: 'u',
+      created_at: '2026-09-01T00:00:00Z',
+    };
+    let asked = 0;
+    const listWorkflowRuns = vi.fn(async () => {
+      asked += 1;
+      // The full window is over the cap; each half fits.
+      return { data: { workflow_runs: [], total_count: asked === 1 ? 4000 : 1 } };
+    });
+    const octokit = {
+      actions: { listWorkflowRuns },
+      paginate: vi.fn(async () => [active]),
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    const out = await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
+    expect(listWorkflowRuns.mock.calls.length).toBeGreaterThan(1);
+    expect(out).toHaveLength(2);
+  });
+
+  it('throws when splitting can no longer establish completeness', async () => {
+    const listWorkflowRuns = vi
+      .fn()
+      .mockResolvedValue({ data: { workflow_runs: [], total_count: 5000 } });
+    const octokit = {
+      actions: { listWorkflowRuns },
+      paginate: vi.fn(async () => []),
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    await expect(
+      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
+    ).rejects.toThrow(/completely/);
   });
 
   it('finds a queued run that a single page would have missed', async () => {

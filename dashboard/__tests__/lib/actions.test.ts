@@ -225,7 +225,7 @@ describe('dispatchExistingIssue', () => {
     // octokit.actions.listWorkflowRuns under the hood, so an empty
     // response makes the guard pass through.
     mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
-      data: { workflow_runs: [] },
+      data: { workflow_runs: [], total_count: 0 },
     });
   });
 
@@ -437,7 +437,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.actions.createWorkflowDispatch.mockResolvedValue({});
     mockOctokit.issues.setLabels.mockResolvedValue({});
     mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
-      data: { workflow_runs: [] },
+      data: { workflow_runs: [], total_count: 0 },
     });
   });
 
@@ -590,19 +590,19 @@ describe('dispatchFromSpec', () => {
         labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
       },
     ]);
-    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
-      data: {
-        workflow_runs: [
-          {
-            id: 1,
-            status: 'in_progress',
-            display_title: 'implement → issue #77 (live)',
-            html_url: 'https://github.com/x/y/actions/runs/1',
-            created_at: new Date().toISOString(),
-          },
-        ],
+    const inFlight = [
+      {
+        id: 1,
+        status: 'in_progress',
+        display_title: 'implement → issue #77 (live)',
+        html_url: 'https://github.com/x/y/actions/runs/1',
+        created_at: new Date().toISOString(),
       },
+    ];
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
+      data: { workflow_runs: inFlight, total_count: 1 },
     });
+    mockOctokit.paginate.mockResolvedValueOnce(inFlight);
     const fd = new FormData();
     fd.append('repo', 'x/y');
     fd.append('spec_path', APPROVED_SPEC);
@@ -1251,7 +1251,7 @@ describe('getLatestScanRun', () => {
 
   it('returns all-null when the workflow has no runs', async () => {
     mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
-      data: { workflow_runs: [] },
+      data: { workflow_runs: [], total_count: 0 },
     });
     const { getLatestScanRun } = await import('@/lib/actions');
     const fd = new FormData();

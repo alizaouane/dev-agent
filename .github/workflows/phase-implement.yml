@@ -94,6 +94,15 @@ jobs:
     needs: dedupe
     if: needs.dedupe.outputs.proceed == 'true'
     runs-on: ubuntu-latest
+    # Declared here, not only in the consumer wrapper. Repos wired up before
+    # the wrapper carried a concurrency group still call this workflow at
+    # @main, and their two concurrent dispatches would both clear `dedupe`
+    # while the issue sat at state:implementing. A job-level group travels
+    # with the reusable workflow, so the guarantee does not depend on which
+    # generation of wrapper a repo happens to have.
+    concurrency:
+      group: dev-agent-implement-${{ github.repository }}-${{ inputs.issue_number }}
+      cancel-in-progress: false
     # Long ceiling so the implement phase can land large multi-step
     # specs without GitHub killing the run mid-edit. Originally 30 min,
     # which truncated runs on real-sized specs.
@@ -109,6 +118,36 @@ jobs:
       # the broadest egress (npm, GitHub, claude.ai for the Claude Code CLI
       # installer, api.anthropic.com for model calls) so audit-then-block is
       # especially important here. v1.1 flips to block-mode after audit data.
+      # `dedupe` ran before this job queued behind the concurrency group, so
+      # its answer is as old as the wait. Re-asked here, once the slot is
+      # actually held: by now the run that was ahead has finished and moved
+      # the issue on, which is exactly the case worth catching. Cancelling
+      # rather than skipping keeps this to one decision instead of a
+      # condition on every step below.
+      - name: Discard this dispatch if it was overtaken while queued
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          ISSUE=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json state,labels)
+          STATE=$(jq -r '.state' <<<"$ISSUE")
+          LABELS=$(jq -r '[.labels[].name] | join(",")' <<<"$ISSUE")
+          OVERTAKEN=no
+          [ "$STATE" = "CLOSED" ] && OVERTAKEN=yes
+          case ",$LABELS," in
+            *,state:pr-review,*|*,state:done,*|*,state:staging,*|*,state:prod,*) OVERTAKEN=yes ;;
+          esac
+          if [ "$OVERTAKEN" = "yes" ]; then
+            echo "issue #$ISSUE_NUMBER moved on while this run waited ($STATE, $LABELS); cancelling"
+            gh run cancel "$RUN_ID" --repo "$REPO"
+            # Give the cancellation time to land so no later step starts.
+            sleep 60
+            exit 1
+          fi
+
       - name: Harden runner (egress audit)
         uses: step-security/harden-runner@v2
         with:

@@ -55,7 +55,23 @@ describe('listSpecAndPlanFiles', () => {
   it('returns empty arrays when no spec/plan dirs exist', async () => {
     getContent.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
     const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
-    expect(result).toEqual({ specs: [], plans: [], approvals: [], blobShas: {} });
+    expect(result).toEqual({
+      specs: [],
+      plans: [],
+      approvals: [],
+      blobShas: {},
+      unreadable: false,
+    });
+  });
+
+  it('marks the listing unreadable when a directory fails for any other reason', async () => {
+    // Approval artifacts come back through this listing, so an unreadable
+    // directory reported as an empty one makes a rate limit look like a repo
+    // with nothing approved — the outage-as-decision shape again.
+    getContent.mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 }));
+    const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
+    expect(result.unreadable).toBe(true);
+    expect(result.specs).toEqual([]);
   });
 
   it('separates approval artifacts from the specs they sit beside', async () => {
