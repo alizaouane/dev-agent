@@ -27,7 +27,13 @@ export interface SpecIssue {
 }
 
 /**
- * Find the open issue whose body declares this spec.
+ * Find every open issue whose body declares this spec.
+ *
+ * All of them, not just the oldest. A repo that already carries the duplicate
+ * this change exists to stop has an old issue still at `state:spec-ready` and
+ * a newer one already implementing; collapsing to the lowest number throws
+ * away the only evidence that work has started, and the caller then clears a
+ * guard by inspecting the wrong issue.
  *
  * Matching goes through `parseSpecRefs`, the same parser the approval gate and
  * the implement workflow use, so the panel cannot decide an issue is about one
@@ -38,17 +44,17 @@ export interface SpecIssue {
  * @param owner - Repo owner.
  * @param repo - Repo name.
  * @param specPath - Repo-relative spec path to match.
- * @returns The lowest-numbered matching open issue, or null when there is none.
+ * @returns Matching open issues, oldest first. Empty when there are none.
  * @throws Whatever the listing throws — an unreadable issue list is not the
  *   same as an absent issue, and treating it as one files the duplicate this
  *   exists to prevent.
  */
-export async function findOpenIssueForSpec(
+export async function findOpenIssuesForSpec(
   octokit: Octokit,
   owner: string,
   repo: string,
   specPath: string,
-): Promise<SpecIssue | null> {
+): Promise<SpecIssue[]> {
   const issues = await octokit.paginate(octokit.issues.listForRepo, {
     owner,
     repo,
@@ -62,14 +68,24 @@ export async function findOpenIssueForSpec(
     .filter((i) => !('pull_request' in i && i.pull_request))
     .filter((i) => parseSpecRefs(i.body)?.spec_path === specPath);
 
-  if (matches.length === 0) return null;
-  // The oldest is the one intake filed; anything later is a duplicate someone
-  // is about to notice.
-  const issue = matches.reduce((a, b) => (a.number <= b.number ? a : b));
-  return {
-    number: issue.number,
-    html_url: issue.html_url,
-    body: issue.body ?? null,
-    labels: issue.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
-  };
+  // Oldest first: the first is the one intake filed, anything after it is a
+  // duplicate, and the caller needs to see all of them to decide.
+  return matches
+    .sort((a, b) => a.number - b.number)
+    .map((issue) => ({
+      number: issue.number,
+      html_url: issue.html_url,
+      body: issue.body ?? null,
+      labels: issue.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
+    }));
+}
+
+/**
+ * The state label an issue currently carries.
+ *
+ * @param issue - A matched issue.
+ * @returns The `state:*` label, or null when it has none.
+ */
+export function stateLabel(issue: SpecIssue): string | null {
+  return issue.labels.find((l) => l.startsWith('state:')) ?? null;
 }

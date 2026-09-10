@@ -38,12 +38,17 @@ export type ActiveRun = {
  *
  * Status filter: GitHub's API treats `queued`/`in_progress`/`waiting`
  * as the in-flight bucket. Anything else is `completed`.
+ *
+ * @param options - `failClosed` rethrows a listing failure instead of
+ *   returning empty. Pass it from anything that dispatches: an unreadable run
+ *   list is not an empty one, and a guard that cannot see is not a guard.
  */
 export async function fetchActiveRunsForIssue(
   octokit: Octokit,
   owner: string,
   repo: string,
   issueNumber: number,
+  options: { failClosed?: boolean } = {},
 ): Promise<ActiveRun[]> {
   // listWorkflowRuns supports `status` filter, but only one value at a
   // time. Pull recent runs (per_page=20 is plenty — anything older than
@@ -66,6 +71,11 @@ export async function fetchActiveRunsForIssue(
     });
   } catch (err) {
     const status = (err as { status?: number }).status;
+    // A caller guarding a dispatch cannot treat "could not list" as "nothing
+    // running" — that is how the guard passes without checking and a second
+    // run lands on a branch already being worked. Visibility callers still
+    // degrade to empty; mutation callers ask to fail closed.
+    if (options.failClosed) throw err;
     if (status !== 404) {
       console.warn(
         `fetchActiveRunsForIssue: ${owner}/${repo}#${issueNumber} — listWorkflowRuns failed (status=${status ?? 'unknown'}); panel will be hidden.`,

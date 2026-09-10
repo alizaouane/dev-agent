@@ -90,3 +90,21 @@ describe('fetchActiveRunsForIssue', () => {
     expect(run.invocation_mode).toBe('stub');
   });
 });
+
+describe('fetchActiveRunsForIssue failClosed', () => {
+  it('rethrows a listing failure instead of reporting no runs', async () => {
+    // The default is right for the visibility panel and wrong for a dispatch
+    // guard: "could not list" is not "nothing running".
+    const octokit = {
+      actions: {
+        listWorkflowRuns: vi
+          .fn()
+          .mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 })),
+      },
+    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    await expect(
+      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { failClosed: true }),
+    ).rejects.toThrow('rate limited');
+    await expect(fetchActiveRunsForIssue(octokit, 'q', 'r', 7)).resolves.toEqual([]);
+  });
+});

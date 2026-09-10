@@ -598,6 +598,61 @@ describe('dispatchFromSpec', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
+  it('refuses when a newer duplicate has already started, not just the oldest', async () => {
+    // The duplicate this reuse exists to stop leaves an old spec-ready issue
+    // beside a newer implementing one. Inspecting only the oldest clears the
+    // guard by reading the wrong issue.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 42,
+        html_url: 'https://github.com/x/y/issues/42',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+      {
+        number: 91,
+        html_url: 'https://github.com/x/y/issues/91',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:implementing' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.stringContaining('#91') }));
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses when it cannot read the run list, rather than assuming none', async () => {
+    // fetchActiveRunsForIssue returns [] on any Actions API failure, which is
+    // right for a visibility panel and wrong for a dispatch guard: a transient
+    // 403 would otherwise wave a second run through.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.actions.listWorkflowRuns.mockRejectedValueOnce(
+      Object.assign(new Error('rate limited'), { status: 403 }),
+    );
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(expect.objectContaining({ error: expect.any(String) }));
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it('starts a planless spec, which quick-dev produces and the picker offers', async () => {
     // Requiring a plan made every "(no plan)" option unstartable while the
     // picker presented it as ready — a choice that could only fail.

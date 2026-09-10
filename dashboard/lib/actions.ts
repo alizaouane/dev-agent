@@ -30,7 +30,7 @@ import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
-import { findOpenIssueForSpec } from './find-spec-issue';
+import { findOpenIssuesForSpec, stateLabel } from './find-spec-issue';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -905,37 +905,42 @@ export async function dispatchFromSpec(
     // button. Creating another one here would start a second run against the
     // same spec and leave the original sitting in the queue for ever, so the
     // existing issue is dispatched instead of a new one.
-    const existing = await wrapStep('looking for the issue this spec was filed under', () =>
-      findOpenIssueForSpec(octokit, owner, repo, spec_path),
+    const matching = await wrapStep('looking for the issue this spec was filed under', () =>
+      findOpenIssuesForSpec(octokit, owner, repo, spec_path),
     );
 
-    if (existing) {
-      // Same two guards `dispatchExistingIssue` applies, because this is now
-      // the same operation: dispatching an issue that already exists. Without
-      // them, reuse turned this button into an unguarded second dispatch onto
-      // a feature branch that already had work running on it.
-      if (!existing.labels.includes('state:spec-ready')) {
-        const currentState =
-          existing.labels.find((l) => l.startsWith('state:')) ?? 'unknown state';
-        return {
-          error: `work has already started on this spec — issue #${existing.number} is at ${currentState}`,
-          issue_url: existing.html_url,
-        };
-      }
+    // Every match is inspected, not just the oldest. A repo that already has
+    // the duplicate this reuse exists to stop carries an old spec-ready issue
+    // alongside a newer one that is implementing, and looking only at the
+    // oldest clears the guard by reading the wrong issue.
+    const started = matching.find((i) => !i.labels.includes('state:spec-ready'));
+    if (started) {
+      return {
+        error: `work has already started on this spec — issue #${started.number} is at ${stateLabel(started) ?? 'an unknown state'}`,
+        issue_url: started.html_url,
+      };
+    }
+
+    // Same guards `dispatchExistingIssue` applies, because this is now the
+    // same operation: dispatching an issue that already exists.
+    for (const candidate of matching) {
       // A previous click whose dispatch succeeded but whose label flip failed
       // leaves the issue at state:spec-ready with a run in flight. Reading
       // that label alone would queue a duplicate run against the same branch.
+      // Fail-closed, because a run list this cannot read is not an empty one.
       const activeRuns = await wrapStep('checking for runs already in flight', () =>
-        fetchActiveRunsForIssue(octokit, owner, repo, existing.number),
+        fetchActiveRunsForIssue(octokit, owner, repo, candidate.number, { failClosed: true }),
       );
       if (activeRuns.length > 0) {
         const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
         return {
-          error: `dispatch refused — issue #${existing.number} already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish.`,
-          issue_url: existing.html_url,
+          error: `dispatch refused — issue #${candidate.number} already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish.`,
+          issue_url: candidate.html_url,
         };
       }
     }
+
+    const existing = matching[0] ?? null;
 
     // Gated against whatever will actually be dispatched. On the reuse path
     // that is the real issue, so an `spec-approval:override` label a human put
