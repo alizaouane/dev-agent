@@ -668,8 +668,11 @@ describe('.github/workflows/', () => {
 
     it('always-runs the audit (covers post-failure salvage scenarios)', () => {
       // The audit must run even when an earlier step failed — that's
-      // when the risk signal is most valuable. Lock the if-clause shape.
-      expect(raw).toMatch(/id: risk-audit\s+if: inputs\.invocation_mode == 'live' && always\(\)/);
+      // when the risk signal is most valuable. The overtaken guard is
+      // conjoined ahead of it: a dispatch that was discarded audits nothing.
+      expect(raw).toMatch(
+        /id: risk-audit\s+if: steps\.slot\.outputs\.overtaken != 'true' && \(inputs\.invocation_mode == 'live' && always\(\)\)/,
+      );
     });
 
     it('applies a risk-audit:<verdict> label regardless of value', () => {
@@ -742,7 +745,9 @@ describe('.github/workflows/', () => {
       // Even when an earlier step failed, surface broken syntax — that's
       // when the audit is most useful (broken TS may have caused the
       // typecheck/test step to fail in the first place).
-      expect(raw).toMatch(/id: apply-audit\s+if: inputs\.invocation_mode == 'live' && always\(\)/);
+      expect(raw).toMatch(
+        /id: apply-audit\s+if: steps\.slot\.outputs\.overtaken != 'true' && \(inputs\.invocation_mode == 'live' && always\(\)\)/,
+      );
     });
 
     it('applies an apply-audit:<verdict> label regardless of value', () => {

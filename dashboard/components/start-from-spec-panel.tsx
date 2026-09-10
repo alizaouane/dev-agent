@@ -44,6 +44,11 @@ export function StartFromSpecPanel({
   // read at all — a rate limit, an expired token. Folding them into the
   // unapproved count would report an outage as a decision nobody made.
   const unverified = useMemo(() => pairs.filter((p) => p.unverified).length, [pairs]);
+  // Counted apart from the unapproved ones. A spec whose approval could not be
+  // read is not a spec nobody approved, and saying "none of them approved"
+  // over a rate limit is the outage-as-decision claim this panel keeps having
+  // to avoid making.
+  const unapproved = pairs.length - approved.length - unverified;
   const incomplete = unverified > 0 || listingIncomplete;
   // Keyed on the spec path, not the slug: two specs can share a slug across
   // the legacy and superpowers trees, and a picker keyed on slug would render
@@ -61,11 +66,18 @@ export function StartFromSpecPanel({
           Nothing here yet. A spec becomes startable once it has been reviewed
           and you have approved it, which happens in your Claude Code session —
           pitch the work there, and the approval is recorded next to the spec.
-          {pairs.length > 0 ? (
+          {unapproved > 0 ? (
             <>
               {' '}
-              This repo has {pairs.length} spec{pairs.length === 1 ? '' : 's'} on
-              the default branch, none of them approved.
+              This repo has {unapproved} spec{unapproved === 1 ? '' : 's'} on the
+              default branch without an approval.
+            </>
+          ) : null}
+          {unverified > 0 ? (
+            <>
+              {' '}
+              Another {unverified} carr{unverified === 1 ? 'ies' : 'y'} an
+              approval that could not be read just now.
             </>
           ) : null}
           {incomplete ? (

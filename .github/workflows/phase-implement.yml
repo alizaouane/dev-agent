@@ -89,16 +89,21 @@ jobs:
               ;;
           esac
 
-          # Anything past implementing means an earlier run already produced
-          # the work. A closed issue means the same and then some.
+          # The states implement may start from, rather than the ones it may
+          # not. Listing the later states meant every state added afterwards
+          # read as "fine to implement" — and two of the four I listed were
+          # not repository states at all. This way an unfamiliar state is
+          # refused rather than waved through, and a deliberate retry from any
+          # state comes in above via the force label.
           if [ "$STATE" = "CLOSED" ]; then
             echo "issue #$ISSUE_NUMBER is closed; discarding this dispatch"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           case ",$LABELS," in
-            *,state:pr-review,*|*,state:done,*|*,state:staging,*|*,state:prod,*)
-              echo "issue #$ISSUE_NUMBER is at a later state ($LABELS); discarding this dispatch"
+            *,state:spec-ready,*|*,state:implementing,*|*,state:acm-building,*) ;;
+            *)
+              echo "issue #$ISSUE_NUMBER is not at a state implement starts from ($LABELS); discarding this dispatch"
               echo "proceed=false" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
@@ -176,23 +181,26 @@ jobs:
             *,dev-agent:force-implement,*)
               gh issue edit "$ISSUE_NUMBER" --repo "$REPO" --remove-label dev-agent:force-implement || true
               echo "explicit retry; proceeding"
-              echo "overtaken=no" >> "$GITHUB_OUTPUT"
+              echo "overtaken=false" >> "$GITHUB_OUTPUT"
               exit 0
               ;;
           esac
 
-          OVERTAKEN=no
-          [ "$STATE" = "CLOSED" ] && OVERTAKEN=yes
+          # `true`/`false`, because that is what every step below compares
+          # against. Emitting anything else makes the whole gate inert.
+          OVERTAKEN=false
+          [ "$STATE" = "CLOSED" ] && OVERTAKEN=true
           case ",$LABELS," in
-            *,state:pr-review,*|*,state:done,*|*,state:staging,*|*,state:prod,*) OVERTAKEN=yes ;;
+            *,state:spec-ready,*|*,state:implementing,*|*,state:acm-building,*) ;;
+            *) OVERTAKEN=true ;;
           esac
           # Same reason as in `dedupe`: the run ahead may have opened the PR
           # and then failed to move the label, and the PR is the artifact.
           BRANCH="feat/dev-agent-issue-${ISSUE_NUMBER}"
           if [ "$(gh pr list --repo "$REPO" --head "$BRANCH" --state open --json number --jq 'length')" != "0" ]; then
-            OVERTAKEN=yes
+            OVERTAKEN=true
           fi
-          if [ "$OVERTAKEN" = "yes" ]; then
+          if [ "$OVERTAKEN" = "true" ]; then
             echo "issue #$ISSUE_NUMBER moved on while this run waited ($STATE, $LABELS); discarding this dispatch"
           fi
           echo "overtaken=$OVERTAKEN" >> "$GITHUB_OUTPUT"
