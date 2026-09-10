@@ -92,22 +92,25 @@ describe('fetchActiveRunsForIssue', () => {
 });
 
 describe('fetchActiveRunsForIssue strict', () => {
+  /** A client whose strict path serves `runs` and whose default path serves them too. */
+  const clientFor = (runs: unknown[], paginate?: ReturnType<typeof vi.fn>) =>
+    ({
+      actions: {
+        listWorkflowRuns: vi.fn().mockResolvedValue({ data: { workflow_runs: runs } }),
+      },
+      paginate: paginate ?? vi.fn(async () => runs),
+    }) as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+
   it('rethrows a listing failure instead of reporting no runs', async () => {
     // The default is right for the visibility panel and wrong for a dispatch
     // guard: "could not list" is not "nothing running".
-    const listWorkflowRuns = vi
-      .fn()
-      .mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 }));
     const octokit = {
-      actions: { listWorkflowRuns },
-      paginate: {
-        iterator: () => ({
-          // eslint-disable-next-line @typescript-eslint/require-await
-          async *[Symbol.asyncIterator]() {
-            yield { data: await listWorkflowRuns() };
-          },
-        }),
+      actions: {
+        listWorkflowRuns: vi
+          .fn()
+          .mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 })),
       },
+      paginate: vi.fn().mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 })),
     } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
     await expect(
       fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
@@ -128,76 +131,48 @@ describe('fetchActiveRunsForIssue strict', () => {
         created_at: '2026-09-10T00:00:00Z',
       },
     ];
-    const octokit = {
-      actions: {
-        listWorkflowRuns: vi.fn().mockResolvedValue({ data: { workflow_runs: runs } }),
-      },
-      paginate: {
-        iterator: () => ({
-          // eslint-disable-next-line @typescript-eslint/require-await
-          async *[Symbol.asyncIterator]() {
-            yield { data: runs };
-          },
-        }),
-      },
-    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
+    const octokit = clientFor(runs);
     await expect(fetchActiveRunsForIssue(octokit, 'q', 'r', 7)).resolves.toEqual([]);
-    const strict = await fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true });
-    expect(strict).toHaveLength(1);
-  });
-});
-
-describe('fetchActiveRunsForIssue strict pagination', () => {
-  it('throws rather than reporting clear when there is more to scan', () => {
-    // A run this never looked at is unknown, not absent. Stopping at a page
-    // limit and returning [] is the guard passing without checking.
-    const full = Array.from({ length: 100 }, (_, i) => ({
-      id: i,
-      status: 'completed',
-      display_title: 'implement → issue #999 (live)',
-      html_url: 'u',
-      created_at: '2026-09-10T00:00:00Z',
-    }));
-    const octokit = {
-      actions: { listWorkflowRuns: vi.fn() },
-      paginate: {
-        iterator: () => ({
-          // eslint-disable-next-line @typescript-eslint/require-await
-          async *[Symbol.asyncIterator]() {
-            for (;;) yield { data: full };
-          },
-        }),
-      },
-    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
-    return expect(
+    await expect(
       fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
-    ).rejects.toThrow(/exhaustively/);
+    ).resolves.toHaveLength(1);
   });
 
-  it('reads past the first page to find an older queued run', () => {
-    const page = (runs: unknown[]) => ({ data: runs });
-    const octokit = {
-      actions: { listWorkflowRuns: vi.fn() },
-      paginate: {
-        iterator: () => ({
-          // eslint-disable-next-line @typescript-eslint/require-await
-          async *[Symbol.asyncIterator]() {
-            yield page([]);
-            yield page([
-              {
-                id: 5,
-                status: 'queued',
-                display_title: 'implement → issue #7 (live)',
-                html_url: 'u',
-                created_at: '2026-09-01T00:00:00Z',
-              },
-            ]);
-          },
-        }),
+  it('asks only for runs new enough to still be active', async () => {
+    // A run older than GitHub's 35-day maximum cannot still be running, and
+    // bounding on that rather than a page count keeps a repo with thousands
+    // of completed runs behind it from becoming undispatchable.
+    const paginate = vi.fn(async (..._args: unknown[]) => [] as unknown[]);
+    await fetchActiveRunsForIssue(clientFor([], paginate), 'q', 'r', 7, { strict: true });
+    const params = paginate.mock.calls[0][1] as unknown as { created: string };
+    expect(params.created).toMatch(/^>=\d{4}-\d{2}-\d{2}$/);
+    const since = new Date(params.created.slice(2));
+    const days = (Date.now() - since.getTime()) / 86_400_000;
+    expect(days).toBeGreaterThan(34);
+    expect(days).toBeLessThan(37);
+  });
+
+  it('finds a queued run that a single page would have missed', async () => {
+    // paginate returns every page inside the window, so an older queued run
+    // is not hidden behind newer completed ones.
+    const runs = [
+      ...Array.from({ length: 150 }, (_, i) => ({
+        id: i,
+        status: 'completed',
+        display_title: 'implement → issue #999 (live)',
+        html_url: 'u',
+        created_at: '2026-09-10T00:00:00Z',
+      })),
+      {
+        id: 5,
+        status: 'queued',
+        display_title: 'implement → issue #7 (live)',
+        html_url: 'u',
+        created_at: '2026-09-01T00:00:00Z',
       },
-    } as unknown as Parameters<typeof fetchActiveRunsForIssue>[0];
-    return expect(
-      fetchActiveRunsForIssue(octokit, 'q', 'r', 7, { strict: true }),
+    ];
+    await expect(
+      fetchActiveRunsForIssue(clientFor(runs), 'q', 'r', 7, { strict: true }),
     ).resolves.toHaveLength(1);
   });
 });

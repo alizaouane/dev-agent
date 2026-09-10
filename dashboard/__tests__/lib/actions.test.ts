@@ -5,15 +5,12 @@ import { WIRE_UP_FILES } from '@/lib/wire-up-template';
 const mockOctokit = {
   // Defaults to "no issue names this spec", so existing dispatchFromSpec cases
   // keep exercising the create path. The reuse path has its own cases below.
-  paginate: Object.assign(vi.fn(async () => [] as unknown[]), {
-    // The strict active-run scan pages through runs; default to one empty page.
-    iterator: () => ({
-      // eslint-disable-next-line @typescript-eslint/require-await
-      async *[Symbol.asyncIterator]() {
-        yield { data: (await mockOctokit.actions.listWorkflowRuns()).data.workflow_runs };
-      },
-    }),
-  }),
+  // Serves both the issue listing and the strict active-run scan. Issue
+  // fixtures are queued with mockResolvedValueOnce; anything else falls
+  // through to the workflow runs the test has staged.
+  paginate: vi.fn(
+    async () => (await mockOctokit.actions.listWorkflowRuns()).data.workflow_runs as unknown[],
+  ),
   repos: {
     getCollaboratorPermissionLevel: vi.fn(),
     getContent: vi.fn(),

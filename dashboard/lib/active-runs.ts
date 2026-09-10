@@ -41,11 +41,11 @@ export type ActiveRun = {
  *
  * @param options - `strict` switches this from best-effort visibility to a
  *   guard fit for a mutation: a listing failure rethrows instead of returning
- *   empty, every page is read rather than only the newest few, and every
- *   status GitHub has not marked `completed` counts as active — `requested`
- *   and `pending` included, which the default filter drops. A scan that hits
- *   its page limit with more to read throws too. An unreadable or partly-read
- *   run list is not an empty one, and a guard that cannot see is not a guard.
+ *   empty, every page inside the window a run can still be active in is read
+ *   rather than only the newest few, and every status GitHub has not marked
+ *   `completed` counts as active — `requested` and `pending` included, which
+ *   the default filter drops. An unreadable run list is not an empty one, and
+ *   a guard that cannot see is not a guard.
  */
 export async function fetchActiveRunsForIssue(
   octokit: Octokit,
@@ -65,10 +65,13 @@ export async function fetchActiveRunsForIssue(
   // the Actions API must NOT take down the whole feature page — log
   // and return empty so the page still renders without the "Running
   // now" card.
-  // How many pages of 100 a strict scan will read before giving up. Reaching
-  // it is not "nothing found" — a run this never looked at is unknown, not
-  // absent — so the scan throws rather than reporting clear.
-  const STRICT_MAX_PAGES = 10;
+  // GitHub cancels a workflow run once it reaches its maximum duration of 35
+  // days, so a run created before that cannot still be active. Scanning the
+  // window rather than a page count bounds the work without inventing a
+  // cutoff: a repo with ten thousand completed runs behind it still gets a
+  // complete answer, where a fixed page limit turned ordinary accumulated
+  // history into an indeterminate result and blocked every dispatch.
+  const STRICT_WINDOW_DAYS = 35;
 
   let runs: Array<{
     id: number;
@@ -79,26 +82,14 @@ export async function fetchActiveRunsForIssue(
   }>;
   try {
     if (options.strict) {
-      runs = [];
-      let pages = 0;
-      const iterator = octokit.paginate.iterator(octokit.actions.listWorkflowRuns, {
+      const since = new Date(Date.now() - STRICT_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+      runs = await octokit.paginate(octokit.actions.listWorkflowRuns, {
         owner,
         repo,
         workflow_id: 'dev-agent.yml',
+        created: `>=${since.toISOString().slice(0, 10)}`,
         per_page: 100,
       });
-      for await (const page of iterator) {
-        runs.push(...page.data);
-        pages += 1;
-        if (pages >= STRICT_MAX_PAGES) {
-          if (page.data.length === 100) {
-            throw new Error(
-              `could not check ${owner}/${repo}#${issueNumber} exhaustively: more than ${STRICT_MAX_PAGES * 100} workflow runs to scan`,
-            );
-          }
-          break;
-        }
-      }
     } else {
       const resp = await octokit.actions.listWorkflowRuns({
         owner,
