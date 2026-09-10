@@ -28,6 +28,8 @@ export interface SpecIssue {
   planPath: string | null;
   /** Whether the issue is still open. */
   open: boolean;
+  /** Current title, so a reuse only renames when the user asked for a change. */
+  title: string;
 }
 
 /**
@@ -88,6 +90,7 @@ export async function findIssuesForSpec(
       labels: issue.labels.map((l) => (typeof l === 'string' ? l : (l.name ?? ''))).filter(Boolean),
       planPath: parseSpecRefs(issue.body)?.plan_path ?? null,
       open: issue.state === 'open',
+      title: issue.title,
     }));
 }
 

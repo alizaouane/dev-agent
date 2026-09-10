@@ -845,6 +845,10 @@ export async function dispatchFromSpec(
     const spec_path = (formData.get('spec_path') as string).trim();
     const plan_path = (formData.get('plan_path') as string).trim();
     const title = (formData.get('title') as string).trim();
+    // Only what the user actually typed. The fallback in `title` names a new
+    // issue; renaming an issue that already exists on the strength of a
+    // default nobody chose would be an edit they did not ask for.
+    const custom_title = ((formData.get('custom_title') as string) ?? '').trim();
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
     if (!spec_path) return { error: 'spec_path is required' };
     if (!title) return { error: 'title is required' };
@@ -987,9 +991,14 @@ export async function dispatchFromSpec(
     if (existing) {
       issue_number = existing.number;
       issueUrl = existing.html_url;
-      if (reconciledBody !== null) {
-        await wrapStep('bringing the issue in line with the approved plan', () =>
-          octokit.issues.update({ owner, repo, issue_number, body: reconciledBody }),
+      // Body and title in one call when both need changing, so a reused issue
+      // is never left half-updated.
+      const patch: { body?: string; title?: string } = {};
+      if (reconciledBody !== null) patch.body = reconciledBody;
+      if (custom_title && custom_title !== existing.title) patch.title = custom_title;
+      if (Object.keys(patch).length > 0) {
+        await wrapStep('bringing the issue in line with the approved spec', () =>
+          octokit.issues.update({ owner, repo, issue_number, ...patch }),
         );
       }
     } else {

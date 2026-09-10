@@ -16,6 +16,7 @@ function makeOctokit(issues: unknown[]): Octokit {
 function issue(over: Record<string, unknown> = {}) {
   return {
     number: 42,
+    title: 'A feature',
     html_url: 'https://github.com/q/r/issues/42',
     body: `Spec: ${SPEC}\nPlan: docs/superpowers/plans/2026-09-09-a.md\n`,
     labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
@@ -97,6 +98,7 @@ describe('isWaitingToStart', () => {
     labels,
     planPath: null,
     open,
+    title: 'A feature',
   });
 
   it('accepts an issue whose only state is spec-ready', () => {

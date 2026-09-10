@@ -45,7 +45,54 @@ on:
         default: 'live'
 
 jobs:
+  # A dispatch that has been overtaken is discarded here rather than run.
+  #
+  # The dashboard checks for runs in flight before it dispatches, and the
+  # consumer wrapper carries a concurrency group so two dispatches cannot run
+  # at once — but `cancel-in-progress: false` queues the second rather than
+  # dropping it, so it starts once the first finishes and repeats the work on
+  # a branch that already has it. Serialising is not deduplicating. By that
+  # point the first run has moved the issue on, so its state says plainly that
+  # this dispatch has nothing left to do.
+  dedupe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: read
+    outputs:
+      proceed: ${{ steps.check.outputs.proceed }}
+    steps:
+      - name: Check the issue still wants implementing
+        id: check
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ISSUE=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json state,labels)
+          STATE=$(jq -r '.state' <<<"$ISSUE")
+          LABELS=$(jq -r '[.labels[].name] | join(",")' <<<"$ISSUE")
+
+          # Anything past implementing means an earlier run already produced
+          # the work. A closed issue means the same and then some.
+          if [ "$STATE" = "CLOSED" ]; then
+            echo "issue #$ISSUE_NUMBER is closed; discarding this dispatch"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          case ",$LABELS," in
+            *,state:pr-review,*|*,state:done,*|*,state:staging,*|*,state:prod,*)
+              echo "issue #$ISSUE_NUMBER is at a later state ($LABELS); discarding this dispatch"
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+              exit 0
+              ;;
+          esac
+          echo "proceed=true" >> "$GITHUB_OUTPUT"
+
   implement:
+    needs: dedupe
+    if: needs.dedupe.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     # Long ceiling so the implement phase can land large multi-step
     # specs without GitHub killing the run mid-edit. Originally 30 min,

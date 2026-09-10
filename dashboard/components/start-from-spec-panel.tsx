@@ -138,11 +138,15 @@ export function StartFromSpecPanel({
             ) : null}
 
             {/*
-              The submitted title falls back to the spec's own name, so leaving
-              the box untouched is a valid answer rather than a validation
-              error. The visible input carries no `name` for that reason.
+              Two fields, because the two paths want different things. `title`
+              names a new issue and falls back to the spec's own name, so
+              leaving the box untouched is a valid answer rather than a
+              validation error. `custom_title` carries only what was actually
+              typed, so reusing an issue renames it when the user asked for a
+              different title and leaves it alone when they did not.
             */}
             <input type="hidden" name="title" value={title.trim() || selected?.title || ''} />
+            <input type="hidden" name="custom_title" value={title.trim()} />
             <label className="flex flex-col gap-1 text-sm">
               <span className="font-medium">Issue title</span>
               <input
@@ -152,6 +156,10 @@ export function StartFromSpecPanel({
                 aria-label="Issue title"
                 className="rounded border border-border bg-background px-2 py-1"
               />
+              <span className="text-xs text-muted-foreground">
+                Leave blank to keep the spec&apos;s own name, or the title of the
+                issue your session already filed.
+              </span>
             </label>
 
             <div>

@@ -429,6 +429,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.issues.create.mockResolvedValue({
       data: {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
       },
@@ -504,6 +505,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -529,6 +531,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -554,6 +557,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -579,6 +583,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -618,6 +623,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 42,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/42',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -625,6 +631,7 @@ describe('dispatchFromSpec', () => {
       },
       {
         number: 91,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/91',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -649,6 +656,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -675,6 +683,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -699,6 +708,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
@@ -722,6 +732,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 42,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/42',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
@@ -729,6 +740,7 @@ describe('dispatchFromSpec', () => {
       },
       {
         number: 91,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/91',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -754,6 +766,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 12,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/12',
         state: 'closed',
         body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
@@ -782,6 +795,7 @@ describe('dispatchFromSpec', () => {
     mockOctokit.paginate.mockResolvedValueOnce([
       {
         number: 77,
+        title: 'Existing title',
         html_url: 'https://github.com/x/y/issues/77',
         state: 'open',
         body: `Spec: ${APPROVED_SPEC}\nPlan: docs/plans/stale.md\n`,
@@ -796,6 +810,57 @@ describe('dispatchFromSpec', () => {
     const { dispatchFromSpec } = await import('@/lib/actions');
     const result = await dispatchFromSpec(fd);
     expect(result).toEqual({ error: expect.stringContaining('work cannot start') });
+    expect(mockOctokit.issues.update).not.toHaveBeenCalled();
+  });
+
+  it('renames a reused issue when the user typed a different title', async () => {
+    // The panel presents the field on both paths; ignoring it on the reuse
+    // path meant the title most people type silently did nothing.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.issues.update.mockResolvedValue({});
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'A better title');
+    fd.append('custom_title', 'A better title');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    expect(mockOctokit.issues.update).toHaveBeenCalledWith(
+      expect.objectContaining({ issue_number: 77, title: 'A better title' }),
+    );
+  });
+
+  it('leaves a reused issue title alone when the box was left blank', async () => {
+    // The fallback title is the spec's name, not a choice anyone made.
+    // Renaming on the strength of it is an edit the user did not ask for.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        title: 'Existing title',
+        html_url: 'https://github.com/x/y/issues/77',
+        state: 'open',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Approved spec');
+    fd.append('custom_title', '');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
     expect(mockOctokit.issues.update).not.toHaveBeenCalled();
   });
 
