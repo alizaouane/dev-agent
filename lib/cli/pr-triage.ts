@@ -62,18 +62,6 @@ const REVIEW_BOTS = new Set([
   'github-actions',
 ]);
 
-/**
- * Run a `gh` command and parse its stdout as JSON.
- *
- * @param args - Arguments after `gh`.
- * @returns The parsed response.
- * @throws If `gh` exits non-zero or emits unparseable output.
- */
-function gh<T>(args: string[]): T {
-  const out = execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 });
-  return JSON.parse(out) as T;
-}
-
 /** Shape of one PR as `gh pr list` returns it with the fields we ask for. */
 interface RawPr {
   number: number;
@@ -94,6 +82,83 @@ interface RawPr {
     commit?: { oid?: string } | null;
   }> | null;
   labels?: Array<{ name?: string }> | null;
+}
+
+/**
+ * Read every open pull request, asking for exactly the fields the triage uses.
+ *
+ * Deliberately not `gh pr list --json statusCheckRollup`. That flag expands to
+ * a fixed fragment which also pulls `checkSuite.workflowRun` — a field nothing
+ * here reads, and one the workflow token cannot see without `actions: read`.
+ * The whole query then fails with "Resource not accessible by integration", so
+ * every pull request goes untriaged. Two sweeps were lost to that, each time
+ * granting one more permission to satisfy a field we do not want.
+ *
+ * Asking for less is the fix: this needs only `checks: read` and
+ * `statuses: read`, and cannot break again when the canned fragment grows.
+ *
+ * @param repo - owner/name.
+ * @returns Every open pull request, in the shape `toPullRequestState` expects.
+ */
+export function readOpenPullRequests(repo: string): RawPr[] {
+  const [owner, name] = repo.split('/');
+  const query = `query($owner:String!,$name:String!,$endCursor:String){
+    repository(owner:$owner,name:$name){
+      pullRequests(states:OPEN,first:50,after:$endCursor){
+        pageInfo{hasNextPage endCursor}
+        nodes{
+          number headRefName isDraft reviewDecision
+          labels(first:50){nodes{name}}
+          commits(last:1){nodes{commit{
+            oid
+            statusCheckRollup{contexts(first:100){nodes{
+              __typename
+              ... on CheckRun{name status conclusion}
+              ... on StatusContext{context state}
+            }}}
+          }}}
+          reviews(last:30){nodes{author{login} state commit{oid}}}
+        }
+      }
+    }
+  }`;
+  const raw = execFileSync(
+    'gh',
+    [
+      'api', 'graphql', '--paginate',
+      '-f', `query=${query}`,
+      '-f', `owner=${owner}`,
+      '-f', `name=${name}`,
+      '--jq', '.data.repository.pullRequests.nodes[]',
+    ],
+    { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
+  );
+  return raw
+    .split('\n')
+    .filter((l) => l.trim() !== '')
+    .map((l) => {
+      const n = JSON.parse(l) as {
+        number: number;
+        headRefName: string;
+        isDraft: boolean;
+        reviewDecision: string | null;
+        labels?: { nodes?: Array<{ name?: string }> };
+        commits?: { nodes?: Array<{ commit?: { oid?: string; statusCheckRollup?: { contexts?: { nodes?: unknown[] } } } }> };
+        reviews?: { nodes?: Array<{ author?: { login?: string } | null; state?: string; commit?: { oid?: string } | null }> };
+      };
+      const commit = n.commits?.nodes?.[0]?.commit;
+      return {
+        number: n.number,
+        headRefName: n.headRefName,
+        isDraft: n.isDraft,
+        // GraphQL returns null where `gh pr list` returned "" for no decision.
+        reviewDecision: n.reviewDecision ?? null,
+        headRefOid: commit?.oid ?? '',
+        statusCheckRollup: (commit?.statusCheckRollup?.contexts?.nodes ?? []) as RawPr['statusCheckRollup'],
+        reviews: n.reviews?.nodes ?? [],
+        labels: n.labels?.nodes ?? [],
+      };
+    });
 }
 
 /**
@@ -314,11 +379,8 @@ export function runTriage(
     maxRepeats?: number;
   } = {},
 ): TriageReport {
-  const fields =
-    'number,headRefName,headRefOid,isDraft,reviewDecision,statusCheckRollup,reviews,labels';
-  const prs: RawPr[] = onlyPr
-    ? [gh<RawPr>(['pr', 'view', String(onlyPr), '--repo', repo, '--json', fields])]
-    : gh<RawPr[]>(['pr', 'list', '--repo', repo, '--state', 'open', '--limit', '100', '--json', fields]);
+  const all = readOpenPullRequests(repo);
+  const prs: RawPr[] = onlyPr === undefined ? all : all.filter((p) => p.number === onlyPr);
 
   const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [], ready: [] };
   for (const raw of prs) {

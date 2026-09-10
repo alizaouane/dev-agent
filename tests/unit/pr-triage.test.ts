@@ -92,6 +92,35 @@ describe('toPullRequestState', () => {
   });
 });
 
+describe('the open-PR query', () => {
+  const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+
+  /** The GraphQL query text itself, without the surrounding prose. */
+  const query = source.slice(
+    source.indexOf('query($owner:String!,$name:String!,$endCursor:String){\n    repository'),
+    source.indexOf("--jq', '.data.repository.pullRequests.nodes[]'"),
+  );
+
+  it('never asks for fields the triage does not read', () => {
+    // `gh pr list --json statusCheckRollup` expands to a fixed fragment that
+    // also pulls the check suite's workflow run — a field nothing here reads,
+    // and one the workflow token cannot see without `actions: read`. The whole
+    // query then fails and every PR goes untriaged. Two live sweeps were lost
+    // to that, each time by granting one more permission to satisfy a field we
+    // did not want. Asserted against the query text, not the file, so the
+    // explanation above does not trip it.
+    expect(query.length).toBeGreaterThan(100);
+    expect(query).not.toMatch(/checkSuite/);
+    expect(query).not.toMatch(/workflowRun/);
+    expect(source).not.toMatch(/--json'[^\n]*statusCheckRollup/);
+  });
+
+  it('asks only for the check fields the triage reads', () => {
+    expect(source).toMatch(/\.\.\. on CheckRun\{name status conclusion\}/);
+    expect(source).toMatch(/\.\.\. on StatusContext\{context state\}/);
+  });
+});
+
 describe('countUnresolvedThreads query', () => {
   const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
 
