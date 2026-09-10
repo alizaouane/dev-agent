@@ -20,8 +20,15 @@ import type { SpecPair } from './spec-pairs';
  * exist. On a repo with 259 specs and none approved this makes no calls at all.
  */
 
-/** Upper bound on pairs verified per page render. */
-const MAX_VERIFIED = 25;
+/**
+ * How many pairs to verify at once.
+ *
+ * A concurrency limit, not a cap on how many get verified. Truncating the
+ * candidate list instead would mark everything past the limit unapproved, so a
+ * repo with more approvals than the limit could not start its older ones —
+ * truncation reading as absence, one more time.
+ */
+const BATCH = 25;
 
 /**
  * Read a repo file, or null when it is not there.
@@ -64,37 +71,47 @@ export async function verifySpecPairs(
   ref: string,
   pairs: SpecPair[],
 ): Promise<SpecPair[]> {
-  const candidates = pairs.filter((p) => p.approved).slice(0, MAX_VERIFIED);
+  const candidates = pairs.filter((p) => p.approved);
   if (candidates.length === 0) return pairs.map((p) => ({ ...p, approved: false }));
 
   const verdicts = new Map<string, boolean>();
-  await Promise.all(
-    candidates.map(async (pair) => {
-      try {
-        const approvalPath = `${pair.specPath.replace(/\.md$/, '')}.approval.json`;
-        const [specText, planText, approvalRaw] = await Promise.all([
-          readText(octokit, owner, repo, pair.specPath, ref),
-          pair.planPath ? readText(octokit, owner, repo, pair.planPath, ref) : Promise.resolve(null),
-          readText(octokit, owner, repo, approvalPath, ref),
-        ]);
-        if (specText === null) {
-          verdicts.set(pair.key, false);
-          return;
-        }
-        const decision = dispatchGateDecision({
-          approvalRaw,
-          currentSpecHash: hashSpecAndPlan(specText, planText),
-          specPath: pair.specPath,
-          planPath: pair.planPath,
-        });
-        verdicts.set(pair.key, decision.allow);
-      } catch {
-        // A read we could not complete is not an approval. Offering the spec
-        // on that basis would be guessing, and the guess fails at dispatch.
+
+  const verifyOne = async (pair: SpecPair): Promise<void> => {
+    try {
+      const approvalPath = `${pair.specPath.replace(/\.md$/, '')}.approval.json`;
+      const [specText, planText, approvalRaw] = await Promise.all([
+        readText(octokit, owner, repo, pair.specPath, ref),
+        pair.planPath ? readText(octokit, owner, repo, pair.planPath, ref) : Promise.resolve(null),
+        readText(octokit, owner, repo, approvalPath, ref),
+      ]);
+
+      // A named plan that is not there is not an empty plan. Hashing null like
+      // an empty file would let an approved zero-byte plan keep matching after
+      // deletion, and dispatch would refuse it afterwards.
+      if (specText === null || (pair.planPath !== null && planText === null)) {
         verdicts.set(pair.key, false);
+        return;
       }
-    }),
-  );
+
+      const decision = dispatchGateDecision({
+        approvalRaw,
+        currentSpecHash: hashSpecAndPlan(specText, planText),
+        specPath: pair.specPath,
+        planPath: pair.planPath,
+      });
+      verdicts.set(pair.key, decision.allow);
+    } catch {
+      // A read we could not complete is not an approval. Offering the spec on
+      // that basis would be guessing, and the guess fails at dispatch.
+      verdicts.set(pair.key, false);
+    }
+  };
+
+  // eslint-disable-next-line no-restricted-syntax -- batches run in sequence so
+  // a repo with many approvals does not open every read at once.
+  for (let i = 0; i < candidates.length; i += BATCH) {
+    await Promise.all(candidates.slice(i, i + BATCH).map(verifyOne));
+  }
 
   return pairs.map((p) => ({ ...p, approved: verdicts.get(p.key) === true }));
 }

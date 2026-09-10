@@ -111,6 +111,43 @@ describe('verifySpecPairs', () => {
     expect(octokit.repos.getContent).not.toHaveBeenCalled();
   });
 
+  it('verifies every approved pair, not just the first batch', async () => {
+    // Truncating the candidate list marked everything past the limit
+    // unapproved, so a repo with more approvals than the batch size could not
+    // start its older ones — truncation reading as absence, again.
+    const many = Array.from({ length: 60 }, (_, i) => {
+      const spec = `docs/superpowers/specs/2026-09-${String(i + 1).padStart(2, '0')}-x-design.md`;
+      return pair({ specPath: spec, planPath: null, key: spec });
+    });
+    const files: Record<string, string> = {};
+    for (const p of many) {
+      files[p.specPath] = SPEC_TEXT;
+      files[`${p.specPath.replace(/\.md$/, '')}.approval.json`] = JSON.stringify({
+        schema_version: 1,
+        spec_path: p.specPath,
+        plan_path: null,
+        spec_sha256: hashSpecAndPlan(SPEC_TEXT, null),
+        review_verdict: 'ok',
+        review_rounds: 1,
+        approved_by: 'ali@example.com',
+        approved_at: '2026-09-09T10:00:00.000Z',
+      });
+    }
+    const out = await verify(files, many);
+    expect(out.filter((p) => p.approved)).toHaveLength(60);
+  });
+
+  it('drops a pair whose named plan is missing, rather than hashing it as empty', async () => {
+    // hashSpecAndPlan treats a null plan like an empty one, so an approved
+    // zero-byte plan would keep matching after deletion and the pair would be
+    // offered, then refused at dispatch.
+    const out = await verify({
+      [SPEC]: SPEC_TEXT,
+      [APPROVAL]: approvalJson({ spec_sha256: hashSpecAndPlan(SPEC_TEXT, null) }),
+    });
+    expect(out[0].approved).toBe(false);
+  });
+
   it('treats a read it could not complete as not approved', async () => {
     const octokit = {
       repos: {
