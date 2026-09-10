@@ -840,8 +840,10 @@ export async function dispatchFromSpec(
     const title = (formData.get('title') as string).trim();
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
     if (!spec_path) return { error: 'spec_path is required' };
-    if (!plan_path) return { error: 'plan_path is required' };
     if (!title) return { error: 'title is required' };
+    // The plan is optional. quick-dev writes a spec and no plan, and the
+    // implement agent derives its own task list from the spec — requiring one
+    // here made every planless spec unstartable while the picker offered it.
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
@@ -860,22 +862,29 @@ export async function dispatchFromSpec(
         error: `spec_path not found on ${default_branch}: ${spec_path}`,
       };
     }
-    const planExists = await fileExistsOnBranch(octokit, owner, repo, plan_path, default_branch);
-    if (!planExists) {
-      return {
-        error: `plan_path not found on ${default_branch}: ${plan_path}`,
-      };
+    if (plan_path) {
+      const planExists = await fileExistsOnBranch(octokit, owner, repo, plan_path, default_branch);
+      if (!planExists) {
+        return {
+          error: `plan_path not found on ${default_branch}: ${plan_path}`,
+        };
+      }
     }
 
     const body = [
       `Spec: ${spec_path}`,
-      `Plan: ${plan_path}`,
+      // Omitted entirely rather than left blank: the workflow and the approval
+      // gate both read this line, and an empty one names a plan that is not
+      // there.
+      ...(plan_path ? [`Plan: ${plan_path}`] : []),
       '',
       '## TL;DR',
       '',
-      `Implementing the spec at \`${spec_path}\` per the plan at \`${plan_path}\`.`,
+      plan_path
+        ? `Implementing the spec at \`${spec_path}\` per the plan at \`${plan_path}\`.`
+        : `Implementing the spec at \`${spec_path}\`. No separate plan; the agent derives its own task list.`,
       '',
-      'Filed from the dashboard "Start from existing spec" panel.',
+      'Filed from the dashboard "Start work on an approved spec" panel.',
     ].join('\n');
 
     // Same approval gate as `dispatchExistingIssue`, run BEFORE the issue

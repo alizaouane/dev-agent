@@ -20,6 +20,7 @@ import { ScanCleanupButton } from '@/components/scan-cleanup-button';
 import { ProposalBrainstormButton } from '@/components/proposal-brainstorm-button';
 import { StartFromSpecPanel } from '@/components/start-from-spec-panel';
 import { pairSpecsAndPlans } from '@/lib/spec-pairs';
+import { verifySpecPairs } from '@/lib/verify-spec-pairs';
 import { RepoSpecsPlansList } from '@/components/repo-specs-plans-list';
 import { RepoReadiness } from '@/components/repo-readiness';
 import { assessRepo, summarizeReadiness } from '@/lib/onboarding';
@@ -105,11 +106,19 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
 
   // Paired here rather than in the panel, so the page owns the derivation and
   // the panel owns the rendering.
-  const specPairs = pairSpecsAndPlans(
-    specPlanFiles.specs,
-    specPlanFiles.plans,
-    specPlanFiles.approvals,
-  );
+  //
+  // Then verified: the presence of an approval file is not approval. The gate
+  // also checks the verdict, the paths, the schema version, and a hash over
+  // the spec and plan — so a stale approval passes a filename check and fails
+  // dispatch. Only pairs that already have an artifact are read, so a repo
+  // with hundreds of unapproved specs costs nothing here.
+  const specPairs = await verifySpecPairs(
+    octokit,
+    repo.owner,
+    repo.name,
+    repo.default_branch,
+    pairSpecsAndPlans(specPlanFiles.specs, specPlanFiles.plans, specPlanFiles.approvals),
+  ).catch(() => []);
 
   // Probed, not inferred. The previous checklist ticked boxes from earlier
   // steps having run, which reports what should be true rather than what is —

@@ -84,6 +84,30 @@ describe('pairSpecsAndPlans', () => {
     expect(pairs.map((p) => p.slug)).toEqual(['2026-09-09-new', '2026-03-21-old']);
   });
 
+  it('does not cross-pair the legacy and superpowers trees', () => {
+    // A repo mid-migration has the same dated slug in both. Keying on the
+    // basename alone let a superpowers spec take the legacy plan, which the
+    // approval gate then refuses on the exact-path mismatch.
+    const pairs = pairSpecsAndPlans(
+      [`${S}/2026-09-09-a-design.md`, 'docs/specs/2026-09-09-a-design.md'],
+      [`${P}/2026-09-09-a.md`, 'docs/plans/2026-09-09-a.md'],
+    );
+    const modern = pairs.find((p) => p.specPath.startsWith('docs/superpowers'))!;
+    const legacy = pairs.find((p) => p.specPath === 'docs/specs/2026-09-09-a-design.md')!;
+    expect(modern.planPath).toBe(`${P}/2026-09-09-a.md`);
+    expect(legacy.planPath).toBe('docs/plans/2026-09-09-a.md');
+  });
+
+  it('gives same-slug specs distinct identities for the picker', () => {
+    // Keyed on slug they would render as one option, and the picker would
+    // dispatch whichever it happened to find first.
+    const pairs = pairSpecsAndPlans(
+      [`${S}/2026-09-09-a-design.md`, 'docs/specs/2026-09-09-a-design.md'],
+      [],
+    );
+    expect(new Set(pairs.map((p) => p.key)).size).toBe(2);
+  });
+
   it('returns one entry per spec, plans it cannot match notwithstanding', () => {
     const pairs = pairSpecsAndPlans(
       [`${S}/2026-09-09-a-design.md`],

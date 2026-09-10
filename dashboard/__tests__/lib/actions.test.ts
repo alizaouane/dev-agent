@@ -484,6 +484,42 @@ describe('dispatchFromSpec', () => {
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
   });
 
+  it('starts a planless spec, which quick-dev produces and the picker offers', async () => {
+    // Requiring a plan made every "(no plan)" option unstartable while the
+    // picker presented it as ready — a choice that could only fail.
+    mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === APPROVED_PLAN) throw Object.assign(new Error('Not Found'), { status: 404 });
+      const files: Record<string, string> = {
+        [APPROVED_SPEC]: APPROVED_SPEC_TEXT,
+        [APPROVED_APPROVAL]: JSON.stringify({
+          schema_version: 1,
+          spec_path: APPROVED_SPEC,
+          plan_path: null,
+          spec_sha256: hashSpecAndPlan(APPROVED_SPEC_TEXT, null),
+          review_verdict: 'ok',
+          review_rounds: 1,
+          approved_by: 'tester@example.com',
+          approved_at: '2026-05-01T00:00:00.000Z',
+        }),
+      };
+      const content = files[path];
+      if (content === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
+      return { data: { type: 'file', content: Buffer.from(content, 'utf8').toString('base64') } };
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', '');
+    fd.append('title', 'Planless feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    await expect(dispatchFromSpec(fd)).rejects.toThrow(/__redirect__:/);
+    const body = mockOctokit.issues.create.mock.calls.at(-1)![0].body as string;
+    // The Plan line is omitted rather than left blank: the workflow and the
+    // gate both read it, and an empty one names a plan that is not there.
+    expect(body).toContain(`Spec: ${APPROVED_SPEC}`);
+    expect(body).not.toContain('Plan:');
+  });
+
   it('refuses when spec_path does not exist on the default branch', async () => {
     mockOctokit.repos.getContent.mockImplementation(async ({ path }: { path: string }) => {
       if (path === 'docs/superpowers/specs/missing.md') {

@@ -33,8 +33,11 @@ export function StartFromSpecPanel({
   const [error, setError] = useState<string | null>(null);
 
   const approved = useMemo(() => pairs.filter((p) => p.approved), [pairs]);
-  const [slug, setSlug] = useState(approved[0]?.slug ?? '');
-  const selected = approved.find((p) => p.slug === slug) ?? approved[0];
+  // Keyed on the spec path, not the slug: two specs can share a slug across
+  // the legacy and superpowers trees, and a picker keyed on slug would render
+  // them as one option and dispatch whichever it found first.
+  const [key, setKey] = useState(approved[0]?.key ?? '');
+  const selected = approved.find((p) => p.key === key) ?? approved[0];
   const [title, setTitle] = useState('');
 
   return (
@@ -83,12 +86,12 @@ export function StartFromSpecPanel({
             <label className="flex flex-col gap-1 text-sm">
               <span className="font-medium">Approved spec</span>
               <select
-                value={slug}
-                onChange={(e) => setSlug(e.target.value)}
+                value={selected?.key ?? ''}
+                onChange={(e) => setKey(e.target.value)}
                 className="rounded border border-border bg-background px-2 py-1"
               >
                 {approved.map((p) => (
-                  <option key={p.slug} value={p.slug}>
+                  <option key={p.key} value={p.key}>
                     {p.title}
                     {p.planPath ? '' : ' (no plan)'}
                   </option>

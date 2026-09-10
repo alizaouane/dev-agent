@@ -21,6 +21,8 @@ export interface SpecPair {
   planPath: string | null;
   /** Shared `YYYY-MM-DD-<topic>` key the two were matched on. */
   slug: string;
+  /** Stable identity for the picker. The spec path, which is unique. */
+  key: string;
   /** Human title derived from the slug, for the issue. */
   title: string;
   /** True when an approval artifact sits beside the spec. */
@@ -46,6 +48,22 @@ export function specSlug(path: string): string {
  */
 export function planSlug(path: string): string {
   return (path.split('/').pop() ?? path).replace(/\.md$/, '');
+}
+
+/**
+ * Which convention a path belongs to: the current tree or the legacy one.
+ *
+ * Both are supported, and a repo mid-migration has the same dated slug in
+ * each. Keying on the basename alone collapses those two, so a spec under
+ * `docs/superpowers/specs` could be paired with a plan from `docs/plans` —
+ * which the approval gate then refuses on the exact-path mismatch, putting
+ * back the round-trip failure this picker exists to remove.
+ *
+ * @param path - Repo-relative path.
+ * @returns `superpowers` or `legacy`.
+ */
+export function pathFamily(path: string): 'superpowers' | 'legacy' {
+  return path.startsWith('docs/superpowers/') ? 'superpowers' : 'legacy';
 }
 
 /**
@@ -76,7 +94,8 @@ export function pairSpecsAndPlans(
   plans: string[],
   approvalPaths: string[] = [],
 ): SpecPair[] {
-  const planBySlug = new Map(plans.map((p) => [planSlug(p), p]));
+  // Keyed by family AND slug, so the two conventions never cross-pair.
+  const planByKey = new Map(plans.map((p) => [`${pathFamily(p)}:${planSlug(p)}`, p]));
   const approved = new Set(approvalPaths);
 
   return specs
@@ -84,8 +103,12 @@ export function pairSpecsAndPlans(
       const slug = specSlug(specPath);
       return {
         specPath,
-        planPath: planBySlug.get(slug) ?? null,
+        planPath: planByKey.get(`${pathFamily(specPath)}:${slug}`) ?? null,
+        // The spec path, not the slug, identifies a pair: two specs can share
+        // a slug across the two trees, and a picker keyed on slug alone would
+        // show them as one option.
         slug,
+        key: specPath,
         title: titleFromSlug(slug),
         // The approval sits beside the spec, named for it. Deriving the path
         // rather than matching loosely keeps this in step with the gate, which
