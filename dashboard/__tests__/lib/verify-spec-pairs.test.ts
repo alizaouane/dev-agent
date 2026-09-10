@@ -148,7 +148,9 @@ describe('verifySpecPairs', () => {
     expect(out[0].approved).toBe(false);
   });
 
-  it('treats a read it could not complete as not approved', async () => {
+  it('treats a read it could not complete as not approved, and says so', async () => {
+    // Not approved and could-not-check are different facts. Rendering the
+    // second as the first hides an approved spec behind a rate limit.
     const octokit = {
       repos: {
         getContent: vi.fn().mockRejectedValue(
@@ -158,6 +160,68 @@ describe('verifySpecPairs', () => {
     } as unknown as Octokit;
     const out = await verifySpecPairs(octokit, 'q', 'r', 'main', [pair()]);
     expect(out[0].approved).toBe(false);
+    expect(out[0].unverified).toBe(true);
+  });
+
+  it('does not mark a properly refused pair unverified', async () => {
+    const out = await verify({
+      [SPEC]: SPEC_TEXT + 'edited\n',
+      [PLAN]: PLAN_TEXT,
+      [APPROVAL]: approvalJson(),
+    });
+    expect(out[0].approved).toBe(false);
+    expect(out[0].unverified).toBe(false);
+  });
+
+  it('serves an unchanged pair from cache instead of re-reading it', async () => {
+    // The blob SHAs come back free with the directory listing, and a verdict
+    // is a function of exactly those three blobs, so an unchanged pair costs
+    // no requests on the next render.
+    const files = { [SPEC]: SPEC_TEXT, [PLAN]: PLAN_TEXT, [APPROVAL]: approvalJson() };
+    const shas = { [SPEC]: 'sha-spec-1', [PLAN]: 'sha-plan-1', [APPROVAL]: 'sha-appr-1' };
+    const first = makeOctokit(files);
+    expect((await verifySpecPairs(first, 'q', 'r', 'main', [pair()], shas))[0].approved).toBe(true);
+    const second = makeOctokit(files);
+    const out = await verifySpecPairs(second, 'q', 'r', 'main', [pair()], shas);
+    expect(out[0].approved).toBe(true);
+    expect(second.repos.getContent).not.toHaveBeenCalled();
+  });
+
+  it('re-reads a pair whose spec blob changed', async () => {
+    const shas = { [SPEC]: 'sha-spec-2', [PLAN]: 'sha-plan-2', [APPROVAL]: 'sha-appr-2' };
+    const warm = makeOctokit({ [SPEC]: SPEC_TEXT, [PLAN]: PLAN_TEXT, [APPROVAL]: approvalJson() });
+    await verifySpecPairs(warm, 'q', 'r', 'main', [pair()], shas);
+    const edited = makeOctokit({
+      [SPEC]: SPEC_TEXT + 'AC-2: added later.\n',
+      [PLAN]: PLAN_TEXT,
+      [APPROVAL]: approvalJson(),
+    });
+    const out = await verifySpecPairs(edited, 'q', 'r', 'main', [pair()], {
+      ...shas,
+      [SPEC]: 'sha-spec-2-edited',
+    });
+    expect(out[0].approved).toBe(false);
+    expect(edited.repos.getContent).toHaveBeenCalled();
+  });
+
+  it('does not cache a verdict it could not reach', async () => {
+    // Caching a rate-limited render would make one outage stick until the
+    // content changed, which is the opposite of what a retry should do.
+    const shas = { [SPEC]: 'sha-spec-3', [PLAN]: 'sha-plan-3', [APPROVAL]: 'sha-appr-3' };
+    const failing = {
+      repos: {
+        getContent: vi.fn().mockRejectedValue(Object.assign(new Error('rate limited'), { status: 403 })),
+      },
+    } as unknown as Octokit;
+    await verifySpecPairs(failing, 'q', 'r', 'main', [pair()], shas);
+    const recovered = makeOctokit({
+      [SPEC]: SPEC_TEXT,
+      [PLAN]: PLAN_TEXT,
+      [APPROVAL]: approvalJson(),
+    });
+    const out = await verifySpecPairs(recovered, 'q', 'r', 'main', [pair()], shas);
+    expect(out[0].approved).toBe(true);
+    expect(out[0].unverified).toBe(false);
   });
 
   it('accepts a planless spec approved without a plan', async () => {

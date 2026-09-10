@@ -115,4 +115,23 @@ describe('pairSpecsAndPlans', () => {
     );
     expect(pairs).toHaveLength(1);
   });
+  it('pairs a superpowers spec with a legacy plan when only one tree has it', () => {
+    // README documents this mixed layout: writing-plans may write to
+    // docs/plans. Refusing to pair them assigned the spec a null plan, which
+    // then failed the approval gate on the recorded plan path and quietly
+    // dropped an approved spec out of the picker.
+    const [pair] = pairSpecsAndPlans(
+      [`${S}/2026-09-09-a-design.md`],
+      ['docs/plans/2026-09-09-a.md'],
+    );
+    expect(pair.planPath).toBe('docs/plans/2026-09-09-a.md');
+  });
+
+  it('leaves a legacy spec paired to its own tree when both trees hold the slug', () => {
+    const pairs = pairSpecsAndPlans(
+      ['docs/specs/2026-09-09-a-design.md'],
+      [`${P}/2026-09-09-a.md`, 'docs/plans/2026-09-09-a.md'],
+    );
+    expect(pairs[0].planPath).toBe('docs/plans/2026-09-09-a.md');
+  });
 });

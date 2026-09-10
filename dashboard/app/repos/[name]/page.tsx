@@ -100,8 +100,9 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           specs: [],
           plans: [],
           approvals: [],
+          blobShas: {},
         }))
-      : Promise.resolve({ specs: [], plans: [], approvals: [] }),
+      : Promise.resolve({ specs: [], plans: [], approvals: [], blobShas: {} }),
   ]);
 
   // Paired here rather than in the panel, so the page owns the derivation and
@@ -118,6 +119,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     repo.name,
     repo.default_branch,
     pairSpecsAndPlans(specPlanFiles.specs, specPlanFiles.plans, specPlanFiles.approvals),
+    specPlanFiles.blobShas,
   ).catch(() => []);
 
   // Probed, not inferred. The previous checklist ticked boxes from earlier

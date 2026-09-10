@@ -27,6 +27,13 @@ export interface SpecPair {
   title: string;
   /** True when an approval artifact sits beside the spec. */
   approved: boolean;
+  /**
+   * True when verification could not be completed — a read that failed for a
+   * reason other than the file being absent. Such a pair is not approved, but
+   * it is not known to be unapproved either, and saying so beats rendering a
+   * rate-limited read as a spec nobody approved.
+   */
+  unverified?: boolean;
 }
 
 /**
@@ -59,6 +66,10 @@ export function planSlug(path: string): string {
  * which the approval gate then refuses on the exact-path mismatch, putting
  * back the round-trip failure this picker exists to remove.
  *
+ * The family is a preference, not a requirement: README documents a mixed
+ * layout where a superpowers spec keeps its plan in `docs/plans`, and that
+ * pairing is unambiguous whenever only one tree holds the slug.
+ *
  * @param path - Repo-relative path.
  * @returns `superpowers` or `legacy`.
  */
@@ -79,6 +90,34 @@ export function titleFromSlug(slug: string): string {
 }
 
 /**
+ * Find the plan belonging to a spec, preferring its own tree.
+ *
+ * A slug that appears in both trees is ambiguous across them, so the spec's
+ * own family decides. A slug that appears in only one tree is not ambiguous
+ * at all, and README documents that mixed layout — a superpowers spec whose
+ * plan sits in `docs/plans`. Refusing to pair those would assign the spec a
+ * null plan, which then fails the approval gate on the recorded plan path and
+ * quietly removes an approved spec from the picker.
+ *
+ * @param byFamily - Plans keyed `<family>:<slug>`.
+ * @param bySlug - Plans grouped by slug alone, across both trees.
+ * @param specPath - The spec being paired.
+ * @param slug - Its shared `YYYY-MM-DD-<topic>` key.
+ * @returns The plan path, or null when there is none or the choice is ambiguous.
+ */
+function planFor(
+  byFamily: Map<string, string>,
+  bySlug: Map<string, string[]>,
+  specPath: string,
+  slug: string,
+): string | null {
+  const sameFamily = byFamily.get(`${pathFamily(specPath)}:${slug}`);
+  if (sameFamily !== undefined) return sameFamily;
+  const candidates = bySlug.get(slug) ?? [];
+  return candidates.length === 1 ? candidates[0] : null;
+}
+
+/**
  * Pair every spec with its plan and mark which ones are approved.
  *
  * Newest first, because a spec from March is history rather than a decision
@@ -94,8 +133,14 @@ export function pairSpecsAndPlans(
   plans: string[],
   approvalPaths: string[] = [],
 ): SpecPair[] {
-  // Keyed by family AND slug, so the two conventions never cross-pair.
+  // Keyed by family AND slug, so a slug present in both trees never
+  // cross-pairs, and by slug alone so a slug present in only one still does.
   const planByKey = new Map(plans.map((p) => [`${pathFamily(p)}:${planSlug(p)}`, p]));
+  const plansBySlug = new Map<string, string[]>();
+  for (const p of plans) {
+    const slug = planSlug(p);
+    plansBySlug.set(slug, [...(plansBySlug.get(slug) ?? []), p]);
+  }
   const approved = new Set(approvalPaths);
 
   return specs
@@ -103,7 +148,7 @@ export function pairSpecsAndPlans(
       const slug = specSlug(specPath);
       return {
         specPath,
-        planPath: planByKey.get(`${pathFamily(specPath)}:${slug}`) ?? null,
+        planPath: planFor(planByKey, plansBySlug, specPath, slug),
         // The spec path, not the slug, identifies a pair: two specs can share
         // a slug across the two trees, and a picker keyed on slug alone would
         // show them as one option.

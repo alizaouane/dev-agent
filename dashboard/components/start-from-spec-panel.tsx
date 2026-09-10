@@ -33,6 +33,10 @@ export function StartFromSpecPanel({
   const [error, setError] = useState<string | null>(null);
 
   const approved = useMemo(() => pairs.filter((p) => p.approved), [pairs]);
+  // Separate from "not approved". These are specs whose approval could not be
+  // read at all — a rate limit, an expired token. Folding them into the
+  // unapproved count would report an outage as a decision nobody made.
+  const unverified = useMemo(() => pairs.filter((p) => p.unverified).length, [pairs]);
   // Keyed on the spec path, not the slug: two specs can share a slug across
   // the legacy and superpowers trees, and a picker keyed on slug would render
   // them as one option and dispatch whichever it found first.
@@ -56,12 +60,31 @@ export function StartFromSpecPanel({
               the default branch, none of them approved.
             </>
           ) : null}
+          {unverified > 0 ? (
+            <>
+              {' '}
+              <span className="text-destructive">
+                {unverified} approval{unverified === 1 ? '' : 's'} could not be
+                read just now, so this list may be short. Reload in a moment.
+              </span>
+            </>
+          ) : null}
         </p>
       ) : (
         <>
           <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
             Files an issue and starts the implement workflow in one step. The spec
             and its plan are paired for you.
+            {unverified > 0 ? (
+              <>
+                {' '}
+                <span className="text-destructive">
+                  {unverified} further approval{unverified === 1 ? '' : 's'} could
+                  not be read just now and {unverified === 1 ? 'is' : 'are'} missing
+                  from this list. Reload in a moment.
+                </span>
+              </>
+            ) : null}
           </p>
           <form
             action={(formData) => {

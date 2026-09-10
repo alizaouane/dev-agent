@@ -55,7 +55,7 @@ describe('listSpecAndPlanFiles', () => {
   it('returns empty arrays when no spec/plan dirs exist', async () => {
     getContent.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
     const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
-    expect(result).toEqual({ specs: [], plans: [], approvals: [] });
+    expect(result).toEqual({ specs: [], plans: [], approvals: [], blobShas: {} });
   });
 
   it('separates approval artifacts from the specs they sit beside', async () => {
@@ -94,5 +94,27 @@ describe('listSpecAndPlanFiles', () => {
     const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
     expect(result.specs).toEqual(['docs/specs/a.md']);
     expect(result.plans).toEqual([]);
+  });
+  it('carries the blob SHA of every listed file, and only real ones', async () => {
+    // The SHAs come back free with the listing and let the approval verifier
+    // skip re-reading unchanged files. An entry without one is left out
+    // rather than keyed on undefined.
+    getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path === 'docs/superpowers/specs') {
+        return {
+          data: [
+            { type: 'file', name: 'a-design.md', sha: 'sha-a' },
+            { type: 'file', name: 'a-design.approval.json', sha: 'sha-appr' },
+            { type: 'file', name: 'b-design.md' },
+          ],
+        };
+      }
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
+    expect(result.blobShas).toEqual({
+      'docs/superpowers/specs/a-design.md': 'sha-a',
+      'docs/superpowers/specs/a-design.approval.json': 'sha-appr',
+    });
   });
 });
