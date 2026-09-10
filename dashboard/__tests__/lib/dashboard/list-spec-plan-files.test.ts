@@ -55,7 +55,29 @@ describe('listSpecAndPlanFiles', () => {
   it('returns empty arrays when no spec/plan dirs exist', async () => {
     getContent.mockRejectedValue(Object.assign(new Error('Not Found'), { status: 404 }));
     const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
-    expect(result).toEqual({ specs: [], plans: [] });
+    expect(result).toEqual({ specs: [], plans: [], approvals: [] });
+  });
+
+  it('separates approval artifacts from the specs they sit beside', async () => {
+    // They live in the same directory, so one listing returns both. The
+    // picker needs them to know which specs can actually start, and reading
+    // the directory twice for that would be a wasted round trip.
+    getContent.mockImplementation(async ({ path }: { path: string }) => {
+      if (path !== 'docs/superpowers/specs') {
+        throw Object.assign(new Error('Not Found'), { status: 404 });
+      }
+      return {
+        data: [
+          { type: 'file', name: '2026-09-09-a-design.md' },
+          { type: 'file', name: '2026-09-09-a-design.approval.json' },
+        ],
+      };
+    });
+    const result = await listSpecAndPlanFiles(octokit, 'x', 'y', 'main');
+    expect(result.specs).toEqual(['docs/superpowers/specs/2026-09-09-a-design.md']);
+    expect(result.approvals).toEqual([
+      'docs/superpowers/specs/2026-09-09-a-design.approval.json',
+    ]);
   });
 
   it('treats a non-404 error on one dir as that dir being empty (continues other dirs)', async () => {

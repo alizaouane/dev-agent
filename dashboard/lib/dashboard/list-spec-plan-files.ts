@@ -15,7 +15,7 @@ async function listFilesInDir(
     const { data } = await octokit.repos.getContent({ owner, repo, path, ref });
     if (!Array.isArray(data)) return [];
     return data
-      .filter((d) => d.type === 'file' && d.name.endsWith('.md'))
+      .filter((d) => d.type === 'file' && (d.name.endsWith('.md') || d.name.endsWith('.approval.json')))
       .map((d) => `${path}/${d.name}`);
   } catch {
     return [];
@@ -35,7 +35,7 @@ export async function listSpecAndPlanFiles(
   owner: string,
   repo: string,
   ref: string,
-): Promise<{ specs: string[]; plans: string[] }> {
+): Promise<{ specs: string[]; plans: string[]; approvals: string[] }> {
   const [specs, plans] = await Promise.all([
     Promise.all(SPEC_DIRS.map((d) => listFilesInDir(octokit, owner, repo, d, ref))).then(
       (r) => r.flat(),
@@ -44,5 +44,13 @@ export async function listSpecAndPlanFiles(
       (r) => r.flat(),
     ),
   ]);
-  return { specs, plans };
+  // Approval artifacts live beside the specs they cover, so they come back in
+  // the same listing. Split them out rather than fetching the directory twice:
+  // the picker needs to know which specs can actually start, and the gate
+  // reads exactly these files.
+  return {
+    specs: specs.filter((p) => p.endsWith('.md')),
+    plans: plans.filter((p) => p.endsWith('.md')),
+    approvals: specs.filter((p) => p.endsWith('.approval.json')),
+  };
 }
