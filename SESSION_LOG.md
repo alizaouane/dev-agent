@@ -1,5 +1,40 @@
 # Session Log
 
+## 2026-09-10 20:56 UTC — interactive — PR #160: one approved spec to start, and fourteen rounds of review
+
+**Trigger:** The picker offered two independent dropdowns, one of specs and one
+of plans, each defaulting to the first file in its own list — so a September
+spec sat beside a March plan with nothing to stop you dispatching that pair.
+
+**What changed:** [#160](https://github.com/alizaouane/dev-agent/pull/160),
+merged, `v1` moved to b2bbc88.
+
+- Specs and plans are paired on the shared dated slug, newest first, and only
+  approved pairs are offered. The approval artifact is authoritative on which
+  plan was approved when the filename convention is ambiguous.
+- Approval is re-derived by running the real gate rather than checking that an
+  artifact exists, cached on the blob SHAs the directory listing already
+  returns, and a pair whose approval could not be read is reported as
+  unverified rather than counted among the unapproved.
+- Start work dispatches the `state:spec-ready` issue intake already filed
+  instead of creating a second one, guarded the way the other dispatch button
+  is, and reconciles a stale `Plan:` line only after the gate allows.
+- `phase-implement` discards a dispatch whose work an earlier run already did,
+  keyed on the PR rather than a label the workflow writes best-effort, with a
+  one-shot label for deliberate retries. The consumer wrapper and the reusable
+  workflow both carry per-issue concurrency.
+
+**Deferred / Next:** The `specs_dir` in `.dev-agent.yml` still says
+`docs/specs` while the skills write to `docs/superpowers/specs`. `phase-acm.yml`
+uses the same loose spec grep and is ungated. `/proposals` counts spec and plan
+files as carry-over commitments.
+
+**Next session should start with:** The dashboard flow is the user's to drive —
+he writes and approves a spec in Claude Code, then presses Start work himself.
+Do not run the intake or the approval on his behalf.
+
+---
+
 ## 2026-09-09 16:20 UTC — interactive — Repo onboarding: probe readiness instead of tracking milestones
 
 **Trigger:** User: *"I will need some sort of repo onboarding in Dev Agent dashboard for when I start adding new project."*
