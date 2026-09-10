@@ -423,20 +423,33 @@ export async function installWorkflow(
     const repoData = await octokit.repos.get({ owner, repo });
     const default_branch = repoData.data.default_branch ?? 'main';
 
-    // Idempotency guard: refuse if the workflow file is already there
-    // (TOCTOU between the page render and the click). Distinguishes a
-    // genuine "missing" (404 → proceed) from any other error (re-throw,
-    // surface to user).
+    // Install OR upgrade. Refusing whenever the file exists left consumers
+    // with no way to receive a fix to a wrapper they already had — and a
+    // wrapper is the caller of a reusable workflow, so it caps that workflow's
+    // token permissions. A fix that cannot reach installed repos is not a fix:
+    // the missing `checks: read` that made every sweep fail could be corrected
+    // in the template and still leave every existing consumer broken.
+    //
+    // Identical content is still refused, so the button stays honest about
+    // having done nothing. A non-404 read error is re-thrown rather than
+    // treated as absent, which would overwrite a file we failed to read.
+    let existingSha: string | undefined;
     try {
-      await octokit.repos.getContent({
+      const { data } = await octokit.repos.getContent({
         owner,
         repo,
         path: spec.path,
         ref: default_branch,
       });
-      throw new Error(
-        `${spec.label} workflow is already installed at ${spec.path} on ${default_branch}.`,
-      );
+      if (!Array.isArray(data) && 'sha' in data && 'content' in data) {
+        existingSha = data.sha;
+        const current = Buffer.from(data.content, 'base64').toString('utf8');
+        if (current === spec.content) {
+          throw new Error(
+            `${spec.label} is already installed at ${spec.path} on ${default_branch}, and is up to date.`,
+          );
+        }
+      }
     } catch (err) {
       const status = (err as { status?: number }).status;
       if (status !== 404) throw err;
@@ -446,8 +459,9 @@ export async function installWorkflow(
       owner,
       repo,
       path: spec.path,
-      message: `chore(dev-agent): install ${spec.label} workflow`,
+      message: `chore(dev-agent): ${existingSha ? 'update' : 'install'} ${spec.label} workflow`,
       content: Buffer.from(spec.content, 'utf8').toString('base64'),
+      ...(existingSha ? { sha: existingSha } : {}),
     });
 
     void session_username;

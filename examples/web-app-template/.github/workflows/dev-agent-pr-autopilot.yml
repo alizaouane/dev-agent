@@ -45,6 +45,12 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # `statusCheckRollup` reads CheckRun and StatusContext nodes, and the token
+  # cannot see either without these. Without them `gh pr list` fails outright
+  # with "Resource not accessible by integration" — the sweep does not degrade
+  # to seeing no checks, it errors, so every PR goes untriaged.
+  checks: read
+  statuses: read
 
 jobs:
   autopilot:
