@@ -536,6 +536,68 @@ describe('dispatchFromSpec', () => {
     );
   });
 
+  it('refuses to re-dispatch an issue that has already moved past spec-ready', async () => {
+    // Reuse made this the same operation as dispatchExistingIssue, so it needs
+    // the same guard: without it the button queued a second implement run onto
+    // a feature branch that already had work on it.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:implementing' }, { name: 'kind:feature' }],
+      },
+    ]);
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('state:implementing') }),
+    );
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('refuses when a run is already in flight for the reused issue', async () => {
+    // A previous click whose dispatch succeeded but whose label flip failed
+    // leaves the issue at spec-ready with a run going. The label alone lies.
+    mockOctokit.paginate.mockResolvedValueOnce([
+      {
+        number: 77,
+        html_url: 'https://github.com/x/y/issues/77',
+        body: `Spec: ${APPROVED_SPEC}\nPlan: ${APPROVED_PLAN}\n`,
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:feature' }],
+      },
+    ]);
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
+      data: {
+        workflow_runs: [
+          {
+            id: 1,
+            status: 'in_progress',
+            display_title: 'implement → issue #77 (live)',
+            html_url: 'https://github.com/x/y/actions/runs/1',
+            created_at: new Date().toISOString(),
+          },
+        ],
+      },
+    });
+    const fd = new FormData();
+    fd.append('repo', 'x/y');
+    fd.append('spec_path', APPROVED_SPEC);
+    fd.append('plan_path', APPROVED_PLAN);
+    fd.append('title', 'Foo feature');
+    const { dispatchFromSpec } = await import('@/lib/actions');
+    const result = await dispatchFromSpec(fd);
+    expect(result).toEqual(
+      expect.objectContaining({ error: expect.stringContaining('active run') }),
+    );
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it('starts a planless spec, which quick-dev produces and the picker offers', async () => {
     // Requiring a plan made every "(no plan)" option unstartable while the
     // picker presented it as ready — a choice that could only fail.

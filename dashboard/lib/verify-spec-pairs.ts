@@ -2,7 +2,7 @@ import 'server-only';
 
 import type { Octokit } from '@octokit/rest';
 
-import { dispatchGateDecision, hashSpecAndPlan } from './spec-approval';
+import { dispatchGateDecision, hashSpecAndPlan, parseSpecApproval } from './spec-approval';
 import type { SpecPair } from './spec-pairs';
 
 /**
@@ -40,20 +40,32 @@ const BATCH = 25;
  */
 const CACHE_LIMIT = 2000;
 
+/** A cached decision, and the plan it was taken over. */
+interface CachedVerdict {
+  /** What the gate decided. */
+  approved: boolean;
+  /**
+   * The plan the approval named. Cached with the verdict because the panel
+   * dispatches this path, and re-deriving it from the filename convention on
+   * a cache hit would submit a different plan from the one that was verified.
+   */
+  planPath: string | null;
+}
+
 /**
  * Verdicts keyed by the content that produced them.
  *
  * Insertion-ordered, so evicting the oldest key is the whole eviction policy.
  */
-const verdictCache = new Map<string, boolean>();
+const verdictCache = new Map<string, CachedVerdict>();
 
 /**
  * Record a verdict against the content it was derived from.
  *
  * @param key - Content-addressed cache key.
- * @param verdict - What the gate decided.
+ * @param verdict - What the gate decided, and over which plan.
  */
-function cacheVerdict(key: string, verdict: boolean): void {
+function cacheVerdict(key: string, verdict: CachedVerdict): void {
   verdictCache.delete(key);
   verdictCache.set(key, verdict);
   while (verdictCache.size > CACHE_LIMIT) {
@@ -64,7 +76,7 @@ function cacheVerdict(key: string, verdict: boolean): void {
 }
 
 /**
- * Build the content-addressed key for a pair, when every blob SHA is known.
+ * Build the content-addressed key for a pair, when the SHAs allow one.
  *
  * The paths are part of the key, not just the bytes: the gate compares the
  * approval's recorded spec and plan paths against the ones being dispatched,
@@ -72,27 +84,48 @@ function cacheVerdict(key: string, verdict: boolean): void {
  * Keying on content alone would let the original path's `true` be reused for
  * the copy, and the picker would offer a pair the server gate then refuses.
  *
- * Missing any of the three SHAs means the key would not describe the content,
- * so there is no key and the pair is read rather than served from cache.
+ * Which plan gets read is decided by the approval, which is not known until it
+ * has been read — so the key covers every plan that shares the slug rather
+ * than only the paired one. An edit to any of them changes the key, whichever
+ * one the approval turns out to name.
  *
  * @param blobShas - Path-to-blob-SHA map from the directory listing.
  * @param specPath - The spec.
- * @param planPath - Its plan, or null.
+ * @param slug - Its shared `YYYY-MM-DD-<topic>` key.
  * @param approvalPath - The approval artifact beside the spec.
- * @returns The key, or null when a SHA is unknown.
+ * @returns The key, or null when the spec's or approval's SHA is unknown.
  */
 function cacheKey(
   blobShas: Record<string, string> | undefined,
   specPath: string,
-  planPath: string | null,
+  slug: string,
   approvalPath: string,
 ): string | null {
   if (!blobShas) return null;
   const spec = blobShas[specPath];
   const approval = blobShas[approvalPath];
-  const plan = planPath === null ? '-' : blobShas[planPath];
-  if (spec === undefined || approval === undefined || plan === undefined) return null;
-  return `${specPath}|${planPath ?? '-'}|${spec}:${plan}:${approval}`;
+  if (spec === undefined || approval === undefined) return null;
+  const plans = Object.keys(blobShas)
+    .filter((p) => p.endsWith(`/${slug}.md`))
+    .sort()
+    .map((p) => `${p}=${blobShas[p]}`)
+    .join(',');
+  return `${specPath}|${spec}|${approval}|${plans}`;
+}
+
+/**
+ * Whether a key actually describes the plan that ended up being read.
+ *
+ * An approval naming a plan outside the slug convention is not covered by the
+ * key, so its verdict must not be cached — the entry would survive edits to a
+ * file the key says nothing about.
+ *
+ * @param key - The key built for this pair.
+ * @param planPath - The plan the approval named, or null for none.
+ * @returns True when the verdict is safe to cache.
+ */
+function keyCoversPlan(key: string, planPath: string | null): boolean {
+  return planPath === null || key.includes(`${planPath}=`);
 }
 
 /**
@@ -125,6 +158,8 @@ interface Verdict {
   approved: boolean;
   /** True when a read failed for a reason other than the file being absent. */
   unverified: boolean;
+  /** The plan the approval actually names, which may not be the paired one. */
+  planPath?: string | null;
 }
 
 /**
@@ -142,7 +177,8 @@ interface Verdict {
  * @param pairs - Output of `pairSpecsAndPlans`.
  * @param blobShas - Optional path-to-blob-SHA map from the directory listing,
  *   used to serve unchanged pairs from cache instead of re-reading them.
- * @returns The same pairs, with `approved` reflecting what dispatch would do.
+ * @returns The same pairs, with `approved` reflecting what dispatch would do
+ *   and `planPath` set to the plan the approval names.
  */
 export async function verifySpecPairs(
   octokit: Octokit,
@@ -161,28 +197,41 @@ export async function verifySpecPairs(
 
   const verifyOne = async (pair: SpecPair): Promise<void> => {
     const approvalPath = `${pair.specPath.replace(/\.md$/, '')}.approval.json`;
-    const key = cacheKey(blobShas, pair.specPath, pair.planPath, approvalPath);
+    const key = cacheKey(blobShas, pair.specPath, pair.slug, approvalPath);
     if (key !== null) {
       const hit = verdictCache.get(key);
       if (hit !== undefined) {
-        verdicts.set(pair.key, { approved: hit, unverified: false });
+        verdicts.set(pair.key, {
+          approved: hit.approved,
+          unverified: false,
+          planPath: hit.planPath,
+        });
         return;
       }
     }
 
     try {
-      const [specText, planText, approvalRaw] = await Promise.all([
+      const [specText, approvalRaw] = await Promise.all([
         readText(octokit, owner, repo, pair.specPath, ref),
-        pair.planPath ? readText(octokit, owner, repo, pair.planPath, ref) : Promise.resolve(null),
         readText(octokit, owner, repo, approvalPath, ref),
       ]);
+
+      // The approval records which plan was approved, and it is the authority
+      // when the filename convention is ambiguous — a slug present in both
+      // trees mid-migration. Pairing picks the spec's own tree there, which
+      // is a guess; this is the recorded answer. Deferring to it also keeps
+      // the returned pair dispatchable, since the panel submits this path.
+      const parsed = approvalRaw === null ? null : parseSpecApproval(approvalRaw);
+      const planPath = parsed?.ok === true ? parsed.approval.plan_path : pair.planPath;
+
+      const planText = planPath ? await readText(octokit, owner, repo, planPath, ref) : null;
 
       // A named plan that is not there is not an empty plan. Hashing null like
       // an empty file would let an approved zero-byte plan keep matching after
       // deletion, and dispatch would refuse it afterwards.
-      if (specText === null || (pair.planPath !== null && planText === null)) {
-        verdicts.set(pair.key, { approved: false, unverified: false });
-        if (key !== null) cacheVerdict(key, false);
+      if (specText === null || (planPath !== null && planText === null)) {
+        verdicts.set(pair.key, { approved: false, unverified: false, planPath });
+        if (key !== null && keyCoversPlan(key, planPath)) cacheVerdict(key, { approved: false, planPath });
         return;
       }
 
@@ -190,10 +239,11 @@ export async function verifySpecPairs(
         approvalRaw,
         currentSpecHash: hashSpecAndPlan(specText, planText),
         specPath: pair.specPath,
-        planPath: pair.planPath,
+        planPath,
       });
-      verdicts.set(pair.key, { approved: decision.allow, unverified: false });
-      if (key !== null) cacheVerdict(key, decision.allow);
+      verdicts.set(pair.key, { approved: decision.allow, unverified: false, planPath });
+      if (key !== null && keyCoversPlan(key, planPath))
+        cacheVerdict(key, { approved: decision.allow, planPath });
     } catch {
       // A read we could not complete is not an approval, and it is not a
       // refusal either. Caching it would make one rate-limited render stick.
@@ -209,6 +259,11 @@ export async function verifySpecPairs(
 
   return pairs.map((p) => {
     const verdict = verdicts.get(p.key);
-    return { ...p, approved: verdict?.approved === true, unverified: verdict?.unverified === true };
+    return {
+      ...p,
+      approved: verdict?.approved === true,
+      unverified: verdict?.unverified === true,
+      planPath: verdict?.planPath !== undefined ? verdict.planPath : p.planPath,
+    };
   });
 }

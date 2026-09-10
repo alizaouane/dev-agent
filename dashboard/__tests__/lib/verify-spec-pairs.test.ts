@@ -264,4 +264,77 @@ describe('verifySpecPairs', () => {
     );
     expect(out[0].approved).toBe(false);
   });
+  it('uses the plan the approval names when both trees hold the slug', async () => {
+    // Pairing prefers the spec's own tree, which is a guess when a repo
+    // mid-migration has the slug in both. The approval recorded the answer,
+    // so the guess was refusing a valid approved pair on a path mismatch.
+    const LEGACY_PLAN = 'docs/plans/2026-09-09-a.md';
+    const out = await verify(
+      {
+        [SPEC]: SPEC_TEXT,
+        [LEGACY_PLAN]: PLAN_TEXT,
+        [APPROVAL]: approvalJson({ plan_path: LEGACY_PLAN }),
+      },
+      [pair({ planPath: PLAN })],
+    );
+    expect(out[0].approved).toBe(true);
+    expect(out[0].planPath).toBe(LEGACY_PLAN);
+  });
+
+  it('keeps the approved plan path on a cache hit', async () => {
+    // The panel dispatches this path. Re-deriving it from the filename
+    // convention on a hit would submit a plan nobody verified.
+    const LEGACY_PLAN = 'docs/plans/2026-09-09-b.md';
+    const SPEC_B = 'docs/superpowers/specs/2026-09-09-b-design.md';
+    const APPROVAL_B = 'docs/superpowers/specs/2026-09-09-b-design.approval.json';
+    const files = {
+      [SPEC_B]: SPEC_TEXT,
+      [LEGACY_PLAN]: PLAN_TEXT,
+      [APPROVAL_B]: JSON.stringify({
+        schema_version: 1,
+        spec_path: SPEC_B,
+        plan_path: LEGACY_PLAN,
+        spec_sha256: hashSpecAndPlan(SPEC_TEXT, PLAN_TEXT),
+        review_verdict: 'ok',
+        review_rounds: 1,
+        approved_by: 'ali@example.com',
+        approved_at: '2026-09-09T10:00:00.000Z',
+      }),
+    };
+    const shas = { [SPEC_B]: 's1', [LEGACY_PLAN]: 'p1', [APPROVAL_B]: 'a1' };
+    const p = pair({ specPath: SPEC_B, planPath: null, key: SPEC_B, slug: '2026-09-09-b' });
+    await verifySpecPairs(makeOctokit(files), 'q', 'r', 'main', [p], shas);
+    const second = makeOctokit(files);
+    const out = await verifySpecPairs(second, 'q', 'r', 'main', [p], shas);
+    expect(second.repos.getContent).not.toHaveBeenCalled();
+    expect(out[0].approved).toBe(true);
+    expect(out[0].planPath).toBe(LEGACY_PLAN);
+  });
+
+  it('misses the cache when a same-slug plan in the other tree changes', async () => {
+    // The approval decides which plan is read, and that is not known until it
+    // has been read. A key covering only the paired plan would serve a stale
+    // verdict after an edit to the one actually approved.
+    const OTHER = 'docs/plans/2026-09-09-a.md';
+    const files = {
+      [SPEC]: SPEC_TEXT,
+      [OTHER]: PLAN_TEXT,
+      [APPROVAL]: approvalJson({ plan_path: OTHER }),
+    };
+    const shas = { [SPEC]: 'sx', [PLAN]: 'py', [OTHER]: 'pz', [APPROVAL]: 'ax' };
+    const p = pair({ planPath: PLAN });
+    expect((await verifySpecPairs(makeOctokit(files), 'q', 'r', 'main', [p], shas))[0].approved).toBe(
+      true,
+    );
+    const edited = makeOctokit({
+      ...files,
+      [OTHER]: PLAN_TEXT + 'Task 2\n',
+    });
+    const out = await verifySpecPairs(edited, 'q', 'r', 'main', [p], {
+      ...shas,
+      [OTHER]: 'pz-edited',
+    });
+    expect(edited.repos.getContent).toHaveBeenCalled();
+    expect(out[0].approved).toBe(false);
+  });
 });

@@ -909,6 +909,34 @@ export async function dispatchFromSpec(
       findOpenIssueForSpec(octokit, owner, repo, spec_path),
     );
 
+    if (existing) {
+      // Same two guards `dispatchExistingIssue` applies, because this is now
+      // the same operation: dispatching an issue that already exists. Without
+      // them, reuse turned this button into an unguarded second dispatch onto
+      // a feature branch that already had work running on it.
+      if (!existing.labels.includes('state:spec-ready')) {
+        const currentState =
+          existing.labels.find((l) => l.startsWith('state:')) ?? 'unknown state';
+        return {
+          error: `work has already started on this spec — issue #${existing.number} is at ${currentState}`,
+          issue_url: existing.html_url,
+        };
+      }
+      // A previous click whose dispatch succeeded but whose label flip failed
+      // leaves the issue at state:spec-ready with a run in flight. Reading
+      // that label alone would queue a duplicate run against the same branch.
+      const activeRuns = await wrapStep('checking for runs already in flight', () =>
+        fetchActiveRunsForIssue(octokit, owner, repo, existing.number),
+      );
+      if (activeRuns.length > 0) {
+        const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
+        return {
+          error: `dispatch refused — issue #${existing.number} already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish.`,
+          issue_url: existing.html_url,
+        };
+      }
+    }
+
     // Gated against whatever will actually be dispatched. On the reuse path
     // that is the real issue, so an `spec-approval:override` label a human put
     // on it counts — on the create path there is no issue and no override, and
