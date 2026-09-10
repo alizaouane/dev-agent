@@ -144,12 +144,22 @@ describe('pr-autopilot.yml', () => {
     expect(raw).toMatch(/group: pr-autopilot-/);
   });
 
-  it('asks for no more permission than it uses', () => {
+  it('asks for no more permission than it uses, and no less', () => {
     // The sweep reads state and writes one comment. Pushing is the fixer's
     // job, under the fixer's own permissions.
     expect(raw).toMatch(/contents: read/);
     expect(raw).toMatch(/pull-requests: write/);
     expect(raw).not.toMatch(/contents: write/);
+  });
+
+  it('can read checks and statuses, which statusCheckRollup needs', () => {
+    // Least privilege was one permission short. Without these, `gh pr list`
+    // fails outright with "Resource not accessible by integration" — it does
+    // not degrade to seeing no checks, it errors, so nothing gets triaged at
+    // all. Found by running the sweep against a real repo rather than
+    // assuming it worked.
+    expect(raw).toMatch(/checks: read/);
+    expect(raw).toMatch(/statuses: read/);
   });
 
   it('honours a per-PR kill switch', () => {
