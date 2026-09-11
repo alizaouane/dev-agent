@@ -114,9 +114,17 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root.
+      # persist-credentials: false, because this job grants `contents: write`
+      # and runs an agent with Bash against a prompt that carries the issue
+      # title. Left at its default the checkout writes the job token into git
+      # config, so a prompt-injected title has everything it needs to push.
+      # The prompt's "do not push" rule is an instruction, not a boundary.
+      # The session-log step below gets its own credential instead.
       - uses: actions/checkout@v4
         if: steps.slot.outputs.overtaken != 'true'
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       # Engine repo with the dev-agent CLIs + prompt templates this
       # workflow invokes. See phase-implement.yml for rationale.
@@ -127,6 +135,8 @@ jobs:
           repository: alizaouane/dev-agent
           ref: main
           path: .dev-agent-engine
+          # Nothing pushes to the engine checkout; it only needs the files.
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         if: steps.slot.outputs.overtaken != 'true'
@@ -321,6 +331,7 @@ jobs:
           OUTCOME: ${{ steps.parse.outputs.phase_outcome || 'aborted' }}
           NEXT_SESSION_HINT: ${{ steps.parse.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
           TRIGGER: 'PR merged to default branch — staging deploy + smoke verify run.'
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
@@ -332,4 +343,9 @@ jobs:
           git config user.email 'dev-agent@users.noreply.github.com'
           git add SESSION_LOG.md
           git commit -m "chore(dev-agent): session log — staging-deploy issue #${ISSUE_NUMBER}"
-          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"
+          # The checkout no longer carries a credential, so this push brings
+          # its own. It runs after the agent has finished, which is the point:
+          # write access exists for the length of one command rather than for
+          # the length of the job.
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD \
+            || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

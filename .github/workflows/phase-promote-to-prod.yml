@@ -115,6 +115,12 @@ jobs:
           MODEL=$(jq -r '.model' result.json)
           BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: NOT IMPLEMENTED — this phase renders a promotion plan and does not execute it. Nothing has been deployed to production. Promote by hand until it is built.\n' "$MODEL" "$INVOCATION_MODE")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          # The gate set state:promoting on the way in. Exiting without
+          # touching it leaves the issue in a state the dashboard reads as in
+          # flight, with no gate offering a retry — wedged rather than failed.
+          # state:blocked is what phase-staging-deploy uses for the same
+          # situation, and it is a state a person can act on.
+          gh issue edit "$ISSUE_NUMBER" --remove-label state:promoting --add-label state:blocked || true
           echo "::error::phase-promote-to-prod is not implemented; nothing was deployed to production"
           exit 1
 

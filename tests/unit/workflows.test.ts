@@ -676,6 +676,24 @@ describe('.github/workflows/', () => {
       expect(guards.length).toBe(steps.length - 1);
     });
 
+    it('does not leave a push credential in git config for the agent', () => {
+      // This job grants contents: write, the issue title reaches the prompt
+      // unwrapped, and the live agent has Bash. A checkout that persists the
+      // token by default hands a prompt-injected title everything it needs to
+      // push. The prompt's "do not push" instruction is not a boundary.
+      const checkouts = raw.match(/uses: actions\/checkout@v4[\s\S]{0,240}?(?=\n      - |\n      #)/g) ?? [];
+      expect(checkouts.length).toBeGreaterThanOrEqual(2);
+      for (const c of checkouts) {
+        expect(c, c.slice(0, 80)).toMatch(/persist-credentials: false/);
+      }
+    });
+
+    it('gives the session-log push its own credential', () => {
+      // The push is the one thing in the job that legitimately needs write
+      // access, and it runs after the agent has finished.
+      expect(raw).toMatch(/x-access-token/);
+    });
+
     it('lists the state staging-deploy starts from, not the ones it does not', () => {
       // Same inversion as phase-implement: name the state it runs from, so a
       // state added later is refused rather than waved through.
@@ -713,6 +731,15 @@ describe('.github/workflows/', () => {
       // Better a visibly failed run than an issue advancing to a state that
       // implies production off the back of a comment nobody earned.
       expect(promoteStep).toMatch(/^\s+exit 1$/m);
+    });
+
+    it('moves the issue to a failure state instead of leaving it promoting', () => {
+      // The gate sets state:promoting and this phase exits 1 without touching
+      // the label, so the issue sits in a state the dashboard reads as in
+      // flight, with no gate offering a retry. state:blocked is what
+      // phase-staging-deploy uses for the same situation.
+      expect(promoteStep).toMatch(/--add-label state:blocked/);
+      expect(promoteStep).toMatch(/--remove-label state:promoting/);
     });
 
     it('does not log a success outcome for a run that failed', () => {
