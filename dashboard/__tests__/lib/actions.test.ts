@@ -190,7 +190,7 @@ describe('approveGate', () => {
     fd.append('repo', 'q/r');
     fd.append('issue', '1');
     fd.append('promote', '1');
-    await expect(approveGate(fd)).rejects.toThrow(/cannot promote/);
+    expect(await approveGate(fd)).toEqual({ error: expect.stringContaining('cannot promote') });
   });
 
   it('dispatches implement when it approves spec-ready', async () => {
@@ -241,7 +241,11 @@ describe('approveGate', () => {
     fd.append('repo', 'q/r');
     fd.append('issue', '5');
     fd.append('promote', '0');
-    await expect(approveGate(fd)).rejects.toThrow(/work cannot start/);
+    // Returned, not thrown: the inbox calls this as a bare form action, so a
+    // throw renders the error boundary instead of telling the operator why.
+    expect(await approveGate(fd)).toEqual({
+      error: expect.stringContaining('work cannot start'),
+    });
     expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 
@@ -320,8 +324,30 @@ describe('approveGate', () => {
     fd.append('repo', 'q/r');
     fd.append('issue', '7');
     fd.append('promote', '0');
-    await expect(approveGate(fd)).rejects.toThrow(/active run/);
+    expect(await approveGate(fd)).toEqual({ error: expect.stringContaining('active run') });
     expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('leaves the staging label to the phase that decides it', async () => {
+    // phase-staging-deploy picks staging-deployed or blocked from its smoke
+    // result. Setting the success label here leaves the failure path adding
+    // state:blocked beside a label it can no longer remove.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    await approveGate(fd);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
     expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 
@@ -344,7 +370,7 @@ describe('approveGate', () => {
     fd.append('repo', 'q/r');
     fd.append('issue', '7');
     fd.append('promote', '0');
-    await expect(approveGate(fd)).rejects.toThrow();
+    expect(await approveGate(fd)).toEqual({ error: expect.any(String) });
     expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 });

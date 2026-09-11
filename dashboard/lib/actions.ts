@@ -127,8 +127,33 @@ export async function dropIntent(formData: FormData): Promise<void> {
  *  - `repo`    — `owner/name`
  *  - `issue`   — issue number (string, parsed)
  *  - `promote` — `'1'` to use the promote gate, anything else for non-promote
+ *
+ * Returns `{ error }` for anything the operator can act on rather than
+ * throwing, because the inbox renders this as a plain form action.
  */
-export async function approveGate(formData: FormData): Promise<void> {
+export async function approveGate(formData: FormData): Promise<{ error: string } | void> {
+  try {
+    return await runApproveGate(formData);
+  } catch (e) {
+    // Returned rather than thrown. The inbox calls this as a bare form
+    // action, so a throw renders the error boundary and the operator is told
+    // nothing. Every refusal here is one they can act on — an edited spec, a
+    // run still going — and the other two dispatch routes already report
+    // theirs inline.
+    const message = e instanceof Error ? e.message : String(e);
+    if (message.includes('NEXT_REDIRECT')) throw e;
+    console.error('[approveGate] failed', { message, raw: e });
+    return { error: message };
+  }
+}
+
+/**
+ * The body of {@link approveGate}, so its refusals can be caught in one place.
+ *
+ * @param formData - Same fields the action documents.
+ * @throws On any refusal or API failure; the caller turns that into `{ error }`.
+ */
+async function runApproveGate(formData: FormData): Promise<void> {
   const session_username = await getCurrentUsername();
   const octokit = await getOctokit();
   const repoFull = formData.get('repo') as string;
@@ -153,7 +178,7 @@ export async function approveGate(formData: FormData): Promise<void> {
   if (!transition) {
     throw new Error(`cannot ${promote ? 'promote' : 'approve'} from ${currentState}`);
   }
-  const { to: nextState, phase } = transition;
+  const { to: nextState, phase, setsStateHere } = transition;
 
   const repoData = await octokit.repos.get({ owner, repo });
   const default_branch = repoData.data.default_branch;
@@ -202,13 +227,20 @@ export async function approveGate(formData: FormData): Promise<void> {
     },
   });
 
-  const newLabels = labels.filter((l) => !l.startsWith('state:')).concat(nextState);
-  await octokit.issues.setLabels({ owner, repo, issue_number, labels: newLabels });
+  // Only where no phase owns the outcome. `phase-staging-deploy` moves the
+  // issue off `state:pr-review` to staging-deployed or blocked depending on
+  // its smoke; writing the success label here would leave the failure path
+  // adding `state:blocked` beside a label it can no longer remove, and the
+  // issue carrying two states.
+  if (setsStateHere) {
+    const newLabels = labels.filter((l) => !l.startsWith('state:')).concat(nextState);
+    await octokit.issues.setLabels({ owner, repo, issue_number, labels: newLabels });
+  }
   await octokit.issues.createComment({
     owner,
     repo,
     issue_number,
-    body: `🛂 Approved at ${promote ? '\`--promote\`' : 'gate'} by @${session_username} at ${new Date().toISOString()}.`,
+    body: `🛂 Approved at ${promote ? '\`--promote\`' : 'gate'} by @${session_username} at ${new Date().toISOString()}. Dispatched \`${phase}\`.`,
   });
 
   revalidatePath('/');

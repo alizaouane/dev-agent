@@ -55,4 +55,17 @@ describe('gate transitions match the orchestrator spec', () => {
     expect(transitionFor('state:done', false)).toBeUndefined();
     expect(transitionFor('state:spec-ready', true)).toBeUndefined();
   });
+
+  it('leaves the state to the workflow when the workflow sets it', () => {
+    // phase-staging-deploy ends with `gh issue edit --remove-label
+    // state:pr-review --add-label <state:staging-deployed|state:blocked>`.
+    // If the dashboard has already applied the success label, the failure
+    // path adds state:blocked beside it and the issue carries two.
+    expect(transitionFor('state:pr-review', false)!.setsStateHere).toBe(false);
+  });
+
+  it('sets the state itself where no workflow does', () => {
+    expect(transitionFor('state:spec-ready', false)!.setsStateHere).toBe(true);
+    expect(transitionFor('state:ready-to-promote', true)!.setsStateHere).toBe(true);
+  });
 });

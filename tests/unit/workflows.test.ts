@@ -669,6 +669,13 @@ describe('.github/workflows/', () => {
       // implies production off the back of a comment nobody earned.
       expect(raw).toMatch(/exit 1/);
     });
+
+    it('does not log a success outcome for a run that failed', () => {
+      // The SESSION_LOG step is `always()`, so a hardcoded OUTCOME writes
+      // "promote-to-prod — success" into the record the PM agent reads as its
+      // primary grounding source, for a phase that deployed nothing.
+      expect(raw).not.toMatch(/OUTCOME: success/);
+    });
   });
 
   describe('phase-implement.yml — duplicate-dispatch gate', () => {

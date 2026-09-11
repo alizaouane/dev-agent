@@ -123,9 +123,13 @@ jobs:
         env:
           PHASE: promote-to-prod
           ISSUE_NUMBER: ${{ inputs.issue_number }}
-          OUTCOME: success
+          # Read from the job, not asserted. This step is `always()`, so a
+          # hardcoded value wrote "success" into the log for the run that had
+          # just failed — the same canned claim removed from the comment
+          # above, surviving in the record the PM agent grounds itself on.
+          OUTCOME: ${{ job.status }}
           TRIGGER: 'Staging → release_target promotion approved by user.'
-          NEXT_SESSION_HINT: 'manual smoke on production once the promote PR merges and the deploy completes.'
+          NEXT_SESSION_HINT: 'promotion to production is not implemented — promote by hand and record what you did.'
         run: |
           set -euo pipefail
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
