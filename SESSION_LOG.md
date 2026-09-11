@@ -1,5 +1,51 @@
 # Session Log
 
+## 2026-09-11 05:42 UTC — interactive — Audit: the release path set labels and did none of the work
+
+**Trigger:** "check the whole dev agent code and ensure all features are active
+and work properly, I want to stop having to find issue there and there."
+
+**What changed:** [#161](https://github.com/alizaouane/dev-agent/pull/161),
+merged as d0ccf5a. CI and the dashboard deploy are green on main. No tag move —
+nothing here is referenced at `@v1`, so the phase changes were live on merge.
+
+The audit found one defect repeated at every gate: the dashboard set a state
+label and performed none of the work the label reports.
+
+- Approving in the inbox flipped `state:spec-ready` to `state:implementing`,
+  dispatched nothing, and skipped the spec-approval check the other two routes
+  into implement enforce. It is the main surface for starting work and it
+  started none.
+- Approving after merge set `state:staging-deployed` without deploying.
+- Promoting set `state:promoting` without promoting.
+- The dashboard merge button left unresolved review threads to GitHub, which
+  only enforces them where branch protection says so.
+- `phase-promote-to-prod` renders a promotion plan, discards it, and used to
+  comment a canned success — in the issue and in this log.
+
+All fixed except the promotion itself, which now reports that it is
+unimplemented and fails. The gate table moved to `dashboard/lib/gate-transitions.ts`
+and a test holds it against the transition table in `skills/orchestrator/SKILL.md`,
+so a documented row with no code behind it fails the build.
+
+**Deferred / Next:**
+
+- Production promotion is unbuilt. Making it real needs a decision about what
+  promotion means per repo — probably merging `branches.release_target` and
+  running `deploy_skills.prod`.
+- `phase-smoke-verify.yml` is orphaned: no wrapper references it, nothing calls it.
+- The unfinished-work and cleanup scouts have no schedule in the wire-up
+  template — manual only. Believed deliberate after the 2026-06-27 cost cut.
+- CodeRabbit does not auto-review this repo (under 10 stars) and its check
+  still reports green when it has not run. Codex is out of review quota on
+  this account. Both reviewers were absent on #161 until triggered by hand.
+
+**Next session should start with:** the dashboard flow is the user's to drive —
+he writes and approves a spec in Claude Code, then presses Start work himself.
+Do not run the intake or the approval on his behalf.
+
+---
+
 ## 2026-09-10 20:56 UTC — interactive — PR #160: one approved spec to start, and fourteen rounds of review
 
 **Trigger:** The picker offered two independent dropdowns, one of specs and one
