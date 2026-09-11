@@ -8,6 +8,24 @@ const mockOctokit = {
   // Serves both the issue listing and the strict active-run scan. Issue
   // fixtures are queued with mockResolvedValueOnce; anything else falls
   // through to the workflow runs the test has staged.
+  graphql: vi.fn(
+    async (): Promise<{
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: boolean; endCursor: string | null };
+            nodes: Array<{ isResolved: boolean }>;
+          };
+        };
+      };
+    }> => ({
+      repository: {
+        pullRequest: {
+          reviewThreads: { pageInfo: { hasNextPage: false, endCursor: null }, nodes: [] },
+        },
+      },
+    }),
+  ),
   paginate: vi.fn(
     async () => (await mockOctokit.actions.listWorkflowRuns()).data.workflow_runs as unknown[],
   ),
@@ -129,9 +147,24 @@ describe('dropIntent', () => {
 });
 
 describe('approveGate', () => {
+  beforeEach(() => {
+    // Approving dispatches a phase, and the dispatch is guarded by the
+    // strict active-run check. Default to a repo with nothing in flight.
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValue({
+      data: { workflow_runs: [], total_count: 0 },
+    });
+  });
+
   it('promotes spec-ready → implementing', async () => {
+    // Approving now also runs the approval check and dispatches the phase,
+    // so the fixture needs an approved spec on the branch.
+    stubApprovedSpecOnBranch();
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
     mockOctokit.issues.get.mockResolvedValue({
-      data: { labels: [{ name: 'state:spec-ready' }, { name: 'kind:user-intent' }] },
+      data: {
+        labels: [{ name: 'state:spec-ready' }, { name: 'kind:user-intent' }],
+        body: APPROVED_BODY,
+      },
     });
     const { approveGate } = await import('@/lib/actions');
     const fd = new FormData();
@@ -157,7 +190,212 @@ describe('approveGate', () => {
     fd.append('repo', 'q/r');
     fd.append('issue', '1');
     fd.append('promote', '1');
-    await expect(approveGate(fd)).rejects.toThrow(/cannot promote/);
+    expect(await approveGate(fd)).toEqual({ error: expect.stringContaining('cannot promote') });
+  });
+
+  it('dispatches implement when it approves spec-ready', async () => {
+    // The label says work started. Without the dispatch nothing runs, so the
+    // issue sits at state:implementing with no run behind it — a state label
+    // reporting something that never happened.
+    stubApprovedSpecOnBranch();
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 5,
+        labels: [{ name: 'state:spec-ready' }],
+        body: APPROVED_BODY,
+        html_url: 'https://github.com/q/r/issues/5',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '5');
+    fd.append('promote', '0');
+    await approveGate(fd);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workflow_id: 'dev-agent.yml',
+        inputs: expect.objectContaining({ phase: 'implement', issue_number: '5' }),
+      }),
+    );
+  });
+
+  it('refuses to approve a spec-ready issue with no recorded approval', async () => {
+    // Every other route into implement checks this. An unchecked one beside
+    // them is a second front door standing next to a locked one.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.repos.getContent.mockImplementation(async () => {
+      throw Object.assign(new Error('Not Found'), { status: 404 });
+    });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 5,
+        labels: [{ name: 'state:spec-ready' }],
+        body: APPROVED_BODY,
+        html_url: 'https://github.com/q/r/issues/5',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '5');
+    fd.append('promote', '0');
+    // Returned, not thrown: the inbox calls this as a bare form action, so a
+    // throw renders the error boundary instead of telling the operator why.
+    expect(await approveGate(fd)).toEqual({
+      error: expect.stringContaining('work cannot start'),
+    });
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('dispatches the staging deploy when it approves pr-review', async () => {
+    // state:staging-deployed claims a deployment. Flipping the label without
+    // dispatching the phase makes the claim without doing the deploy.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    await approveGate(fd);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputs: expect.objectContaining({ phase: 'staging-deploy', issue_number: '7' }),
+      }),
+    );
+  });
+
+  it('dispatches the promotion when it approves ready-to-promote', async () => {
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 9,
+        labels: [{ name: 'state:ready-to-promote' }],
+        html_url: 'https://github.com/q/r/issues/9',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '9');
+    fd.append('promote', '1');
+    await approveGate(fd);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputs: expect.objectContaining({ phase: 'promote-to-prod', issue_number: '9' }),
+      }),
+    );
+  });
+
+  it('refuses when a run is already in flight for the issue', async () => {
+    // Every other dispatch route checks this. A new one beside them without
+    // the guard puts a second agent on a branch already being worked.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    const inFlight = [
+      {
+        id: 1,
+        status: 'in_progress',
+        display_title: 'staging-deploy → issue #7 (live)',
+        html_url: 'https://github.com/q/r/actions/runs/1',
+        created_at: new Date().toISOString(),
+      },
+    ];
+    mockOctokit.actions.listWorkflowRuns.mockResolvedValueOnce({
+      data: { workflow_runs: inFlight, total_count: 1 },
+    });
+    mockOctokit.paginate.mockResolvedValueOnce(inFlight);
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    expect(await approveGate(fd)).toEqual({ error: expect.stringContaining('active run') });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('refuses an issue carrying two state labels', async () => {
+    // labels.find() picks by array order, so a half-applied flip would have
+    // this dispatch whichever phase happened to be listed first and then
+    // strip both labels — starting the wrong work and recording the wrong
+    // next state.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }, { name: 'state:implementing' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    expect(await approveGate(fd)).toEqual({
+      error: expect.stringContaining('state:implementing'),
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
+  it('leaves the staging label to the phase that decides it', async () => {
+    // phase-staging-deploy picks staging-deployed or blocked from its smoke
+    // result. Setting the success label here leaves the failure path adding
+    // state:blocked beside a label it can no longer remove.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    await approveGate(fd);
+    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
+  });
+
+  it('leaves the state alone when the dispatch fails', async () => {
+    // A label flipped past a dispatch that never landed is the same lie in
+    // the other direction: the issue reports progress nothing is making.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    mockOctokit.actions.createWorkflowDispatch.mockRejectedValueOnce(
+      Object.assign(new Error('workflow not found'), { status: 404 }),
+    );
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    expect(await approveGate(fd)).toEqual({ error: expect.any(String) });
+    expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 });
 
@@ -2049,6 +2287,44 @@ describe('cancelRun', () => {
 });
 
 describe('mergeFeaturePR', () => {
+  /** One page of review threads with the given resolved states. */
+  const threads = (...resolved: boolean[]) => ({
+    repository: {
+      pullRequest: {
+        reviewThreads: {
+          pageInfo: { hasNextPage: false, endCursor: null },
+          nodes: resolved.map((isResolved) => ({ isResolved })),
+        },
+      },
+    },
+  });
+
+  it('refuses to merge over an unresolved review thread', async () => {
+    // Handing the decision to GitHub only refuses what branch protection
+    // makes it refuse, so on a repo without that rule this merged straight
+    // over open review feedback.
+    mockOctokit.graphql.mockResolvedValueOnce(threads(true, false));
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    const result = await mergeFeaturePR(fd);
+    expect(result).toEqual({ error: expect.stringContaining('unresolved') });
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+
+  it('refuses when it cannot read the review threads', async () => {
+    // Zero because the query failed is not zero unresolved threads.
+    mockOctokit.graphql.mockRejectedValueOnce(new Error('Bad credentials'));
+    const { mergeFeaturePR } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('pr_number', '50');
+    const result = await mergeFeaturePR(fd);
+    expect(result).toEqual({ error: expect.any(String) });
+    expect(mockOctokit.pulls.merge).not.toHaveBeenCalled();
+  });
+
   it('squashes by default', async () => {
     mockOctokit.pulls.merge.mockResolvedValueOnce({});
     const { mergeFeaturePR } = await import('@/lib/actions');

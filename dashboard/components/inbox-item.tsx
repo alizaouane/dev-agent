@@ -4,7 +4,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { renderStateBadgeContent } from '@/lib/state-label';
 import type { FeatureItem } from '@/lib/pipeline';
-import { approveGate, abandonFeature } from '@/lib/actions';
+import { abandonFeature } from '@/lib/actions';
+import { InboxApproveButton } from '@/components/inbox-approve-button';
 
 function ageLabel(seconds: number): string {
   if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
@@ -49,14 +50,12 @@ export function InboxItem({ item }: { item: FeatureItem }) {
         </div>
         <div className="flex flex-shrink-0 gap-2">
           {actionLabel(item.state) && (
-            <form action={approveGate}>
-              <input type="hidden" name="repo" value={item.repo} />
-              <input type="hidden" name="issue" value={item.issue_number} />
-              <input type="hidden" name="promote" value={isPromote ? '1' : '0'} />
-              <Button type="submit" size="sm">
-                {actionLabel(item.state)}
-              </Button>
-            </form>
+            <InboxApproveButton
+              repo={item.repo}
+              issue={item.issue_number}
+              promote={isPromote}
+              label={actionLabel(item.state)}
+            />
           )}
           <form action={abandonFeature}>
             <input type="hidden" name="repo" value={item.repo} />

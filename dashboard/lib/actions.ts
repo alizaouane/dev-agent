@@ -30,6 +30,8 @@ import { resolveProposal } from './scout/resolve';
 import { evictRecommendationsForUser } from './next-cache';
 import { fetchActiveRunsForIssue } from './active-runs';
 import { evaluateSpecApproval } from './spec-approval-gate';
+import { countUnresolvedThreads } from './pr-review-threads';
+import { transitionFor } from './gate-transitions';
 import {
   FORCE_IMPLEMENT_LABEL,
   findIssuesForSpec,
@@ -125,8 +127,33 @@ export async function dropIntent(formData: FormData): Promise<void> {
  *  - `repo`    — `owner/name`
  *  - `issue`   — issue number (string, parsed)
  *  - `promote` — `'1'` to use the promote gate, anything else for non-promote
+ *
+ * Returns `{ error }` for anything the operator can act on rather than
+ * throwing, because the inbox renders this as a plain form action.
  */
-export async function approveGate(formData: FormData): Promise<void> {
+export async function approveGate(formData: FormData): Promise<{ error: string } | void> {
+  try {
+    return await runApproveGate(formData);
+  } catch (e) {
+    // Returned rather than thrown. The inbox calls this as a bare form
+    // action, so a throw renders the error boundary and the operator is told
+    // nothing. Every refusal here is one they can act on — an edited spec, a
+    // run still going — and the other two dispatch routes already report
+    // theirs inline.
+    const message = e instanceof Error ? e.message : String(e);
+    if (message.includes('NEXT_REDIRECT')) throw e;
+    console.error('[approveGate] failed', { message, raw: e });
+    return { error: message };
+  }
+}
+
+/**
+ * The body of {@link approveGate}, so its refusals can be caught in one place.
+ *
+ * @param formData - Same fields the action documents.
+ * @throws On any refusal or API failure; the caller turns that into `{ error }`.
+ */
+async function runApproveGate(formData: FormData): Promise<void> {
   const session_username = await getCurrentUsername();
   const octokit = await getOctokit();
   const repoFull = formData.get('repo') as string;
@@ -140,22 +167,91 @@ export async function approveGate(formData: FormData): Promise<void> {
   const labels = issue.data.labels
     .map((l) => (typeof l === 'string' ? l : l.name))
     .filter(Boolean) as string[];
-  const currentState = labels.find((l) => l.startsWith('state:'));
-  if (!currentState) throw new Error('issue has no state:* label');
+  // Exactly one, not the first one found. A half-applied flip leaves two, and
+  // picking by array order would dispatch whichever phase happened to be
+  // listed first and then strip both labels — starting the wrong work and
+  // recording the wrong next state. The implement workflow's own gate applies
+  // the same rule for the same reason.
+  const currentStates = labels.filter((l) => l.startsWith('state:'));
+  if (currentStates.length === 0) throw new Error('issue has no state:* label');
+  if (currentStates.length > 1) {
+    throw new Error(
+      `issue #${issue_number} carries ${currentStates.length} state labels (${currentStates.join(', ')}); resolve that before approving`,
+    );
+  }
+  const currentState = currentStates[0];
 
-  let nextState: string | null = null;
-  if (promote && currentState === 'state:ready-to-promote') nextState = 'state:promoting';
-  else if (!promote && currentState === 'state:spec-ready') nextState = 'state:implementing';
-  else if (!promote && currentState === 'state:pr-review') nextState = 'state:staging-deployed';
-  if (!nextState) throw new Error(`cannot ${promote ? 'promote' : 'approve'} from ${currentState}`);
+  // Each gate names the phase it starts, and the table it comes from is held
+  // against the orchestrator spec by a test. A gate that only moved the label
+  // announced work nobody had run: `state:staging-deployed` claimed a
+  // deployment, `state:implementing` claimed an agent, and neither happened.
+  const transition = transitionFor(currentState, promote);
+  if (!transition) {
+    throw new Error(`cannot ${promote ? 'promote' : 'approve'} from ${currentState}`);
+  }
+  const { to: nextState, phase, setsStateHere } = transition;
 
-  const newLabels = labels.filter((l) => !l.startsWith('state:')).concat(nextState);
-  await octokit.issues.setLabels({ owner, repo, issue_number, labels: newLabels });
+  const repoData = await octokit.repos.get({ owner, repo });
+  const default_branch = repoData.data.default_branch;
+
+  // The same approval check the other two routes into implement run. This one
+  // sat beside them unchecked, which made it a second front door next to a
+  // locked one — an unapproved spec could be walked to state:implementing
+  // from the inbox.
+  if (phase === 'implement') {
+    const gate = await evaluateSpecApproval({
+      octokit,
+      owner,
+      repo,
+      ref: default_branch,
+      issueBody: issue.data.body ?? '',
+      labels,
+    });
+    if (!gate.allow) throw new Error(`work cannot start — ${gate.message}`);
+  }
+
+  // The same idempotency guard the other dispatch routes run. Strict, because
+  // a run list this cannot read is not an empty one — and a second agent on a
+  // branch already being worked is the failure it exists to prevent.
+  const activeRuns = await fetchActiveRunsForIssue(octokit, owner, repo, issue_number, {
+    strict: true,
+  });
+  if (activeRuns.length > 0) {
+    const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
+    throw new Error(
+      `dispatch refused — issue #${issue_number} already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish.`,
+    );
+  }
+
+  // Dispatch first, then record it. A label flipped past a dispatch that never
+  // landed reports progress nothing is making, which is the same failure as
+  // the label without the dispatch.
+  await octokit.actions.createWorkflowDispatch({
+    owner,
+    repo,
+    workflow_id: 'dev-agent.yml',
+    ref: default_branch,
+    inputs: {
+      phase,
+      issue_number: String(issue_number),
+      invocation_mode: 'live',
+    },
+  });
+
+  // Only where no phase owns the outcome. `phase-staging-deploy` moves the
+  // issue off `state:pr-review` to staging-deployed or blocked depending on
+  // its smoke; writing the success label here would leave the failure path
+  // adding `state:blocked` beside a label it can no longer remove, and the
+  // issue carrying two states.
+  if (setsStateHere) {
+    const newLabels = labels.filter((l) => !l.startsWith('state:')).concat(nextState);
+    await octokit.issues.setLabels({ owner, repo, issue_number, labels: newLabels });
+  }
   await octokit.issues.createComment({
     owner,
     repo,
     issue_number,
-    body: `🛂 Approved at ${promote ? '\`--promote\`' : 'gate'} by @${session_username} at ${new Date().toISOString()}.`,
+    body: `🛂 Approved at ${promote ? '\`--promote\`' : 'gate'} by @${session_username} at ${new Date().toISOString()}. Dispatched \`${phase}\`.`,
   });
 
   revalidatePath('/');
@@ -1674,8 +1770,11 @@ export async function cancelRun(
  * page's PR panel so the operator can ship a dev-agent PR without
  * leaving the dashboard.
  *
- * Defensive: requires write permission, refuses if the PR isn't
- * mergeable (conflicts, failing checks). The caller decides which
+ * Defensive: requires write permission, refuses while any review thread is
+ * unresolved, and surfaces GitHub's own refusal when the PR is not mergeable
+ * (conflicts, failing checks). The thread check is ours because GitHub only
+ * enforces it where branch protection says to, and the rule here is that open
+ * review feedback blocks a merge in every repo. The caller decides which
  * `merge_method` (squash by default — matches the engine's release
  * convention).
  *
@@ -1703,6 +1802,17 @@ export async function mergeFeaturePR(
 
     const [owner, repo] = repoFull.split('/');
     await assertWritePermission(octokit, owner, repo, session_username);
+
+    // Checked here rather than left to GitHub. GitHub refuses only what
+    // branch protection makes it refuse, so on a repo without that rule this
+    // button merged straight over open review feedback. A count this cannot
+    // read throws rather than reading as zero.
+    const unresolved = await countUnresolvedThreads(octokit, owner, repo, pull_number);
+    if (unresolved > 0) {
+      return {
+        error: `${unresolved} unresolved review ${unresolved === 1 ? 'thread' : 'threads'} on #${pull_number}. Resolve them before merging.`,
+      };
+    }
 
     await octokit.pulls.merge({ owner, repo, pull_number, merge_method });
 
