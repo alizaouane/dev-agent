@@ -167,8 +167,19 @@ async function runApproveGate(formData: FormData): Promise<void> {
   const labels = issue.data.labels
     .map((l) => (typeof l === 'string' ? l : l.name))
     .filter(Boolean) as string[];
-  const currentState = labels.find((l) => l.startsWith('state:'));
-  if (!currentState) throw new Error('issue has no state:* label');
+  // Exactly one, not the first one found. A half-applied flip leaves two, and
+  // picking by array order would dispatch whichever phase happened to be
+  // listed first and then strip both labels — starting the wrong work and
+  // recording the wrong next state. The implement workflow's own gate applies
+  // the same rule for the same reason.
+  const currentStates = labels.filter((l) => l.startsWith('state:'));
+  if (currentStates.length === 0) throw new Error('issue has no state:* label');
+  if (currentStates.length > 1) {
+    throw new Error(
+      `issue #${issue_number} carries ${currentStates.length} state labels (${currentStates.join(', ')}); resolve that before approving`,
+    );
+  }
+  const currentState = currentStates[0];
 
   // Each gate names the phase it starts, and the table it comes from is held
   // against the orchestrator spec by a test. A gate that only moved the label

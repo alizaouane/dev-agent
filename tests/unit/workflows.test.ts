@@ -653,21 +653,66 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-staging-deploy.yml — duplicate-dispatch gate', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-staging-deploy.yml'), 'utf8');
+
+    it('serialises runs per issue from inside the reusable workflow', () => {
+      // Repos wired up before the wrapper carried a concurrency group still
+      // call this at @main, so the guarantee has to travel with the workflow.
+      expect(raw).toMatch(/concurrency:\s+group: dev-agent-staging-deploy-/);
+    });
+
+    it('re-checks the issue once the concurrency slot is held', () => {
+      // The pre-queue check answers before the wait. By the time the slot is
+      // free the run ahead has deployed and moved the label, which is the
+      // case worth catching — a second deploy of the same merge.
+      expect(raw).toMatch(/steps\.slot\.outputs\.overtaken != 'true'/);
+    });
+
+    it('gates every step in the deploy job on that verdict', () => {
+      const job = raw.slice(raw.indexOf('  staging-deploy:'));
+      const steps = job.match(/^ {6}- (name:|uses:|run:)/gm) ?? [];
+      const guards = job.match(/steps\.slot\.outputs\.overtaken != 'true'/g) ?? [];
+      expect(guards.length).toBe(steps.length - 1);
+    });
+
+    it('lists the state staging-deploy starts from, not the ones it does not', () => {
+      // Same inversion as phase-implement: name the state it runs from, so a
+      // state added later is refused rather than waved through.
+      expect(raw).toMatch(/state:pr-review\)/);
+    });
+  });
+
   describe('phase-promote-to-prod.yml — does not claim what it has not done', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-promote-to-prod.yml'), 'utf8');
 
-    it('does not comment a hardcoded success status', () => {
+    /**
+     * The promotion step alone.
+     *
+     * Asserting against the whole file let `exit 1` match anywhere and let the
+     * status assertion pass on any wording change, so the test could go green
+     * while the phase went back to claiming a promotion it had not made.
+     */
+    const promoteStep = (() => {
+      const start = raw.indexOf('      - name: Run prod promote chain');
+      expect(start, 'promotion step not found').toBeGreaterThan(-1);
+      const next = raw.indexOf('\n      - name:', start + 1);
+      return raw.slice(start, next === -1 ? undefined : next);
+    })();
+
+    it('reports the promotion as unimplemented rather than as a success', () => {
       // The phase asks a model for a promotion plan via render-and-run and
       // throws the answer away — render-and-run only prints the model's text.
-      // Commenting "stub-success" regardless told the operator production had
-      // been promoted when nothing had been deployed.
-      expect(raw).not.toMatch(/stub-success/);
+      // A canned success told the operator production had been promoted when
+      // nothing had been deployed.
+      expect(promoteStep).toMatch(/Status: NOT IMPLEMENTED/);
+      expect(promoteStep).not.toMatch(/Status: stub-success/);
     });
 
     it('fails the run while the promotion is unimplemented', () => {
       // Better a visibly failed run than an issue advancing to a state that
       // implies production off the back of a comment nobody earned.
-      expect(raw).toMatch(/exit 1/);
+      expect(promoteStep).toMatch(/^\s+exit 1$/m);
     });
 
     it('does not log a success outcome for a run that failed', () => {
@@ -675,6 +720,7 @@ describe('.github/workflows/', () => {
       // "promote-to-prod — success" into the record the PM agent reads as its
       // primary grounding source, for a phase that deployed nothing.
       expect(raw).not.toMatch(/OUTCOME: success/);
+      expect(raw).toMatch(/OUTCOME: \$\{\{ job\.status \}\}/);
     });
   });
 

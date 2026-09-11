@@ -329,6 +329,30 @@ describe('approveGate', () => {
     expect(mockOctokit.issues.setLabels).not.toHaveBeenCalled();
   });
 
+  it('refuses an issue carrying two state labels', async () => {
+    // labels.find() picks by array order, so a half-applied flip would have
+    // this dispatch whichever phase happened to be listed first and then
+    // strip both labels — starting the wrong work and recording the wrong
+    // next state.
+    mockOctokit.repos.get.mockResolvedValue({ data: { default_branch: 'main' } });
+    mockOctokit.issues.get.mockResolvedValue({
+      data: {
+        number: 7,
+        labels: [{ name: 'state:pr-review' }, { name: 'state:implementing' }],
+        html_url: 'https://github.com/q/r/issues/7',
+      },
+    });
+    const { approveGate } = await import('@/lib/actions');
+    const fd = new FormData();
+    fd.append('repo', 'q/r');
+    fd.append('issue', '7');
+    fd.append('promote', '0');
+    expect(await approveGate(fd)).toEqual({
+      error: expect.stringContaining('state:implementing'),
+    });
+    expect(mockOctokit.actions.createWorkflowDispatch).not.toHaveBeenCalled();
+  });
+
   it('leaves the staging label to the phase that decides it', async () => {
     // phase-staging-deploy picks staging-deployed or blocked from its smoke
     // result. Setting the success label here leaves the failure path adding

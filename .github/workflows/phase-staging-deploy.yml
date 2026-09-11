@@ -54,6 +54,13 @@ on:
 jobs:
   staging-deploy:
     runs-on: ubuntu-latest
+    # Declared here, not only in the consumer wrapper. Repos wired up before
+    # the wrapper carried a concurrency group still call this workflow at
+    # @main, so the guarantee has to travel with the workflow rather than
+    # depend on which generation of wrapper a repo happens to have.
+    concurrency:
+      group: dev-agent-staging-deploy-${{ github.repository }}-${{ inputs.issue_number }}
+      cancel-in-progress: false
     # See phase-implement.yml for rationale on the long ceiling.
     timeout-minutes: 360
     permissions:
@@ -64,18 +71,57 @@ jobs:
     steps:
       # Pillar 5 — Harden runner against unexpected egress + sudo. See
       # phase-bug-scout.yml for the v1 audit-mode rationale.
+      # The pre-queue check answers before this job waits for the slot, so it
+      # is as old as the wait. Re-asked here, once the slot is actually held:
+      # by then the run ahead has deployed and moved the label, which is the
+      # case worth catching — a second deploy of the same merge.
+      #
+      # Every step below is conditioned on this rather than the run being
+      # cancelled: `gh run cancel` needs `actions: write`, and a reusable
+      # workflow cannot grant itself more than its caller does.
+      - name: Check whether this dispatch was overtaken while queued
+        id: slot
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ISSUE=$(gh issue view "$ISSUE_NUMBER" --repo "$REPO" --json state,labels)
+          STATE=$(jq -r '.state' <<<"$ISSUE")
+          STATES=$(jq -r '[.labels[].name | select(startswith("state:"))] | join(" ")' <<<"$ISSUE")
+          OVERTAKEN=false
+          [ "$STATE" = "CLOSED" ] && OVERTAKEN=true
+          # The state it starts from, named directly. Listing the later ones
+          # would read every state added afterwards as fine to deploy.
+          if [ "$(printf '%s' "$STATES" | wc -w | tr -d ' ')" != "1" ]; then
+            OVERTAKEN=true
+          else
+            case "$STATES" in
+              state:pr-review) ;;
+              *) OVERTAKEN=true ;;
+            esac
+          fi
+          if [ "$OVERTAKEN" = "true" ]; then
+            echo "issue #$ISSUE_NUMBER moved on while this run waited ($STATE, $STATES); discarding this dispatch"
+          fi
+          echo "overtaken=$OVERTAKEN" >> "$GITHUB_OUTPUT"
+
       - name: Harden runner (egress audit)
+        if: steps.slot.outputs.overtaken != 'true'
         uses: step-security/harden-runner@v2
         with:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root.
       - uses: actions/checkout@v4
+        if: steps.slot.outputs.overtaken != 'true'
         with: { fetch-depth: 0 }
 
       # Engine repo with the dev-agent CLIs + prompt templates this
       # workflow invokes. See phase-implement.yml for rationale.
       - name: Checkout dev-agent engine
+        if: steps.slot.outputs.overtaken != 'true'
         uses: actions/checkout@v4
         with:
           repository: alizaouane/dev-agent
@@ -83,11 +129,14 @@ jobs:
           path: .dev-agent-engine
 
       - uses: actions/setup-node@v4
+        if: steps.slot.outputs.overtaken != 'true'
         with: { node-version: '20', cache: 'npm' }
 
       - run: npm ci
+        if: steps.slot.outputs.overtaken != 'true'
 
       - name: Install engine deps
+        if: steps.slot.outputs.overtaken != 'true'
         working-directory: .dev-agent-engine
         run: npm ci
 
@@ -97,6 +146,7 @@ jobs:
       # before any model call so a refusal costs nothing. Fails closed: if
       # spend cannot be read while a budget is configured, the run stops.
       - name: Budget gate
+        if: steps.slot.outputs.overtaken != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -106,6 +156,7 @@ jobs:
         run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Convert .dev-agent.yml to JSON for jq
+        if: steps.slot.outputs.overtaken != 'true'
         env:
           CONFIG_PATH: ${{ inputs.config_path }}
         run: |
@@ -114,6 +165,7 @@ jobs:
           jq -e . /tmp/config.json > /dev/null
 
       - name: Render system prompt
+        if: steps.slot.outputs.overtaken != 'true'
         id: prompt
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -140,6 +192,7 @@ jobs:
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-prompt.ts staging-deploy > /tmp/system-prompt.md
 
       - name: Read issue title
+        if: steps.slot.outputs.overtaken != 'true'
         id: issue
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -150,6 +203,7 @@ jobs:
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
 
       - name: Build agent prompt
+        if: steps.slot.outputs.overtaken != 'true'
         id: build
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -172,7 +226,7 @@ jobs:
           echo "prompt_path=/tmp/agent-prompt.md" >> "$GITHUB_OUTPUT"
 
       - name: Skip live agent invocation (stub mode)
-        if: inputs.invocation_mode == 'stub'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'stub')
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           GH_TOKEN: ${{ github.token }}
@@ -184,7 +238,7 @@ jobs:
       # See phase-implement.yml — claude-code-action needs the binary
       # pre-installed at ~/.local/bin/claude.
       - name: Install Claude Code CLI
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         run: |
           set -euo pipefail
           curl -fsSL https://claude.ai/install.sh | bash
@@ -192,7 +246,7 @@ jobs:
 
       - name: Run Claude Code (live agent)
         id: claude
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -206,7 +260,7 @@ jobs:
       # the budget gate were decorative. always() so a failed or timed-out run
       # still records the spend it incurred.
       - name: Emit telemetry
-        if: always() && inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
         env:
           EXECUTION_FILE: ${{ steps.claude.outputs.execution_file }}
           ISSUE_NUMBER: ${{ inputs.issue_number }}
@@ -219,7 +273,7 @@ jobs:
 
       - name: Parse agent JSON + comment telemetry + flip state
         id: parse
-        if: inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (inputs.invocation_mode == 'live')
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           EXEC_FILE: ${{ steps.claude.outputs.execution_file }}
@@ -260,7 +314,7 @@ jobs:
           echo "next_hint=${HINT}" >> "$GITHUB_OUTPUT"
 
       - name: Append SESSION_LOG.md entry
-        if: always() && inputs.invocation_mode == 'live'
+        if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
         env:
           PHASE: staging-deploy
           ISSUE_NUMBER: ${{ inputs.issue_number }}
