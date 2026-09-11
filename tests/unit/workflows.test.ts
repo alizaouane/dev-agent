@@ -670,7 +670,7 @@ describe('.github/workflows/', () => {
     });
 
     it('gates every step in the deploy job on that verdict', () => {
-      const job = raw.slice(raw.indexOf('  staging-deploy:'));
+      const job = raw.slice(raw.indexOf('  staging-deploy:'), raw.indexOf('  session-log:'));
       const steps = job.match(/^ {6}- (name:|uses:|run:)/gm) ?? [];
       const guards = job.match(/steps\.slot\.outputs\.overtaken != 'true'/g) ?? [];
       expect(guards.length).toBe(steps.length - 1);
@@ -688,10 +688,34 @@ describe('.github/workflows/', () => {
       }
     });
 
-    it('gives the session-log push its own credential', () => {
-      // The push is the one thing in the job that legitimately needs write
-      // access, and it runs after the agent has finished.
-      expect(raw).toMatch(/x-access-token/);
+    it('pushes the session log from a job the agent never touched', () => {
+      // Dropping persisted credentials narrowed the window and did not close
+      // it: the agent shares the workspace, so it can edit SESSION_LOG.md or
+      // append-session-log.ts before a later step in the same job commits and
+      // pushes them. A separate job gets a fresh checkout.
+      const deployJob = raw.slice(
+        raw.indexOf('  staging-deploy:'),
+        raw.indexOf('  session-log:'),
+      );
+      expect(deployJob).not.toMatch(/git push/);
+      expect(raw).toMatch(/^  session-log:$/m);
+      expect(raw).toMatch(/needs: staging-deploy/);
+    });
+
+    it('grants the agent job no write access to contents', () => {
+      // It deploys and smokes. Nothing in it needs to write to the repo, and
+      // the prompt telling the agent not to push is not a boundary.
+      //
+      // Read off the permissions block rather than the job text, so a comment
+      // mentioning the words cannot pass or fail this.
+      const deployJob = raw.slice(
+        raw.indexOf('  staging-deploy:'),
+        raw.indexOf('  session-log:'),
+      );
+      const perms = deployJob.match(/^    permissions:\n((?:^      \S+: \S+\n)+)/m);
+      expect(perms, 'permissions block not found on staging-deploy').not.toBeNull();
+      expect(perms![1]).toContain('contents: read');
+      expect(perms![1]).not.toContain('contents: write');
     });
 
     it('lists the state staging-deploy starts from, not the ones it does not', () => {
@@ -734,12 +758,24 @@ describe('.github/workflows/', () => {
     });
 
     it('moves the issue to a failure state instead of leaving it promoting', () => {
-      // The gate sets state:promoting and this phase exits 1 without touching
-      // the label, so the issue sits in a state the dashboard reads as in
+      // The gate sets state:promoting and this phase exits 1. Leaving the
+      // label alone parks the issue in a state the dashboard reads as in
       // flight, with no gate offering a retry. state:blocked is what
       // phase-staging-deploy uses for the same situation.
-      expect(promoteStep).toMatch(/--add-label state:blocked/);
-      expect(promoteStep).toMatch(/--remove-label state:promoting/);
+      expect(raw).toMatch(/--add-label state:blocked/);
+      expect(raw).toMatch(/--remove-label state:promoting/);
+    });
+
+    it('applies the failure label from a step that runs on failure', () => {
+      // Inline after the comment, `set -e` skipped the label edit whenever
+      // `gh issue comment` failed, and `|| true` hid the edit's own failure.
+      // Either way the issue stayed at state:promoting — the exact outcome
+      // the label change exists to prevent.
+      const failStep = raw.slice(raw.indexOf('      - name: Mark the promotion blocked'));
+      expect(failStep, 'no failure-cleanup step').toMatch(/if: failure\(\)/);
+      expect(failStep).toMatch(/--add-label state:blocked/);
+      // Retried, because a single API call is the thing that just failed.
+      expect(failStep).toMatch(/for attempt in/);
     });
 
     it('does not log a success outcome for a run that failed', () => {

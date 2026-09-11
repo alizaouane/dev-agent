@@ -63,11 +63,19 @@ jobs:
       cancel-in-progress: false
     # See phase-implement.yml for rationale on the long ceiling.
     timeout-minutes: 360
+    # `contents: read`, because nothing in this job writes to the repo. It
+    # deploys and smokes; the session log is committed by a separate job
+    # below, from a workspace this agent never touched. Telling the agent not
+    # to push is an instruction; withholding the permission is a boundary.
     permissions:
-      contents: write
+      contents: read
       issues: write
       pull-requests: write
       id-token: write
+    outputs:
+      overtaken: ${{ steps.slot.outputs.overtaken }}
+      phase_outcome: ${{ steps.parse.outputs.phase_outcome }}
+      next_hint: ${{ steps.parse.outputs.next_hint }}
     steps:
       # Pillar 5 — Harden runner against unexpected egress + sudo. See
       # phase-bug-scout.yml for the v1 audit-mode rationale.
@@ -114,12 +122,10 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root.
-      # persist-credentials: false, because this job grants `contents: write`
-      # and runs an agent with Bash against a prompt that carries the issue
-      # title. Left at its default the checkout writes the job token into git
-      # config, so a prompt-injected title has everything it needs to push.
-      # The prompt's "do not push" rule is an instruction, not a boundary.
-      # The session-log step below gets its own credential instead.
+      # persist-credentials: false. The job token is read-only now, but a
+      # checkout left at its default still writes whatever token it has into
+      # git config, where an agent with Bash can find it. The session log is
+      # committed by a separate job with its own fresh checkout.
       - uses: actions/checkout@v4
         if: steps.slot.outputs.overtaken != 'true'
         with:
@@ -323,13 +329,47 @@ jobs:
           echo "phase_outcome=${OUTCOME}" >> "$GITHUB_OUTPUT"
           echo "next_hint=${HINT}" >> "$GITHUB_OUTPUT"
 
+  # A separate job, with its own checkout, because the agent above shares a
+  # workspace with whatever commits from it. Dropping persisted credentials
+  # narrowed that window without closing it: the agent could still edit
+  # SESSION_LOG.md, stage other files, or rewrite append-session-log.ts and
+  # have a later step in the same job push the result. Here the workspace is
+  # fresh and the agent has never seen it, so `contents: write` is safe to
+  # grant — and it is granted nowhere else in this workflow.
+  session-log:
+    needs: staging-deploy
+    if: always() && inputs.invocation_mode == 'live' && needs.staging-deploy.outputs.overtaken != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: main
+          path: .dev-agent-engine
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci --omit=dev --ignore-scripts
+
       - name: Append SESSION_LOG.md entry
-        if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
         env:
           PHASE: staging-deploy
           ISSUE_NUMBER: ${{ inputs.issue_number }}
-          OUTCOME: ${{ steps.parse.outputs.phase_outcome || 'aborted' }}
-          NEXT_SESSION_HINT: ${{ steps.parse.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
+          OUTCOME: ${{ needs.staging-deploy.outputs.phase_outcome || 'aborted' }}
+          NEXT_SESSION_HINT: ${{ needs.staging-deploy.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
           TRIGGER: 'PR merged to default branch — staging deploy + smoke verify run.'
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -341,11 +381,9 @@ jobs:
           fi
           git config user.name 'dev-agent[bot]'
           git config user.email 'dev-agent@users.noreply.github.com'
+          # Only the log. `git add -A` here would sweep anything else the
+          # checkout produced into a commit nobody reviewed.
           git add SESSION_LOG.md
           git commit -m "chore(dev-agent): session log — staging-deploy issue #${ISSUE_NUMBER}"
-          # The checkout no longer carries a credential, so this push brings
-          # its own. It runs after the agent has finished, which is the point:
-          # write access exists for the length of one command rather than for
-          # the length of the job.
           git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD \
             || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

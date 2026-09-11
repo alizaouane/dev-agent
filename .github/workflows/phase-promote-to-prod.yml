@@ -114,14 +114,35 @@ jobs:
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-and-run.ts promote-to-prod > result.json
           MODEL=$(jq -r '.model' result.json)
           BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: NOT IMPLEMENTED — this phase renders a promotion plan and does not execute it. Nothing has been deployed to production. Promote by hand until it is built.\n' "$MODEL" "$INVOCATION_MODE")
-          gh issue comment "$ISSUE_NUMBER" --body "$BODY"
-          # The gate set state:promoting on the way in. Exiting without
-          # touching it leaves the issue in a state the dashboard reads as in
-          # flight, with no gate offering a retry — wedged rather than failed.
-          # state:blocked is what phase-staging-deploy uses for the same
-          # situation, and it is a state a person can act on.
-          gh issue edit "$ISSUE_NUMBER" --remove-label state:promoting --add-label state:blocked || true
+          gh issue comment "$ISSUE_NUMBER" --body "$BODY" || true
           echo "::error::phase-promote-to-prod is not implemented; nothing was deployed to production"
+          exit 1
+
+      # Its own step, on failure(), rather than inline above. Inline, `set -e`
+      # skipped the label edit whenever the comment call failed, and `|| true`
+      # then hid the edit's own failure — leaving the issue at state:promoting,
+      # which is the exact outcome this exists to prevent. Retried, because a
+      # single API call is the thing that just went wrong.
+      - name: Mark the promotion blocked
+        if: failure()
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3; do
+            if gh issue edit "$ISSUE_NUMBER" --repo "$REPO" \
+                 --remove-label state:promoting --add-label state:blocked; then
+              echo "issue #$ISSUE_NUMBER marked blocked"
+              exit 0
+            fi
+            echo "attempt $attempt to mark #$ISSUE_NUMBER blocked failed; retrying"
+            sleep $((attempt * 5))
+          done
+          # Loud, because an issue left at state:promoting reads as in flight
+          # for ever and no gate offers a retry.
+          echo "::error::could not move issue #$ISSUE_NUMBER off state:promoting; it will read as in flight until someone relabels it"
           exit 1
 
       - name: Append SESSION_LOG.md entry
