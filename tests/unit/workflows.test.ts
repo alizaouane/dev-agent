@@ -653,6 +653,24 @@ describe('.github/workflows/', () => {
     });
   });
 
+  describe('phase-promote-to-prod.yml — does not claim what it has not done', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-promote-to-prod.yml'), 'utf8');
+
+    it('does not comment a hardcoded success status', () => {
+      // The phase asks a model for a promotion plan via render-and-run and
+      // throws the answer away — render-and-run only prints the model's text.
+      // Commenting "stub-success" regardless told the operator production had
+      // been promoted when nothing had been deployed.
+      expect(raw).not.toMatch(/stub-success/);
+    });
+
+    it('fails the run while the promotion is unimplemented', () => {
+      // Better a visibly failed run than an issue advancing to a state that
+      // implies production off the back of a comment nobody earned.
+      expect(raw).toMatch(/exit 1/);
+    });
+  });
+
   describe('phase-implement.yml — duplicate-dispatch gate', () => {
     const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
 

@@ -87,7 +87,14 @@ jobs:
           BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
         run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
 
-      - name: Run prod promote chain (stub)
+      # Unbuilt, and now it says so. `render-and-run.ts` asks the model for a
+      # promotion plan and prints the answer — it deploys nothing, merges
+      # nothing and runs no smoke. The step used to report a canned success
+      # regardless, which told the operator production had been promoted off
+      # the back of a model reply nobody read. Failing is the honest report:
+      # the issue reaches state:promoting, the run goes red, and the dashboard
+      # shows a phase that did not succeed rather than one that claimed to.
+      - name: Run prod promote chain (NOT IMPLEMENTED — fails deliberately)
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           MODEL: claude-sonnet-4-6
@@ -106,8 +113,10 @@ jobs:
             '{deploy_skills:{prod:$skills}, branches:{release_target:$target}, commands:{test:$test}, merge_sha:$sha}')
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-and-run.ts promote-to-prod > result.json
           MODEL=$(jq -r '.model' result.json)
-          BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: stub-success (live wiring in 1d)\n' "$MODEL" "$INVOCATION_MODE")
+          BODY=$(printf '🤖 Phase: promote-to-prod\nModel: %s\nMode: %s\nStatus: NOT IMPLEMENTED — this phase renders a promotion plan and does not execute it. Nothing has been deployed to production. Promote by hand until it is built.\n' "$MODEL" "$INVOCATION_MODE")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
+          echo "::error::phase-promote-to-prod is not implemented; nothing was deployed to production"
+          exit 1
 
       - name: Append SESSION_LOG.md entry
         if: always() && inputs.invocation_mode == 'live'
