@@ -284,6 +284,9 @@ describe('rollout compatibility', () => {
   });
 
   it('still reads an approval written before the kind field existed', () => {
+    // Every approval already committed in consumer repos predates the `kind`
+    // field, so a parser that starts requiring it would refuse records that
+    // are still perfectly valid. This guard catches that regression.
     const legacy = JSON.stringify({
       schema_version: 1,
       spec_path: 'docs/superpowers/specs/2026-05-01-foo-design.md',
