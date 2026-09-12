@@ -291,7 +291,12 @@ Mark Phase S.2 complete. Move to Phase S.3.
 ### Phase S.3 — Handoff (file the issue)
 
 ```bash
-STORY_PATH=docs/stories/epic-N-name/N.M-slug.md
+# Canonicalised first, the same way `canonicalStoryPath` does for every reader
+# of a story reference. `approve-story` records the path without a leading
+# `./`, so filing one with it produces an issue the gate refuses for ever on a
+# path mismatch — and makes the duplicate lookup below miss an existing issue
+# written the other way.
+STORY_PATH=$(printf '%s' "docs/stories/epic-N-name/N.M-slug.md" | sed -E 's#^(\./)+##')
 SOURCE_SPEC=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
 TITLE="<story title, from its # Story N.M — Name heading>"
 KIND="feature"  # or "bug" or "improvement" — whatever kind the story itself is
@@ -327,8 +332,17 @@ if [ "$(jq 'length' <<<"$ISSUES")" -ge "$LIMIT" ]; then
   exit 1
 fi
 
-EXISTING=$(jq -r --arg want "Story: ${STORY_PATH}" '
-  map(select(((.body // "") | split("\n") | map(sub("\r$";"") | sub("^[ \t]+";"") | sub("[ \t]+$";""))) | index($want)))
+# The path is pulled OUT of each candidate line and canonicalised before it
+# is compared, rather than matching the line verbatim: an issue filed as
+# `Story: ./docs/...` names the same story as one filed without the prefix,
+# and a comparison that cannot see that files the duplicate this guard exists
+# to prevent.
+EXISTING=$(jq -c --arg want "$STORY_PATH" '
+  map(select(((.body // "") | split("\n")
+       | map(sub("\r$";"") | sub("^[ \t]+";"") | sub("[ \t]+$";""))
+       | map(select(test("^Story:[ \t]*[^ \t]+\\.md$")))
+       | map(capture("^Story:[ \t]*(?<p>[^ \t]+\\.md)$").p | sub("^(\\./)+";""))
+     ) | index($want)))
   | .[0] // empty' <<<"$ISSUES")
 
 if [ -n "$EXISTING" ]; then

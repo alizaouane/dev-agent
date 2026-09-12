@@ -186,6 +186,20 @@ describe('skills/', () => {
       expect(phase.indexOf('gh issue list')).toBeLessThan(phase.indexOf('gh issue create'));
     });
 
+    it('canonicalises the story path on both sides of the duplicate lookup', () => {
+      // Codex, PR #164: the lookup compared raw lines, so re-entering the door
+      // with a `./`-prefixed spelling missed an existing issue written without
+      // one and filed a duplicate — which dispatches a second agent against
+      // the same approved story. `canonicalStoryPath` covers the gate readers;
+      // this shell comparison is its own reader and needs the same rule.
+      const phase = section(raw, '### Phase S.3');
+      // STORY_PATH itself, so the issue is also FILED in the canonical form.
+      expect(phase).toMatch(/STORY_PATH=.*sed[^\n]*\(\\\.\/\)\+/);
+      // and the paths pulled out of each candidate issue body.
+      expect(phase).toContain('capture(');
+      expect(phase).toMatch(/sub\("\^\(\\\\\.\/\)\+"/);
+    });
+
     it('does not read a truncated issue listing as no issue', () => {
       // The recurring failure this repo keeps closing: a search that could not
       // see something reporting the something is not there. Filing a duplicate
@@ -200,8 +214,15 @@ describe('skills/', () => {
       // (/^\s*Story:\s*(\S+\.md)\s*$/m) and the workflow grep are both
       // end-anchored and both strip/reject quoted regions, so a backticked
       // path would file cleanly and then fail the gate.
-      expect(raw).toMatch(/^Story: \$\{STORY_PATH\}$/m);
-      expect(raw).not.toMatch(/`Story: /);
+      // Scoped to the heredoc that becomes the issue body. A file-wide scan
+      // is what this guard used to be, and it failed on the first comment
+      // that quoted a `Story:` line in prose — reporting a defect in text
+      // that never reaches an issue, which is the wrong file to fix.
+      const bodyStart = raw.indexOf('BODY=$(cat <<EOF');
+      const body = raw.slice(bodyStart, raw.indexOf('\nEOF\n', bodyStart));
+      expect(body).not.toBe('');
+      expect(body).toMatch(/^Story: \$\{STORY_PATH\}$/m);
+      expect(body).not.toMatch(/`Story: /);
     });
 
     it("labels the story issue state:spec-ready, kind:<kind>, and epic:<N>", () => {
