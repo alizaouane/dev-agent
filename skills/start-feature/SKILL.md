@@ -332,16 +332,32 @@ if [ "$(jq 'length' <<<"$ISSUES")" -ge "$LIMIT" ]; then
   exit 1
 fi
 
-# The path is pulled OUT of each candidate line and canonicalised before it
-# is compared, rather than matching the line verbatim: an issue filed as
-# `Story: ./docs/...` names the same story as one filed without the prefix,
-# and a comparison that cannot see that files the duplicate this guard exists
-# to prevent.
+# Quoted regions come out first, the same two halves `stripQuotedRegions`
+# strips: fenced blocks that actually close, then inline backtick spans
+# across the joined body. This lookup is a FOURTH reader of a `Story:` line
+# after the dashboard parser, the workflow grep and the gate, and all three
+# of those strip. Without it an issue that merely quotes the target line in
+# an example matches as that story's own issue, and the real one is never
+# filed. An unpaired fence opener is left alone, as it is there.
+#
+# The path is then pulled OUT of each candidate line and canonicalised
+# before comparison, rather than the line being matched verbatim: an issue
+# filed as `Story: ./docs/...` names the same story as one filed without the
+# prefix, and a comparison that cannot see that files the duplicate this
+# guard exists to prevent.
 EXISTING=$(jq -c --arg want "$STORY_PATH" '
-  map(select(((.body // "") | split("\n")
-       | map(sub("\r$";"") | sub("^[ \t]+";"") | sub("[ \t]+$";""))
+  def strip_quoted:
+    (split("\n") | map(sub("\r$"; ""))) as $lines
+    | [range(0; $lines | length) | select($lines[.] | test("^ {0,3}(```|~~~)"))] as $f
+    | (($f | length) - (($f | length) % 2)) as $paired
+    | ([range(0; $paired; 2) as $i | range($f[$i]; $f[$i + 1] + 1)] | map(tostring)) as $drop
+    | [range(0; $lines | length) | select(([tostring] | inside($drop)) | not) | $lines[.]]
+    | join("\n")
+    | gsub("`[^`]*`"; "");
+  map(select((((.body // "") | strip_quoted | split("\n"))
+       | map(sub("^[ \t]+"; "") | sub("[ \t]+$"; ""))
        | map(select(test("^Story:[ \t]*[^ \t]+\\.md$")))
-       | map(capture("^Story:[ \t]*(?<p>[^ \t]+\\.md)$").p | sub("^(\\./)+";""))
+       | map(capture("^Story:[ \t]*(?<p>[^ \t]+\\.md)$").p | sub("^(\\./)+"; ""))
      ) | index($want)))
   | .[0] // empty' <<<"$ISSUES")
 

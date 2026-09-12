@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import yaml from 'js-yaml';
 import { EXPECTED_SKILLS, USER_INVOCABLE_SKILLS } from '../../lib/plugin-files';
@@ -198,6 +199,73 @@ describe('skills/', () => {
       // and the paths pulled out of each candidate issue body.
       expect(phase).toContain('capture(');
       expect(phase).toMatch(/sub\("\^\(\\\\\.\/\)\+"/);
+    });
+
+    describe('the duplicate lookup agrees with the other readers of a Story: line', () => {
+      // This lookup is a FOURTH reader, after the dashboard parser, the
+      // workflow grep and the gate. Rather than assert its text, pull the real
+      // jq program out of the skill and run it, so the test tracks behaviour.
+      const program = (): string => {
+        const phase = section(raw, '### Phase S.3');
+        const open = 'EXISTING=$(jq -c --arg want "$STORY_PATH" \'';
+        const start = phase.indexOf(open);
+        if (start === -1) throw new Error('could not find the duplicate-lookup jq in Phase S.3');
+        const end = phase.indexOf('\' <<<"$ISSUES")', start);
+        if (end === -1) throw new Error('the duplicate-lookup jq is not terminated');
+        return phase.slice(start + open.length, end);
+      };
+
+      /** Run the skill's own jq over `issues`, asking after `want`. */
+      const lookup = (want: string, issues: unknown[]): string =>
+        execFileSync('jq', ['-c', '--arg', 'want', want, program()], {
+          input: JSON.stringify(issues),
+          encoding: 'utf8',
+        }).trim();
+
+      const issue = (over: Record<string, unknown>) => ({
+        number: 1,
+        url: 'https://example.test/1',
+        state: 'OPEN',
+        ...over,
+      });
+
+      it('finds the issue that names the story', () => {
+        const found = lookup('docs/stories/epic-8/8.1-x.md', [
+          issue({ body: 'Story: docs/stories/epic-8/8.1-x.md\n\n## TL;DR\n\nreal' }),
+        ]);
+        expect(found).not.toBe('');
+      });
+
+      it('does NOT match a Story: line quoted inside a fenced example', () => {
+        // The failure this guards: a spec issue showing a story reference in
+        // an example was matched as that story's own issue, so the real one
+        // was never filed and the door exited saying it already existed.
+        const found = lookup('docs/stories/epic-9/9.1-y.md', [
+          issue({
+            body: 'Spec: docs/specs/a-design.md\n\nExample:\n\n```\nStory: docs/stories/epic-9/9.1-y.md\n```\n',
+          }),
+        ]);
+        expect(found).toBe('');
+      });
+
+      it('matches a ./-prefixed reference written with a tab and a CRLF ending', () => {
+        const found = lookup('docs/stories/epic-7/7.1-z.md', [
+          issue({ state: 'CLOSED', body: 'Story:\t./docs/stories/epic-7/7.1-z.md  \r\n' }),
+        ]);
+        expect(found).toContain('CLOSED');
+      });
+
+      it('ignores an issue with no body at all', () => {
+        expect(lookup('docs/stories/epic-8/8.1-x.md', [issue({ body: null })])).toBe('');
+      });
+
+      it('leaves an unpaired fence opener alone, as stripQuotedRegions does', () => {
+        // A stray opener must not swallow the canonical reference below it.
+        const found = lookup('docs/stories/epic-8/8.1-x.md', [
+          issue({ body: '```\nStory: docs/stories/epic-8/8.1-x.md\n' }),
+        ]);
+        expect(found).not.toBe('');
+      });
     });
 
     it('does not read a truncated issue listing as no issue', () => {
