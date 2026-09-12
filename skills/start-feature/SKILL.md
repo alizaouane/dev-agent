@@ -306,6 +306,37 @@ if [[ ! "$EPIC" =~ ^[0-9]+$ ]]; then
   exit 1
 fi
 
+# Guard: has this story already been filed? The spec door's open-pipeline
+# lookup lives in Phase 1, which this door skips, so re-entering it would
+# file a second issue for the same story — and implement concurrency and
+# branch names are keyed by issue number, so both could dispatch independent
+# agents against one approved story.
+#
+# Matched by exact line after trimming, which is what both readers of a
+# `Story:` reference accept. Listed and filtered locally rather than handed
+# to GitHub's search index, which is eventually consistent and would report a
+# just-filed issue as absent.
+LIMIT=500
+ISSUES=$(gh issue list --state all --limit "$LIMIT" --json number,url,state,body)
+
+# A listing that hit the limit is a short listing, not an empty one. Filing a
+# duplicate off the back of one is a search that could not see something
+# reporting the something is not there. Stop instead.
+if [ "$(jq 'length' <<<"$ISSUES")" -ge "$LIMIT" ]; then
+  echo "ERROR: the issue list was truncated at $LIMIT, so an existing issue for this story may not be visible. Check by hand before filing: gh issue list --search \"Story: ${STORY_PATH}\" --state all"
+  exit 1
+fi
+
+EXISTING=$(jq -r --arg want "Story: ${STORY_PATH}" '
+  map(select(((.body // "") | split("\n") | map(sub("\r$";"") | sub("^[ \t]+";"") | sub("[ \t]+$";""))) | index($want)))
+  | .[0] // empty' <<<"$ISSUES")
+
+if [ -n "$EXISTING" ]; then
+  echo "This story is already filed as $(jq -r '.url' <<<"$EXISTING") ($(jq -r '.state' <<<"$EXISTING"))."
+  echo "Open: go to the dashboard and tap Start work on it. Closed: the story has already been through the pipeline — ask the user before filing anything new."
+  exit 0
+fi
+
 TLDR="<a few lines summarizing what the story ships>"
 APPROVAL_PATH="${STORY_PATH%.md}.approval.json"
 

@@ -91,6 +91,31 @@ describe('skills/', () => {
     });
   });
 
+  /**
+   * Slice one section out of a skill file, bounded at the next `##`/`###`
+   * heading that is not inside a fenced code block.
+   *
+   * Both halves matter. An unbounded slice runs to end of file and reads the
+   * wrong section, passing assertions that should fail. A bound that counts
+   * headings inside fences stops at the `## TL;DR` in a heredoc and reads
+   * less than the section, failing assertions that should pass. This file has
+   * both shapes in it.
+   *
+   * @param raw - The whole skill file.
+   * @param heading - The exact heading line the section starts at.
+   * @returns The section text, or '' when the heading is absent.
+   */
+  const section = (raw: string, heading: string): string => {
+    const start = raw.indexOf(heading);
+    if (start === -1) return '';
+    const body = raw.slice(start + heading.length);
+    for (const match of body.matchAll(/\n#{2,3} /g)) {
+      const fences = (body.slice(0, match.index).match(/^```/gm) ?? []).length;
+      if (fences % 2 === 0) return raw.slice(start, start + heading.length + match.index);
+    }
+    return raw.slice(start);
+  };
+
   describe('/start-feature — the story door', () => {
     // The second intake door: when the work is already a sharded story
     // (written upstream by /shard from an approved program spec), brainstorm
@@ -147,6 +172,26 @@ describe('skills/', () => {
       const phase = raw.slice(raw.indexOf('### Phase S.1'), raw.indexOf('### Phase S.2'));
       expect(phase).toMatch(/STORY_PATH=[\s\S]{0,300}verify-approval\.ts/);
       expect(phase).toMatch(/(already approved|skip|straight) to Phase S\.3/i);
+    });
+
+    it('checks for an issue already filed for this story before creating one', () => {
+      // Codex, PR #164: Phase S.3 created an issue unconditionally. The spec
+      // door's open-pipeline lookup lives in Phase 1, which this door skips,
+      // so re-entering it filed a second issue for the same story — and
+      // implement concurrency and branch names are keyed by issue number, so
+      // both could dispatch independent agents against one approved story.
+      const phase = section(raw, '### Phase S.3');
+      expect(phase).toMatch(/gh issue list/);
+      // The lookup has to come before the create, not after it.
+      expect(phase.indexOf('gh issue list')).toBeLessThan(phase.indexOf('gh issue create'));
+    });
+
+    it('does not read a truncated issue listing as no issue', () => {
+      // The recurring failure this repo keeps closing: a search that could not
+      // see something reporting the something is not there. Filing a duplicate
+      // on a short listing is exactly that.
+      const phase = section(raw, '### Phase S.3');
+      expect(phase).toMatch(/(truncat|short|limit)/i);
     });
 
     it('files a story issue with an unbackticked Story: line alone on its line', () => {
@@ -216,5 +261,50 @@ describe('skills/', () => {
       expect(raw).toContain('quick-dev');
       expect(raw).toContain('state:spec-ready');
     });
+  });
+});
+
+describe('spec-review derivation mode', () => {
+  const root = resolve(__dirname, '../..');
+  const skill = readFileSync(resolve(root, 'skills/spec-review/SKILL.md'), 'utf8');
+  // Bounded at the next top-level heading. An unbounded slice runs into the
+  // spec mode below it, whose text mentions the plan this mode must not ask
+  // for — the assertion would then be reading the wrong section.
+  const modeStart = skill.indexOf('## Derivation-review mode');
+  const modeBody = skill.slice(modeStart + 1);
+  const modeEnd = [...modeBody.matchAll(/\n## /g)].find(
+    (m) => ((modeBody.slice(0, m.index).match(/^```/gm) ?? []).length % 2) === 0,
+  );
+  const mode = modeEnd
+    ? skill.slice(modeStart, modeStart + 1 + modeEnd.index)
+    : skill.slice(modeStart);
+
+  it('declares the mode start-feature Phase S.1 invokes', () => {
+    // Codex, PR #164 (P1): the shipped story door told the agent to invoke
+    // `dev-agent:spec-review`'s derivation-review mode, and no such mode
+    // existed. The spec mode requires a plan, which a story does not have, so
+    // the door could not reach a clean verdict at all — it blocked, or invited
+    // the agent to invent a review result.
+    expect(skill).toContain('## Derivation-review mode');
+    expect(mode).toContain('story_path');
+    expect(mode).toContain('source_spec_path');
+  });
+
+  it('makes design content absent from the source spec a blocker', () => {
+    // The verdict word is the entire mechanism: `buildStoryApproval` refuses
+    // anything that is not `ok`, and the user approves a verdict rather than
+    // reading the document. A finding recorded only in prose is not a gate.
+    expect(mode).toMatch(/absent from (the |its )?source spec[^.]*blocker/i);
+  });
+
+  it('does not ask a story for a plan', () => {
+    // The spec-mode checklist cross-checks acceptance criteria against plan
+    // tasks. A mode that inherited that check would emit a blocker on every
+    // story.
+    expect(mode).not.toContain('plan_path');
+  });
+
+  it('ships the checklist the mode loads', () => {
+    expect(existsSync(resolve(root, 'skills/spec-review/derivation-checklist.md'))).toBe(true);
   });
 });
