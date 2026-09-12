@@ -275,3 +275,25 @@ describe('dashboard mirror', () => {
     );
   });
 });
+
+describe('rollout compatibility', () => {
+  it('keeps the spec schema version at 1', () => {
+    // Bumping it makes every newly written approval refuse as schema-too-new
+    // on any dashboard deployed before the engine rolls out.
+    expect(SPEC_APPROVAL_SCHEMA_VERSION).toBe(1);
+  });
+
+  it('still reads an approval written before the kind field existed', () => {
+    const legacy = JSON.stringify({
+      schema_version: 1,
+      spec_path: 'docs/superpowers/specs/2026-05-01-foo-design.md',
+      plan_path: null,
+      spec_sha256: 'd'.repeat(64),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'ali@example.com',
+      approved_at: '2026-05-01T00:00:00.000Z',
+    });
+    expect(parseSpecApproval(legacy).ok).toBe(true);
+  });
+});
