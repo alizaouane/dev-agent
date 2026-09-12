@@ -98,13 +98,25 @@ export interface StoryRef {
  * `Spec:` and `Plan:`. The gate branches on which is present, so this
  * returning null is how a spec issue is recognised, not an error.
  *
+ * The label and the path must sit on one line, matching what the implement
+ * workflow's line-oriented grep can see. Both readers accept exactly the same
+ * issue bodies, which is the property that keeps one of them from approving
+ * work the other resolves differently.
+ *
  * @param body - The issue body, or null for an empty issue.
  * @returns The declared story with any leading `./` removed, or null when
  *   there is no `Story:` line.
  */
 export function parseStoryRef(body: string | null | undefined): StoryRef | null {
   if (!body) return null;
-  const story = stripQuotedRegions(body).match(/^\s*Story:\s*(\S+\.md)\s*$/m)?.[1];
+  // Horizontal whitespace only. JavaScript's `\s` matches a newline, so
+  // `\s*Story:\s*(\S+\.md)` accepted a label and a path on separate lines —
+  // which the workflow's line-oriented grep cannot see. That issue was
+  // approved here, dispatched, and then resolved by the workflow's spec
+  // fallback as though the story were the spec, refusing the story's record
+  // as a malformed spec approval after the issue had already moved on.
+  // `\r?` keeps the CRLF tolerance the shell's `[[:space:]]*$` has.
+  const story = stripQuotedRegions(body).match(/^[ \t]*Story:[ \t]*(\S+\.md)[ \t]*\r?$/m)?.[1];
   // Canonicalised here, at the point the path enters the system as data, so
   // the gate compares the same spelling `approve-story` recorded. Without it
   // a `./docs/…` line is approved, filed, and then refused for ever on a

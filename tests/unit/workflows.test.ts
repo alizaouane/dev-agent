@@ -1275,6 +1275,20 @@ describe('.github/workflows/', () => {
         expect(resolve(body)).toBe('');
       });
 
+      it('does NOT resolve a Story: label whose path is on the next line', () => {
+        // The paired half of the dashboard's test. grep is line-oriented and
+        // cannot match across the break; parseStoryRef was tightened to
+        // horizontal whitespace so it cannot either. Both readers now accept
+        // exactly the same issue bodies.
+        expect(resolve('Story:\ndocs/stories/epic-1/foo.md\n')).toBe('');
+      });
+
+      it('resolves a CRLF Story: line, as the dashboard parser does', () => {
+        expect(resolve('Story: docs/stories/epic-1/foo.md\r\n')).toBe(
+          'docs/stories/epic-1/foo.md',
+        );
+      });
+
       it('strips a leading ./ so the shell agrees with canonicalStoryPath', () => {
         // Codex, PR #164. `approve-story` records the path without a leading
         // `./`, so a resolver that preserved the issue's spelling would hand

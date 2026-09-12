@@ -208,6 +208,24 @@ describe('parseStoryRef', () => {
     expect(parseStoryRef(body)?.story_path).toBe('docs/stories/epic-8/8.1-gate-hardening.md');
   });
 
+  it('does not accept a Story: label and a path on separate lines', () => {
+    // Codex, PR #164: JavaScript's \s matches a newline, so this parsed as a
+    // story here while the workflow's line-oriented grep found nothing. The
+    // run then fell through to the spec fallback, resolved the story AS the
+    // spec, and refused the story's approval record as a malformed spec
+    // approval — after the dashboard had already moved the issue on.
+    expect(parseStoryRef('Story:\ndocs/stories/epic-8/8.1-x.md\n')).toBeNull();
+  });
+
+  it('still accepts a CRLF line ending', () => {
+    // The shell grep's [[:space:]]*$ absorbs the \r, so this side must too —
+    // tightening to horizontal whitespace must not reintroduce a divergence
+    // in the other direction.
+    expect(parseStoryRef('Story: docs/stories/epic-8/8.1-x.md\r\n')?.story_path).toBe(
+      'docs/stories/epic-8/8.1-x.md',
+    );
+  });
+
   it('canonicalises a leading ./ out of the parsed path', () => {
     expect(parseStoryRef('Story: ./docs/stories/epic-8/8.1-x.md\n')?.story_path).toBe(
       'docs/stories/epic-8/8.1-x.md',
