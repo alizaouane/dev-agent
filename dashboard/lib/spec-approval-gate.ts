@@ -21,6 +21,33 @@ import {
  * branching logic in it beyond fail-closed error handling.
  */
 
+/**
+ * Strip fenced blocks and inline backtick spans from an issue body.
+ *
+ * Both reference parsers run against this, so a path quoted inside an example
+ * cannot outrank the canonical link — and, more importantly, cannot differ
+ * between the two parsers.
+ *
+ * Only fences that actually close are stripped. A stray opener with no
+ * partner would otherwise swallow the rest of the body, including the real
+ * reference.
+ *
+ * @param body - The issue body.
+ * @returns The body with quoted regions removed.
+ */
+function stripQuotedRegions(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const fences = lines.flatMap((line, i) => (/^ {0,3}(```|~~~)/.test(line) ? [i] : []));
+  const stripped = new Set<number>();
+  for (let i = 0; i + 1 < fences.length; i += 2) {
+    for (let n = fences[i]; n <= fences[i + 1]; n++) stripped.add(n);
+  }
+  return lines
+    .filter((_line, i) => !stripped.has(i))
+    .join('\n')
+    .replace(/`[^`]*`/g, '');
+}
+
 /** Spec and plan paths as declared in an issue body. */
 export interface SpecRefs {
   spec_path: string;
@@ -44,24 +71,34 @@ export interface SpecRefs {
  */
 export function parseSpecRefs(body: string | null | undefined): SpecRefs | null {
   if (!body) return null;
-  const lines = body.split(/\r?\n/);
-  const fences = lines.flatMap((line, i) => (/^ {0,3}(```|~~~)/.test(line) ? [i] : []));
-  // Only strip fences that actually close. A stray or pasted-in opener with no
-  // partner would otherwise swallow the rest of the body — including the real
-  // `Spec:` line — and refuse a properly approved issue.
-  const stripped = new Set<number>();
-  for (let i = 0; i + 1 < fences.length; i += 2) {
-    for (let n = fences[i]; n <= fences[i + 1]; n++) stripped.add(n);
-  }
-  const cleaned = lines
-    .filter((_line, i) => !stripped.has(i))
-    .join('\n')
-    .replace(/`[^`]*`/g, '');
+  const cleaned = stripQuotedRegions(body);
 
   const spec = cleaned.match(/^\s*Spec:\s*(\S+\.md)\s*$/m)?.[1];
   if (!spec) return null;
   const plan = cleaned.match(/^\s*Plan:\s*(\S+\.md)\s*$/m)?.[1];
   return { spec_path: spec, plan_path: plan ?? null };
+}
+
+/** The story a handoff issue declares. */
+export interface StoryRef {
+  /** Repo-relative path to the story. */
+  story_path: string;
+}
+
+/**
+ * Pull the `Story:` path out of a handoff issue body.
+ *
+ * A story-based issue carries `Story:` where a spec-based issue carries
+ * `Spec:` and `Plan:`. The gate branches on which is present, so this
+ * returning null is how a spec issue is recognised, not an error.
+ *
+ * @param body - The issue body, or null for an empty issue.
+ * @returns The declared story, or null when there is no `Story:` line.
+ */
+export function parseStoryRef(body: string | null | undefined): StoryRef | null {
+  if (!body) return null;
+  const story = stripQuotedRegions(body).match(/^\s*Story:\s*(\S+\.md)\s*$/m)?.[1];
+  return story ? { story_path: story } : null;
 }
 
 /**

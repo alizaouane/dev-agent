@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { Octokit } from '@octokit/rest';
-import { evaluateSpecApproval, parseSpecRefs } from '@/lib/spec-approval-gate';
+import { evaluateSpecApproval, parseSpecRefs, parseStoryRef } from '@/lib/spec-approval-gate';
 import {
   OVERRIDE_LABEL,
   SPEC_APPROVAL_SCHEMA_VERSION,
@@ -198,5 +198,33 @@ describe('evaluateSpecApproval', () => {
       (c) => (c[0] as { path: string }).path,
     );
     expect(paths).toEqual([SPEC, APPROVAL]);
+  });
+});
+
+describe('parseStoryRef', () => {
+  it('reads the story path out of the body', () => {
+    const body = 'Story: docs/stories/epic-8/8.1-gate-hardening.md\n\n## TL;DR\n\nBody.\n';
+    expect(parseStoryRef(body)?.story_path).toBe('docs/stories/epic-8/8.1-gate-hardening.md');
+  });
+
+  it('returns null for a spec-based issue', () => {
+    const body = 'Spec: docs/superpowers/specs/2026-05-01-a-design.md\nPlan: docs/superpowers/plans/2026-05-01-a.md\n';
+    expect(parseStoryRef(body)).toBeNull();
+  });
+
+  it('ignores a path inside a fenced block', () => {
+    // Same rule the spec parser applies: an example in the body is not the
+    // reference the workflow will act on.
+    const body = 'Intro\n\n```\nStory: docs/stories/epic-8/8.1-example.md\n```\n';
+    expect(parseStoryRef(body)).toBeNull();
+  });
+
+  it('ignores a path inside backticks', () => {
+    expect(parseStoryRef('Story: `docs/stories/epic-8/8.1-x.md`\n')).toBeNull();
+  });
+
+  it('returns null for an empty body', () => {
+    expect(parseStoryRef(null)).toBeNull();
+    expect(parseStoryRef('')).toBeNull();
   });
 });
