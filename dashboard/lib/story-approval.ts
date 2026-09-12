@@ -19,6 +19,22 @@ import { resolveRefusal, type DispatchGateDecision, type GateReason, type Review
 const KIND = 'story';
 
 /**
+ * Escape regex metacharacters in a string for safe interpolation into a RegExp.
+ *
+ * The status values declared in STORY_STATUS_VALUES are data: a value should not
+ * change the compiled pattern's grammar by accident. Future values may contain
+ * metacharacters like `.` or `?` which would silently WIDEN or break the match if
+ * unescaped. Escape first, then apply any intentional pattern (like the space
+ * alternation in InProgress).
+ *
+ * @param value - String to escape.
+ * @returns The value with all regex metacharacters escaped.
+ */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()\[\]\\|]/g, '\\$&');
+}
+
+/**
  * Separator between the domain tag and the document.
  *
  * Written as an escape sequence, never as a literal control character in
@@ -51,9 +67,10 @@ export const STORY_STATUS_VALUES = [
  * One alternation covering every declared value, plus the spaced spelling of
  * `InProgress` that `.standard/check.sh` also accepts.
  */
-const STATUS_ALTERNATION = STORY_STATUS_VALUES.map((v) =>
-  v === 'InProgress' ? 'In ?Progress' : v,
-).join('|');
+const STATUS_ALTERNATION = STORY_STATUS_VALUES.map((v) => {
+  const escaped = escapeRegExp(v);
+  return v === 'InProgress' ? escaped.replace('InProgress', 'In ?Progress') : escaped;
+}).join('|');
 
 /**
  * Matches the story's status header in the spellings the kit's conformance

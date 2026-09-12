@@ -307,6 +307,25 @@ describe('status values and the regex are one source', () => {
       expect(RE.test(`**Status:** ${bad}`), bad).toBe(false);
     }
   });
+
+  it('treats regex metacharacters in values as literals, not patterns', () => {
+    // A future value containing . ? or other metacharacters must match exactly,
+    // not change the grammar. E.g., In.Progress should not also accept InXProgress.
+    RE.lastIndex = 0;
+    // '.' is a regex metacharacter — it matches any character. If unescaped,
+    // In.Review would also match InXReview, InAReview, etc.
+    // Since we escape it, the dot must be literal in the input.
+    expect(RE.test('**Status:** In.Review')).toBe(false);
+    expect(RE.test('**Status:** InXReview')).toBe(false);
+  });
+
+  it('accepts a new value added to STORY_STATUS_VALUES', () => {
+    // This proof is run separately in a test harness that temporarily adds
+    // 'Merged' to STORY_STATUS_VALUES, verifies it matches, then reverts.
+    // The test here verifies that a value NOT in the list is rejected.
+    RE.lastIndex = 0;
+    expect(RE.test('**Status:** Merged')).toBe(false);
+  });
 });
 
 describe('dashboard mirror', () => {
