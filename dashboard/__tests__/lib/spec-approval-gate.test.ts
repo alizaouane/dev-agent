@@ -337,6 +337,54 @@ describe('evaluateSpecApproval — story issues', () => {
     ).rejects.toThrow();
   });
 
+  it('routes an issue carrying both references to the story gate', async () => {
+    // An issue with both lines is malformed. The story gate is the safe place
+    // to send it: it refuses unless the story and its approval both exist and
+    // match, so a stale spec approval cannot authorise it. Reordering these
+    // branches would check a spec approval while the agent implements a story.
+    //
+    // This test succeeds when story is checked first (refuses because no
+    // story approval exists). It would fail (allow: true) if spec branch runs
+    // first, because a valid spec approval is provided.
+
+    const DUAL_SPEC = 'docs/superpowers/specs/2026-09-10-dual-test.md';
+    const DUAL_PLAN = 'docs/superpowers/plans/2026-09-10-dual-test.md';
+    const DUAL_SPEC_TEXT = '# Dual Spec\n\nTest body.';
+    const DUAL_PLAN_TEXT = '# Dual Plan\n\nTest body.';
+    const DUAL_APPROVAL = 'docs/superpowers/specs/2026-09-10-dual-test.approval.json';
+
+    // Create a body with both Story: and Spec: lines
+    const dualBody = `Story: ${STORY}\nSpec: ${DUAL_SPEC}\nPlan: ${DUAL_PLAN}\n\n## TL;DR\n\nBoth references.\n`;
+
+    // Spec side: provide valid spec and plan texts and an approval that matches
+    const dualSpecApprovalData = JSON.stringify({
+      schema_version: SPEC_APPROVAL_SCHEMA_VERSION,
+      spec_path: DUAL_SPEC,
+      plan_path: DUAL_PLAN,
+      spec_sha256: hashSpecAndPlan(DUAL_SPEC_TEXT, DUAL_PLAN_TEXT),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'ali@example.com',
+      approved_at: '2026-09-12T10:00:00.000Z',
+    });
+
+    // Story side: provide story text but NO approval, so story gate refuses
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({
+        [STORY]: STORY_TEXT,
+        [DUAL_SPEC]: DUAL_SPEC_TEXT,
+        [DUAL_PLAN]: DUAL_PLAN_TEXT,
+        [DUAL_APPROVAL]: dualSpecApprovalData,
+        // Deliberately omit story approval: approvalPathForStory(STORY)
+      }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: dualBody, labels: [],
+    });
+
+    // Should refuse because story gate is checked first and finds no approval
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('missing');
+  });
+
   it('still refuses an issue carrying neither reference', async () => {
     const d = await evaluateSpecApproval({
       octokit: octokitFor({}), owner: 'q', repo: 'r', ref: 'main',

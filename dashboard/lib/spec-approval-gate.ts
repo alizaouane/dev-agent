@@ -157,6 +157,11 @@ export async function evaluateSpecApproval(input: {
   // was a precondition when the story was approved and is lineage afterwards,
   // so re-reading it here would let one late amendment to a program spec
   // invalidate every story derived from it.
+  //
+  // Precedence: a `Story:` line wins over a `Spec:` line. An issue carrying
+  // both is malformed, but this branch is the safe place to route it: the
+  // story gate fails closed — it refuses unless the story and its approval both
+  // exist and match — so a stale spec approval cannot authorise it.
   const storyRef = parseStoryRef(issueBody);
   if (storyRef) {
     const storyText = await fetchText(octokit, owner, repo, storyRef.story_path, ref);
