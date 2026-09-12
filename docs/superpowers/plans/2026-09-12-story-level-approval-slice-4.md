@@ -12,7 +12,13 @@
 
 ## Scope of this plan
 
-Slice 4: **AC-12, AC-13, AC-14**, and **AC-15 in the two places a transition exists**.
+Slice 4: **AC-12, AC-13**, and **AC-15 in the two places a transition exists**.
+
+**AC-14 was delivered in slice 3's pull request, not here.** Its review found
+that the shipped story door invoked a derivation-review mode that did not
+exist, rated it a blocker, and it was — the door could not reach the clean
+verdict it waits for. Task 1 below is kept for the record, marked done, and
+carries no work. Start at Task 2.
 
 Slices 1 to 3 are merged or in flight. At the end of this plan a story with a recorded approval is visible and startable from the repo page, and its status line moves to `InProgress` when implement starts and `Review` when the pull request opens.
 
@@ -63,11 +69,23 @@ Recorded so the executor does not re-open them, and so a later reader can see wh
 
 ## Task dependency order
 
-Tasks 1 and 2 are independent of everything. Tasks 3 to 9 are a chain: each consumes the one before. Tasks 10 and 11 are independent of 3 to 9 and depend on nothing in this plan except each other. An executor short on time can stop cleanly after Task 9 or after Task 11.
+Task 1 is already done. Task 2 is independent of everything. Tasks 3 to 9 are a chain: each consumes the one before. Tasks 10 and 11 are independent of 3 to 9 and depend on nothing in this plan except each other. An executor short on time can stop cleanly after Task 9 or after Task 11.
 
 ---
 
-### Task 1: The derivation-review mode the intake already invokes (AC-14)
+### Task 1: The derivation-review mode the intake already invokes (AC-14) — DONE IN SLICE 3
+
+**Do not execute this task.** It shipped in slice 3's pull request
+(`feat(spec-review): the derivation mode the story door invokes`), because
+that PR's review found the shipped door invoking a mode that did not exist and
+correctly called it a blocker on the door itself. `skills/spec-review/SKILL.md`
+carries the mode, `skills/spec-review/derivation-checklist.md` carries its
+checks, and four tests in `tests/unit/skills.test.ts` cover it. The
+specification below is kept so the decision behind D1.3 stays readable.
+
+<details>
+<summary>Original task text</summary>
+
 
 `skills/start-feature/SKILL.md:188` tells the agent to "invoke `dev-agent:spec-review`'s derivation-review mode". That mode does not exist. `skills/spec-review/SKILL.md` documents one mode, which takes a `spec_path` and a `plan_path`, cross-checks Files to Touch against the default branch, and cross-checks acceptance criteria against plan tasks. A story has no plan, so the shipped intake references something that cannot run.
 
@@ -249,6 +267,8 @@ git commit -m "feat(spec-review): the derivation mode the intake already invokes
 ```
 
 ---
+
+</details>
 
 ### Task 2: `artifacts.stories_dir`
 
@@ -2447,7 +2467,7 @@ git commit -m "feat(implement): project the story status as the issue moves"
 |---|---|---|
 | AC-12 | Tasks 5, 6, 7, 8, 9 | Full |
 | AC-13 | Tasks 2, 3, 4 | Full |
-| AC-14 | Task 1 | Full |
+| AC-14 | Task 1 | Delivered in slice 3's PR, not here |
 | AC-15 | Tasks 10, 11 | `InProgress` and `Review` only — see below |
 
 **AC-15 is knowingly partial.** The `Done` stamp is implemented in the CLI and covered by its tests, and is not wired, because nothing in this repository sets `state:done`. `phase-promote-to-prod.yml` reports promotion unimplemented and exits 1. Wiring it is one step in the promotion phase on the day that phase is built. Record this honestly wherever the criterion is ticked: a criterion marked met on a transition that cannot occur is the same failure this whole feature exists to remove.
