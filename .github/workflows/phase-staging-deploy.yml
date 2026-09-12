@@ -349,11 +349,19 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Pinned to an immutable revision, not `main`. This job is the only one
+      # in this workflow holding `contents: write`, and it executes engine code
+      # — so a mutable ref means the code running beside that credential can
+      # change between review and run (CWE-829).
+      #
+      # MAINTENANCE: bump this in the same pull request that changes anything
+      # under lib/cli/ that this job runs. A stale pin runs old CLI code; an
+      # unpinned ref runs unreviewed code with a write token, which is worse.
       - name: Checkout dev-agent engine
         uses: actions/checkout@v4
         with:
           repository: alizaouane/dev-agent
-          ref: main
+          ref: 5d5d31413e12f4f4c5c810662508adcab8fd1470
           path: .dev-agent-engine
           persist-credentials: false
 
@@ -364,6 +372,9 @@ jobs:
         working-directory: .dev-agent-engine
         run: npm ci --omit=dev --ignore-scripts
 
+      # No GH_TOKEN here, deliberately. This step runs engine code; the step
+      # below holds the credential and runs none. The pin bounds what code can
+      # run; this bounds what that code can reach if the pin is ever wrong.
       - name: Append SESSION_LOG.md entry
         env:
           PHASE: staging-deploy
@@ -371,10 +382,16 @@ jobs:
           OUTCOME: ${{ needs.staging-deploy.outputs.phase_outcome || 'aborted' }}
           NEXT_SESSION_HINT: ${{ needs.staging-deploy.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
           TRIGGER: 'PR merged to default branch — staging deploy + smoke verify run.'
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
+
+      - name: Commit and push the session log
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           if git diff --quiet -- SESSION_LOG.md; then
             echo "SESSION_LOG.md unchanged — no commit needed."
             exit 0
@@ -385,5 +402,21 @@ jobs:
           # checkout produced into a commit nobody reviewed.
           git add SESSION_LOG.md
           git commit -m "chore(dev-agent): session log — staging-deploy issue #${ISSUE_NUMBER}"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD \
-            || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"
+
+          # Two runs for different issues append to the same file, so whichever
+          # pushes second gets a non-fast-forward. The previous `|| echo`
+          # swallowed exactly that and the job went green having dropped the
+          # entry. Rebase and retry instead; only a push still failing after
+          # three attempts is reported, and loudly.
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for attempt in 1 2 3; do
+            if git push "$REMOTE" HEAD; then
+              echo "session log pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "push attempt $attempt failed; rebasing onto the current tip"
+            git pull --rebase "$REMOTE" HEAD || break
+            sleep $((attempt * 3))
+          done
+          echo "::warning::could not push the session log after 3 attempts — the entry is committed locally only. A protected branch does this; so does a rebase that could not replay."
+          exit 0

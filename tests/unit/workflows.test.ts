@@ -688,6 +688,41 @@ describe('.github/workflows/', () => {
       }
     });
 
+    it('runs engine code with no write token in its environment', () => {
+      // The session-log job is the only one holding `contents: write`. Running
+      // engine code and holding the credential in the same step means a change
+      // to the engine can use that token against the consumer's repository.
+      // Splitting them does not make the script safe, but it stops the script
+      // reading a credential that is not in its environment.
+      const logJob = raw.slice(raw.indexOf('  session-log:'));
+      const appendStep = logJob.slice(
+        logJob.indexOf('      - name: Append SESSION_LOG.md entry'),
+        logJob.indexOf('      - name: Commit and push the session log'),
+      );
+      expect(appendStep, 'append step not found before the push step').not.toBe('');
+      expect(appendStep).not.toMatch(/GH_TOKEN/);
+    });
+
+    it('pins the engine checkout to an immutable revision in that job', () => {
+      // `ref: main` is a mutable pointer. Executing code fetched from it in the
+      // job that holds a write token is CWE-829 — the revision can change
+      // between review and run.
+      const logJob = raw.slice(raw.indexOf('  session-log:'));
+      const engineCheckout = logJob.slice(logJob.indexOf('repository: alizaouane/dev-agent'));
+      expect(engineCheckout.slice(0, 400)).toMatch(/ref: [0-9a-f]{40}/);
+      expect(engineCheckout.slice(0, 400)).not.toMatch(/ref: main/);
+    });
+
+    it('retries the session-log push instead of losing the entry', () => {
+      // Two runs for different issues append to the same file. Whichever
+      // pushes second gets a non-fast-forward, and the old `|| echo` swallowed
+      // it — the job went green having dropped the entry.
+      const logJob = raw.slice(raw.indexOf('  session-log:'));
+      expect(logJob).toMatch(/for attempt in/);
+      expect(logJob).toMatch(/pull --rebase/);
+      expect(logJob).toMatch(/::warning::/);
+    });
+
     it('pushes the session log from a job the agent never touched', () => {
       // Dropping persisted credentials narrowed the window and did not close
       // it: the agent shares the workspace, so it can edit SESSION_LOG.md or
