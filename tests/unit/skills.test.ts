@@ -91,6 +91,59 @@ describe('skills/', () => {
     });
   });
 
+  describe('/start-feature — the story door', () => {
+    // The second intake door: when the work is already a sharded story
+    // (written upstream by /shard from an approved program spec), brainstorm
+    // and plan-writing are both waste — the document already exists. This
+    // door reads the story's `Source spec:` line, confirms that spec carries
+    // a clean approval, runs the lighter derivation review instead of the
+    // full adversarial spec-review, and files a story-shaped issue.
+    const skillPath = resolve(skillsDir, 'start-feature', 'SKILL.md');
+    const raw = existsSync(skillPath) ? readFileSync(skillPath, 'utf8') : '';
+
+    it('documents a branch for an already-written story that skips brainstorming and plan-writing', () => {
+      expect(raw).toMatch(/already[- ](a[- ])?(written|sharded)\s+story/i);
+      expect(raw).toMatch(/skips?\s+(the\s+)?(brainstorm(ing)?|Phase\s*2)/i);
+      expect(raw).toMatch(/skips?\s+(the\s+)?(plan[- ]writing|Phase\s*3\b)/i);
+    });
+
+    it('names approve-story for the story branch and approve-spec for the spec branch', () => {
+      expect(raw).toContain('approve-story');
+      expect(raw).toContain('approve-spec');
+    });
+
+    it('carries the same never-on-the-users-behalf prohibition for approve-story as for approve-spec', () => {
+      expect(raw).toMatch(/never run `approve-story` on the user'?s behalf/i);
+      expect(raw).toMatch(/never run `approve-spec` on the user'?s behalf/i);
+    });
+
+    it('runs a derivation review rather than the full spec-review on the story branch', () => {
+      expect(raw).toMatch(/derivation review/i);
+    });
+
+    it('files a story issue with an unbackticked Story: line alone on its line', () => {
+      // Same shape the existing door uses for `Spec:` — see Phase 4's
+      // `Spec: ${SPEC_PATH}` — and for the same reason: the dashboard parser
+      // (/^\s*Story:\s*(\S+\.md)\s*$/m) and the workflow grep are both
+      // end-anchored and both strip/reject quoted regions, so a backticked
+      // path would file cleanly and then fail the gate.
+      expect(raw).toMatch(/^Story: \$\{STORY_PATH\}$/m);
+      expect(raw).not.toMatch(/`Story: /);
+    });
+
+    it("labels the story issue state:spec-ready, kind:<kind>, and epic:<N>", () => {
+      expect(raw).toMatch(/--label\s+"state:spec-ready,kind:\$\{KIND\},epic:\$\{EPIC\}"/);
+    });
+
+    it('extends the gh label create fallback to the epic: label', () => {
+      expect(raw).toMatch(/gh label create\s+"epic:\$\{EPIC\}"/);
+    });
+
+    it('states that a story issue carries no Plan: line', () => {
+      expect(raw).toMatch(/no `Plan:` line/i);
+    });
+  });
+
   describe('/quick-dev', () => {
     // Fast-path skill for trivial work. The SKILL.md must encode the
     // bypass contract: phases 2 / 3 / 3.5 are skipped, the implement
