@@ -1164,5 +1164,21 @@ describe('.github/workflows/', () => {
     it('feeds the story to the agent as its context bundle', () => {
       expect(raw).toMatch(/steps\.issue\.outputs\.story_path/);
     });
+
+    it('renders the system prompt against whichever document the issue names', () => {
+      // "Render system prompt" only ever wired up SPEC_PATH into
+      // PROMPT_VARS_JSON. For a story issue SPEC_PATH is empty by design, so
+      // {{spec_path}} in prompts/implement.md renders empty and the agent is
+      // told to read the spec at `` — the story text reaches it some other
+      // way, but the instruction itself is confusing. Sliced to this step
+      // only, matching the slicing convention used elsewhere in this file.
+      const renderStep = raw.slice(
+        raw.indexOf('- name: Render system prompt'),
+        raw.indexOf('- name: Build agent prompt'),
+      );
+      expect(renderStep).toMatch(/STORY_PATH:\s*\$\{\{\s*steps\.issue\.outputs\.story_path\s*\}\}/);
+      expect(renderStep).toMatch(/DOC_PATH="\$\{STORY_PATH:-\$SPEC_PATH\}"/);
+      expect(renderStep).toMatch(/--arg spec_path "\$DOC_PATH"/);
+    });
   });
 });

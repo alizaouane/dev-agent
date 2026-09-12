@@ -491,11 +491,18 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          STORY_PATH: ${{ steps.issue.outputs.story_path }}
           PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
         run: |
           set -euo pipefail
+          # A story issue's context document is the story, not the spec — the
+          # two are mutually exclusive on the "Read issue" step above. Same
+          # DOC_PATH idiom as "Verify spec approval" and "Build agent prompt",
+          # so the rendered system prompt's {{spec_path}} names the document
+          # the agent was actually handed, instead of rendering empty.
+          DOC_PATH="${STORY_PATH:-$SPEC_PATH}"
           export PROMPT_VARS_JSON=$(jq -nc \
-            --arg spec_path "$SPEC_PATH" \
+            --arg spec_path "$DOC_PATH" \
             --arg plan_path "${PLAN_PATH:-}" \
             --arg branch_name "feat/dev-agent-issue-${ISSUE_NUMBER}" \
             --argjson issue "$ISSUE_NUMBER" \
