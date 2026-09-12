@@ -319,12 +319,19 @@ describe('status values and the regex are one source', () => {
     expect(RE.test('**Status:** InXReview')).toBe(false);
   });
 
-  it('accepts a new value added to STORY_STATUS_VALUES', () => {
-    // This proof is run separately in a test harness that temporarily adds
-    // 'Merged' to STORY_STATUS_VALUES, verifies it matches, then reverts.
-    // The test here verifies that a value NOT in the list is rejected.
-    RE.lastIndex = 0;
-    expect(RE.test('**Status:** Merged')).toBe(false);
+  it('derives its alternation from STORY_STATUS_VALUES, not a hardcoded list', () => {
+    // Every other test here passes just as well against a hardcoded
+    // alternation — it only diverges the day someone adds a status to
+    // STORY_STATUS_VALUES and the regex stops recognising it, at which point
+    // hashing stops stripping the line and breaks the approval on a story
+    // nobody edited. So pin the derivation itself, in both directions.
+    for (const value of STORY_STATUS_VALUES) {
+      const alternative = value === 'InProgress' ? 'In ?Progress' : value;
+      expect(RE.source, value).toContain(alternative);
+    }
+    const alternation = RE.source.match(/\(\?:(.+?)\)/);
+    expect(alternation, 'the status alternation group moved — update this test').not.toBeNull();
+    expect(alternation![1].split('|')).toHaveLength(STORY_STATUS_VALUES.length);
   });
 });
 

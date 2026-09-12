@@ -1182,55 +1182,105 @@ describe('.github/workflows/', () => {
       expect(renderStep).toMatch(/--arg spec_path "\$DOC_PATH"/);
     });
 
-    describe('the Story: grep agrees with the dashboard parser (end-anchored)', () => {
-      // The dashboard's parseStoryRef is /^\s*Story:\s*(\S+\.md)\s*$/m —
-      // end-anchored, so a `Story:` line with trailing text after the path
-      // is "no Story: line" to the dashboard. Extract the actual grep
-      // pattern from the "Read issue" step and run it for real, rather than
-      // just asserting a literal string is present, so the test tracks
-      // behavior instead of spelling.
+    describe('the Story: resolution agrees with the dashboard parser', () => {
+      // The dashboard's parseStoryRef is
+      // stripQuotedRegions(body).match(/^\s*Story:\s*(\S+\.md)\s*$/m) —
+      // quoted regions removed first, then an end-anchored line match. Both
+      // halves have to hold here too, so rather than assert a literal string
+      // is present, extract the real shell that resolves STORY_PATH and run
+      // it. The test then tracks behavior instead of spelling.
       const readIssueStep = raw.slice(
         raw.indexOf('- name: Read issue'),
         raw.indexOf('- name: Verify spec approval'),
       );
 
-      const extractStoryGrepPattern = (): string => {
-        const match = readIssueStep.match(/grep -oE '([^']+)' \| head -1/);
-        if (!match) {
-          throw new Error('could not find the Story: grep pattern in the "Read issue" step');
+      const extractStoryResolution = (): string => {
+        const start = readIssueStep.indexOf('# A Story: line wins');
+        if (start < 0) {
+          throw new Error('could not find the Story: resolution block in the "Read issue" step');
         }
-        return match[1];
+        const rest = readIssueStep.slice(start);
+        const last = rest.match(/^[ \t]*STORY_PATH=.*$/m);
+        if (!last) {
+          throw new Error('could not find the STORY_PATH assignment in the "Read issue" step');
+        }
+        const block = rest.slice(0, rest.indexOf(last[0]) + last[0].length);
+        // The block is indented as a YAML `run: |` body. Strip the common
+        // indent so bash sees the script the runner sees.
+        const indents = block
+          .split('\n')
+          .filter((line) => line.trim() !== '')
+          .map((line) => line.match(/^[ \t]*/)![0].length);
+        const dedent = Math.min(...indents);
+        return block
+          .split('\n')
+          .map((line) => line.slice(dedent))
+          .join('\n');
       };
 
-      const runGrep = (body: string): string | null => {
-        try {
-          // Strip only the trailing newline grep's output carries — a plain
-          // .trim() would also eat the trailing spaces the whitespace test
-          // below is specifically checking survive the match.
-          return execFileSync('grep', ['-oE', extractStoryGrepPattern()], {
-            input: body,
-            encoding: 'utf8',
-          }).replace(/\n$/, '');
-        } catch {
-          // grep exits non-zero on no match.
-          return null;
-        }
+      const resolve = (body: string): string => {
+        return execFileSync('bash', ['-c', `${extractStoryResolution()}\nprintf '%s' "$STORY_PATH"`], {
+          env: { ...process.env, BODY: body },
+          encoding: 'utf8',
+        });
       };
 
       it('does NOT resolve a Story: line followed by trailing text as a story', () => {
-        expect(runGrep('Story: docs/stories/epic-1/foo.md some extra text\n')).toBeNull();
+        expect(resolve('Story: docs/stories/epic-1/foo.md some extra text\n')).toBe('');
       });
 
       it('still resolves a clean Story: line', () => {
-        expect(runGrep('Story: docs/stories/epic-1/foo.md\n')).toBe(
-          'Story: docs/stories/epic-1/foo.md',
+        expect(resolve('Story: docs/stories/epic-1/foo.md\n')).toBe(
+          'docs/stories/epic-1/foo.md',
         );
       });
 
-      it('still resolves a Story: line with only trailing whitespace, like the dashboard regex allows', () => {
-        expect(runGrep('Story: docs/stories/epic-1/foo.md   \n')).toBe(
-          'Story: docs/stories/epic-1/foo.md   ',
+      it('still resolves a Story: line carrying only trailing whitespace', () => {
+        expect(resolve('Story: docs/stories/epic-1/foo.md   \n')).toBe(
+          'docs/stories/epic-1/foo.md',
         );
+      });
+
+      it('does NOT resolve a Story: line quoted inside a fenced block', () => {
+        // The failure this guards: an ordinary SPEC issue whose body shows a
+        // `Story:` line inside an example. The dashboard strips the fence and
+        // routes it down the spec branch; without the same strip here the
+        // workflow routes the same issue down the story branch and the two
+        // disagree about which document the approval covered.
+        const body = [
+          'Spec: docs/specs/2026-09-12-thing.md',
+          '',
+          'A story issue looks like this instead:',
+          '',
+          '```',
+          'Story: docs/stories/epic-1/foo.md',
+          '```',
+          '',
+        ].join('\n');
+        expect(resolve(body)).toBe('');
+      });
+
+      it('does NOT resolve a Story: path wrapped in inline backticks', () => {
+        expect(resolve('Story: `docs/stories/epic-1/foo.md`\n')).toBe('');
+      });
+
+      it('strips a backtick span that runs across lines, as the dashboard does', () => {
+        // stripQuotedRegions joins the lines before removing backtick spans,
+        // so `[^`]*` spans newlines. A Story: line swallowed by an unclosed
+        // inline span on an earlier line is invisible to the dashboard and
+        // must be invisible here too.
+        const body = ['Intro `opens here', 'Story: docs/stories/epic-1/foo.md', 'closes` here', ''].join(
+          '\n',
+        );
+        expect(resolve(body)).toBe('');
+      });
+
+      it('does NOT let an unpaired fence opener hide the real Story: line', () => {
+        // Only fences that actually close are stripped — otherwise a stray
+        // opener anywhere above would swallow the canonical link and the
+        // story would resolve as a spec.
+        const body = ['```', 'Story: docs/stories/epic-1/foo.md', ''].join('\n');
+        expect(resolve(body)).toBe('docs/stories/epic-1/foo.md');
       });
     });
   });
