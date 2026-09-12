@@ -1,3 +1,35 @@
+#!/usr/bin/env tsx
+/**
+ * approve-story — record a human approval of a reviewed, sharded story.
+ *
+ * Run from the consumer repo at the end of the Claude Code intake session for
+ * a single story, after the derivation review has come back clean and the
+ * user has said yes in their own words. It writes the artifact the
+ * dashboard's dispatch gate checks before it will start work on that story,
+ * and stamps the story's `Status` header to `Approved` in the same
+ * invocation — see `lib/story-approval.ts` for why the artifact is bound to a
+ * hash rather than a label, and `writeApproval` above for why the story is
+ * stamped before the record is written rather than after.
+ *
+ * This is deliberately not something a model decides to run on its own
+ * behalf: the skill that calls it must have an explicit approval from the
+ * user in the same turn, and `APPROVED_BY` records whose approval it was.
+ *
+ * Required env:
+ *   STORY_PATH       Repo-relative path to the story being approved (.md).
+ *   REVIEW_VERDICT   The verdict being approved. Only `ok` is accepted: an
+ *                    approval exists to record that the review came back clean.
+ *   REVIEW_ROUNDS    How many review-and-correct rounds it took (integer >= 1).
+ *
+ * Optional env:
+ *   APPROVED_BY      Approver identity. Defaults to `git config user.email`.
+ *   REPO_ROOT        Repo root the paths are relative to. Defaults to cwd.
+ *
+ * Output: a one-line success message to stdout naming where the approval
+ * landed and which story was stamped.
+ * Exit code: 0 on success, 2 on any input, precondition, or filesystem error.
+ */
+import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -228,31 +260,60 @@ export function writeApproval(input: ApproveStoryInput): {
 }
 
 /**
+ * Resolve the approver's identity from the local git config.
+ *
+ * Mirrors `approve-spec.ts`'s helper of the same name exactly, so the two
+ * CLIs fall back the same way when `APPROVED_BY` is not set.
+ *
+ * @param repoRoot - Repo to read the config from.
+ * @returns The configured user email, or `unknown` when git has none.
+ */
+function gitIdentity(repoRoot: string): string {
+  try {
+    return execFileSync('git', ['config', 'user.email'], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+    }).trim() || 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+
+/**
  * CLI entry point. Reads the same environment-variable shape as `approve-spec`
- * (`STORY_PATH`, `REVIEW_VERDICT`, `REVIEW_ROUNDS`, `APPROVED_BY`), builds and
- * writes the approval, and logs where it landed.
+ * (`STORY_PATH`, `REVIEW_VERDICT`, `REVIEW_ROUNDS`, `APPROVED_BY`,
+ * `REPO_ROOT`), builds and writes the approval, and logs where it landed.
  *
  * `APPROVED_BY` records a human's identity — this entry point exists to be
  * run by a human approving their own review, never invoked on a user's
  * behalf.
  *
- * @throws If a required environment variable is missing, or whatever
- *   `writeApproval` throws when a precondition fails.
+ * @throws If `STORY_PATH` is missing, `REVIEW_VERDICT` is not one of the
+ *   three known verdicts, `REVIEW_ROUNDS` is not a bare positive integer, or
+ *   whatever `writeApproval` throws when a precondition fails.
  */
 function main(): void {
+  const repoRoot = process.env.REPO_ROOT ?? process.cwd();
+
   const storyPath = process.env.STORY_PATH;
   if (!storyPath) throw new Error('STORY_PATH is required');
-  const verdict = (process.env.REVIEW_VERDICT ?? '') as ReviewVerdict;
-  const rounds = Number.parseInt(process.env.REVIEW_ROUNDS ?? '', 10);
-  const approvedBy = process.env.APPROVED_BY ?? '';
-  if (!approvedBy) throw new Error('APPROVED_BY is required');
+
+  const verdict = process.env.REVIEW_VERDICT;
+  if (verdict !== 'ok' && verdict !== 'concerns' && verdict !== 'blocker') {
+    throw new Error(`REVIEW_VERDICT must be ok | concerns | blocker, got: ${verdict ?? '<unset>'}`);
+  }
+
+  const roundsRaw = process.env.REVIEW_ROUNDS;
+  if (!roundsRaw || !/^\d+$/.test(roundsRaw)) {
+    throw new Error(`REVIEW_ROUNDS must be a positive integer, got: ${roundsRaw ?? '<unset>'}`);
+  }
 
   const { outPath } = writeApproval({
     storyPath,
     reviewVerdict: verdict,
-    reviewRounds: rounds,
-    approvedBy,
-    repoRoot: process.cwd(),
+    reviewRounds: Number(roundsRaw),
+    approvedBy: process.env.APPROVED_BY?.trim() || gitIdentity(repoRoot),
+    repoRoot,
   });
   console.log(`recorded ${outPath} and stamped ${storyPath} Approved`);
 }

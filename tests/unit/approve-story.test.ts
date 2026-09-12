@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync as read, copyFileSync, realpathSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import {
@@ -288,5 +288,96 @@ describe('CLI invocation guard', () => {
 
     expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(true);
     expect(read(join(root, STORY_REL), 'utf8')).toContain('**Status:** Approved');
+  });
+});
+
+describe('main() — parity with approve-spec.ts', () => {
+  const scriptPath = resolve(process.cwd(), 'lib/cli/approve-story.ts');
+
+  const tsxBinPath = resolve(process.cwd(), 'node_modules/.bin/tsx');
+
+  /** Run the real CLI as a subprocess; never throws — callers inspect status/stdio. */
+  function run(env: Record<string, string | undefined>, cwd: string) {
+    return spawnSync(tsxBinPath, [scriptPath], {
+      cwd,
+      env: { ...process.env, ...env },
+      encoding: 'utf8',
+    });
+  }
+
+  it('honours REPO_ROOT rather than hardcoding process.cwd()', () => {
+    const otherCwd = mkdtempSync(join(tmpdir(), 'approve-story-othercwd-'));
+    try {
+      const result = run(
+        {
+          STORY_PATH: STORY_REL,
+          REVIEW_VERDICT: 'ok',
+          REVIEW_ROUNDS: '1',
+          APPROVED_BY: 'ali@example.com',
+          REPO_ROOT: root,
+        },
+        otherCwd,
+      );
+      expect(result.status).toBe(0);
+      expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(true);
+    } finally {
+      rmSync(otherCwd, { recursive: true, force: true });
+    }
+  });
+
+  it('defaults APPROVED_BY to the git identity rather than requiring it', () => {
+    const envWithout: NodeJS.ProcessEnv = {
+      ...process.env,
+      STORY_PATH: STORY_REL,
+      REVIEW_VERDICT: 'ok',
+      REVIEW_ROUNDS: '1',
+      REPO_ROOT: root,
+    };
+    delete envWithout.APPROVED_BY;
+    const result = spawnSync(tsxBinPath, [scriptPath], { cwd: root, env: envWithout, encoding: 'utf8' });
+    expect(result.status).toBe(0);
+    const record = parseStoryApproval(read(join(root, approvalPathForStory(STORY_REL)), 'utf8'));
+    expect(record.ok).toBe(true);
+    if (record.ok) expect(record.approval.approved_by.length).toBeGreaterThan(0);
+  });
+
+  it('validates REVIEW_VERDICT against the three literals instead of an unchecked cast', () => {
+    const envWithout: NodeJS.ProcessEnv = {
+      ...process.env,
+      STORY_PATH: STORY_REL,
+      REVIEW_ROUNDS: '1',
+      APPROVED_BY: 'ali@example.com',
+      REPO_ROOT: root,
+    };
+    delete envWithout.REVIEW_VERDICT;
+    const result = spawnSync(tsxBinPath, [scriptPath], { cwd: root, env: envWithout, encoding: 'utf8' });
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/REVIEW_VERDICT must be ok \| concerns \| blocker/);
+    expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(false);
+  });
+
+  it('requires /^\\d+$/ for REVIEW_ROUNDS rather than accepting parseInt garbage', () => {
+    const result = run(
+      {
+        STORY_PATH: STORY_REL,
+        REVIEW_VERDICT: 'ok',
+        REVIEW_ROUNDS: '3abc',
+        APPROVED_BY: 'ali@example.com',
+        REPO_ROOT: root,
+      },
+      root,
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toMatch(/REVIEW_ROUNDS must be a positive integer/);
+    expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(false);
+  });
+
+  it('carries the tsx shebang and a required-env header docblock like its sibling', () => {
+    const text = read(scriptPath, 'utf8');
+    expect(text.startsWith('#!/usr/bin/env tsx\n')).toBe(true);
+    expect(text).toMatch(/Required env:/);
+    expect(text).toMatch(/STORY_PATH/);
+    expect(text).toMatch(/Optional env:/);
+    expect(text).toMatch(/REPO_ROOT/);
   });
 });
