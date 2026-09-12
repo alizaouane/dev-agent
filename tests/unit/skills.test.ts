@@ -121,6 +121,34 @@ describe('skills/', () => {
       expect(raw).toMatch(/derivation review/i);
     });
 
+    it('validates the source spec approval by running the real gate, not by testing for a file', () => {
+      // Codex, PR #164: Phase S.1 promised to catch an unapprovable source
+      // spec BEFORE spending a derivation-review round, but only checked the
+      // sidecar existed. A record that is malformed, carries a non-`ok`
+      // verdict, names a different spec, names a plan that moved, or has gone
+      // stale all passed that check — and `approve-story` then refused after
+      // the review had run and the user had been asked to approve. The phase
+      // must run the same decision `buildStoryApproval` will, which is
+      // `verify-approval` against the source spec.
+      const phase = raw.slice(raw.indexOf('### Phase S.1'), raw.indexOf('### Phase S.2'));
+      expect(phase).toContain('verify-approval.ts');
+      expect(phase).toMatch(/SPEC_PATH=/);
+      expect(phase).toMatch(/PLAN_PATH=/);
+    });
+
+    it('short-circuits to the handoff when the story is already approved at its current hash', () => {
+      // Codex, PR #164: `buildStoryApproval` refuses to re-record an approval
+      // whose hash already matches — deliberately, it is AC-2. But Phase S.2
+      // invoked `approve-story` unconditionally, so a session that recorded
+      // and committed the approval and then died before filing the issue could
+      // never reach Phase S.3. Nor could a story a human had already approved.
+      // The check is the story-side gate, so it can only pass on an approval a
+      // human already recorded: it cannot be used to skip the approval gate.
+      const phase = raw.slice(raw.indexOf('### Phase S.1'), raw.indexOf('### Phase S.2'));
+      expect(phase).toMatch(/STORY_PATH=[\s\S]{0,300}verify-approval\.ts/);
+      expect(phase).toMatch(/(already approved|skip|straight) to Phase S\.3/i);
+    });
+
     it('files a story issue with an unbackticked Story: line alone on its line', () => {
       // Same shape the existing door uses for `Spec:` — see Phase 4's
       // `Spec: ${SPEC_PATH}` — and for the same reason: the dashboard parser

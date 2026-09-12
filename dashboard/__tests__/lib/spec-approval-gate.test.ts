@@ -318,6 +318,32 @@ describe('evaluateSpecApproval — story issues', () => {
     expect(d.allow).toBe(false);
   });
 
+  it('refuses a story that is not on the branch even under the override label', async () => {
+    // The override authorises dispatch despite a problem with the RECORD. It
+    // cannot conjure the document the agent has to read. Allowing it here
+    // strands the issue: the dashboard flips it to state:implementing, and
+    // the workflow's story resolution then exits before the verifier runs,
+    // leaving an issue that reads as in flight with no run behind it.
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [APPROVAL]: storyApproval() }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [OVERRIDE_LABEL],
+    });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('missing');
+    expect(d.message).toContain('override');
+  });
+
+  it('still honours the override on a story that is present but unapproved', async () => {
+    // The override keeps working for every refusal the record can express —
+    // this narrowing is only about a document that is not there at all.
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [STORY]: STORY_TEXT }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [OVERRIDE_LABEL],
+    });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('override');
+  });
+
   it('rejects rather than reporting absence when a read fails', async () => {
     // A 500 is not a missing approval. `fetchText` throws on any non-404
     // status, and the story branch has no catch around that read — so a

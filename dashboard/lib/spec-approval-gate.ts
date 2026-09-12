@@ -166,12 +166,23 @@ export async function evaluateSpecApproval(input: {
   if (storyRef) {
     const storyText = await fetchText(octokit, owner, repo, storyRef.story_path, ref);
     if (storyText === null) {
-      return resolveRefusal(
-        'missing',
-        `the issue names ${storyRef.story_path}, which is not on ${ref}. Check the story ` +
-          'was committed before the issue was filed.',
-        overrideRequested,
-      );
+      // Not overridable, and the only refusal on this path that is not. The
+      // override authorises dispatch despite a problem with the RECORD — a
+      // stale hash, a missing artifact, a verdict nobody re-ran. It cannot
+      // conjure the document the agent has to read. Allowing it here strands
+      // the issue: this gate flips it to state:implementing, and the implement
+      // workflow's story resolution then exits before the workflow-side
+      // verifier runs, leaving an issue that reads as in flight with no run
+      // behind it. `verifyStoryApproval` refuses the same case for the same
+      // reason, so the two readers agree.
+      return {
+        allow: false,
+        reason: 'missing',
+        message:
+          `the issue names ${storyRef.story_path}, which is not on ${ref}. Check the story ` +
+          'was committed before the issue was filed. The override label does not apply: it ' +
+          'authorises dispatch past an approval problem, not past a story that is not there.',
+      };
     }
     const approvalRaw = await fetchText(
       octokit, owner, repo, approvalPathForStory(storyRef.story_path), ref,

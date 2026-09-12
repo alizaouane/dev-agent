@@ -176,14 +176,62 @@ Phase 0.1 checklist with:
 
 ### Phase S.1 — Read the story, confirm the spec beneath it, review the derivation
 
+**First, check whether this story is already approved.** A session that
+recorded the approval and committed it but died before filing the issue, and a
+story a human approved in an earlier session, both land here. `approve-story`
+refuses to re-record an approval whose hash already matches, so running Phase
+S.2 blind on either of those is a dead end with no way forward.
+
+```bash
+STORY_PATH=docs/stories/epic-N-name/N.M-slug.md \
+"${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/verify-approval.ts"
+```
+
+Exit 0 means the story carries a valid approval that still matches its current
+text — the same decision the dashboard will make when it dispatches. Tell the
+user the story is already approved and go **straight to Phase S.3**; do not
+review it again and do not ask for an approval that already exists. Exit 1
+means there is no usable approval yet, which is the normal case — continue
+below. Exit 2 is a usage error; fix the invocation rather than proceeding.
+
 Read the story file. Pull its `Source spec:` line — the same line
 `sourceSpecOf` in `lib/cli/approve-story.ts` reads. A story derived from an
 unapproved spec is not approvable, so check this **before** spending a review
-round on it: confirm `<source spec path with .md swapped for .approval.json>`
-exists next to the spec. If it doesn't, stop and tell the user which gate is
-open — either the spec this story was sharded from was never approved, or the
-story cites the wrong one — rather than reviewing a derivation that has
-nothing underneath it to derive from.
+round on it.
+
+Checking that a `.approval.json` sits next to the spec is **not** that check. A
+record can exist and still be unusable: malformed, carrying a `concerns` or
+`blocker` verdict, naming a different spec, naming a plan that has since moved,
+or gone stale because the spec was edited after it was approved.
+`buildStoryApproval` runs the real dispatch gate against all of it and refuses
+on any of those — after the derivation review has run and after the user has
+been asked to approve. Run the same decision here instead:
+
+```bash
+SOURCE_SPEC=<the path from the story's `Source spec:` line>
+SPEC_APPROVAL="${SOURCE_SPEC%.md}.approval.json"
+
+if [ ! -f "$SPEC_APPROVAL" ]; then
+  echo "ERROR: no approval recorded for $SOURCE_SPEC. The spec this story was sharded from must be approved first."
+  exit 1
+fi
+
+# The plan the spec was approved WITH, read off the record rather than guessed
+# from the filename convention — the gate hashes exactly the pair that was
+# approved, and a plan that has moved must refuse rather than be treated as
+# "no plan".
+PLAN_PATH=$(jq -r '.plan_path // empty' "$SPEC_APPROVAL")
+
+SPEC_PATH="$SOURCE_SPEC" PLAN_PATH="$PLAN_PATH" \
+  "${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/verify-approval.ts"
+```
+
+Exit 0 and continue. On a non-zero exit, **stop** and tell the user which gate
+is open, quoting the message the command printed — it names the specific
+failure. Either the spec this story was sharded from was never approved, its
+approval no longer covers its current text, or the story cites the wrong spec.
+Reviewing a derivation that has nothing underneath it to derive from wastes a
+round and ends in a refusal the user cannot act on.
 
 With that confirmed, invoke `dev-agent:spec-review`'s derivation-review mode
 against the story — **not** the full adversarial spec-review Phase 3.5 runs.
@@ -207,7 +255,9 @@ plainly: **"Approve this story so the dashboard can start work on it?"**
 approval. If the user asks for changes, make them, return to Phase S.1, and
 run the derivation review again from round one.
 
-When the user approves, record it from the consumer repo root:
+When the user approves, record it from the consumer repo root. (Phase S.1's
+first check has already established there is no valid approval at the story's
+current hash, so this cannot collide with one.)
 
 ```bash
 STORY_PATH=docs/stories/epic-N-name/N.M-slug.md \

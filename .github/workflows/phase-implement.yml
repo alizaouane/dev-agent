@@ -395,6 +395,12 @@ jobs:
             }')
 
           STORY_PATH=$(printf '%s' "$BODY_UNQUOTED" | grep -oE '^[[:space:]]*Story:[[:space:]]*[^[:space:]]+\.md[[:space:]]*$' | head -1 | sed -E 's/^[[:space:]]*Story:[[:space:]]*//' | sed -E 's/[[:space:]]*$//' || true)
+          # Unconditional, including under spec-approval:override. Both gates
+          # refuse an absent story regardless of that label for the same
+          # reason — it authorises dispatch past a problem with the approval
+          # RECORD, not past a document that is not there — so this exit now
+          # agrees with them rather than stranding an issue the dashboard had
+          # already flipped to state:implementing.
           if [ -n "$STORY_PATH" ] && [ ! -f "$STORY_PATH" ]; then
             echo "::error::the issue names $STORY_PATH, which is not on this branch"
             exit 1

@@ -273,3 +273,21 @@ describe('verify-approval — story issues', () => {
     });
   });
 });
+
+describe('verifyStoryApproval — a missing story is not overridable', () => {
+  it('refuses a story absent from the checkout even with the override label', () => {
+    // Agrees with the dashboard gate, which must refuse the same case. The
+    // override authorises dispatch despite a problem with the RECORD; a story
+    // that is not on the checkout gives the agent nothing to implement, and
+    // the workflow's own resolution step exits before this check is reached.
+    const repoRoot = mkdtempSync(join(tmpdir(), 'story-missing-'));
+    const d = verifyStoryApproval({
+      storyPath: 'docs/stories/epic-8/8.1-gone.md',
+      labels: [OVERRIDE_LABEL],
+      repoRoot,
+    });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('missing');
+    expect(d.message).toContain('override');
+  });
+});

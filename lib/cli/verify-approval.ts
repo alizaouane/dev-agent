@@ -144,10 +144,19 @@ export function verifyStoryApproval(input: VerifyStoryApprovalInput): DispatchGa
 
   const storyText = readOrNull(repoRoot, storyPath);
   if (storyText === null) {
+    // Not overridable, unlike every other refusal on this path. The override
+    // authorises dispatch past a problem with the RECORD; it cannot supply the
+    // document the agent must read. The implement workflow's story resolution
+    // exits before this check is ever reached when the story is absent, so
+    // honouring the label here would only disagree with the step above it —
+    // and with the dashboard gate, which refuses the same case.
     return {
-      allow: overrideRequested,
-      reason: overrideRequested ? 'override' : 'missing',
-      message: `${storyPath} is not on this checkout, so there is no approved text to implement.`,
+      allow: false,
+      reason: 'missing',
+      message:
+        `${storyPath} is not on this checkout, so there is no approved text to implement. ` +
+        'The override label does not apply: it authorises dispatch past an approval problem, ' +
+        'not past a story that is not there.',
     };
   }
 
