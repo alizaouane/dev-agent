@@ -1,5 +1,59 @@
 # Session Log
 
+## 2026-09-12 08:00 UTC — interactive — Story-level approval: one decision, two records
+
+**Trigger:** "now let's make the approval one act instead of two" — a story's
+`Status: Approved` line and dev-agent's hash-bound `.approval.json` were separate
+approvals that could not read each other.
+
+**What changed:** [#162](https://github.com/alizaouane/dev-agent/pull/162) and
+[#163](https://github.com/alizaouane/dev-agent/pull/163), both merged. CI and the
+dashboard deploy green on main. No tag move — nothing here is referenced at `@v1`.
+
+Design, spec and plan all committed in #163. The pivot came from the user
+correcting me twice: the order is spec first then shard (story 8.1 carries a
+`Source spec:` line and calls itself a 1:1 repackaging), and sharding performs
+analysis — when it finds a gap the decision lands in the story, after the spec
+was approved. Hence story-level approval rather than spec-only.
+
+The design turns on one asymmetry: a story's source spec must carry a clean
+approval AT APPROVAL TIME and never again. Dispatch reads the story alone, so one
+late amendment to a program spec cannot invalidate the eight stories derived from
+it.
+
+Slices 1 and 2 shipped: the record, the gate, the approval act. 19 acceptance
+criteria, 13 covered.
+
+**Reviews caught what mattered.** The spec's independent review found six
+blocking issues before any code — one fatal: the status projection edited the
+story, which changed its hash, which made the gate refuse every later read. Two
+acceptance criteria contradicted each other. During execution, six of eight tasks
+came back with findings, three of them defects in the plan. The final review
+found the CLI entry guard compared a percent-encoded URL against a raw path, so
+on any path containing a space it exited zero having written nothing.
+
+**Deferred / Next:**
+
+- Slices 3 and 4 need their own plan: the intake's second door, implement reading
+  the story, the picker (needs a new `artifacts.stories_dir` key — no existing
+  key locates a story), and status projection. AC-12 to AC-17.
+- FIRST THING in slice 3: `STORY_STATUS_VALUES` and the regex alternation in
+  `STATUS_LINE_RE` are two hand-synced literals. Adding a value to one without
+  the other breaks stamping silently. Derive one from the other.
+- `parseSpecApproval` does not validate `approved_at` as a timestamp — the same
+  gap fixed in the story parser. Left alone deliberately; wants its own pass.
+- Thirteen workflows check the engine out at `ref: main`. #162 pinned the one
+  that pairs a mutable ref with `contents: write`; the rest need a pass.
+- Production promotion is still unbuilt. It reports that honestly and fails.
+- caliente-booking-app's default branch is still `main` while its work lands on
+  `staging`, so dev-agent work there targets the wrong branch. Settings change,
+  user's to make. Config PRs open: whatsapp-console#1699, caliente-booking-app#537.
+
+**Next session should start with:** slices 3 and 4, or the user driving a real
+story through the flow. Do not run the intake or any approval on his behalf.
+
+---
+
 ## 2026-09-11 05:42 UTC — interactive — Audit: the release path set labels and did none of the work
 
 **Trigger:** "check the whole dev agent code and ensure all features are active
