@@ -152,6 +152,15 @@ describe('stampStatus', () => {
     // Silently appending one would invent a header the template owns.
     expect(() => stampStatus('# Story\n\nBody.\n', 'Approved')).toThrow(/no \*\*Status:\*\*/);
   });
+
+  it('throws on a status value outside the legal lifecycle set', () => {
+    // `stampStatus('...', 'Merged')` would write `**Status:** Merged`, which
+    // STATUS_LINE_RE's alternation does not match. storyBodyForHashing would
+    // then stop stripping the line, it would enter the digest, and the next
+    // status change would break the approval on a story nobody edited.
+    expect(() => stampStatus(story(), 'Merged')).toThrow(/Merged/);
+    expect(() => stampStatus(story(), 'Merged')).toThrow(/Draft.*Approved.*InProgress.*Review.*Done.*Blocked/s);
+  });
 });
 
 describe('writeApproval', () => {

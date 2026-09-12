@@ -13,6 +13,7 @@ import {
   parseStoryApproval,
   STATUS_LINE_RE,
   STORY_APPROVAL_SCHEMA_VERSION,
+  STORY_STATUS_VALUES,
   type StoryApproval,
 } from '../story-approval';
 
@@ -169,11 +170,20 @@ export function buildStoryApproval(input: ApproveStoryInput): {
  * never touches the hash.
  *
  * @param storyText - Full story contents.
- * @param status - One of the lifecycle values the conformance check accepts.
+ * @param status - One of `STORY_STATUS_VALUES`.
  * @returns The story with its status header replaced.
- * @throws When the story carries no status header, rather than inventing one.
+ * @throws When the story carries no status header, rather than inventing one,
+ *   or when `status` is not one of `STORY_STATUS_VALUES` — writing anything
+ *   else would produce a line `STATUS_LINE_RE` cannot match back, so
+ *   `storyBodyForHashing` would stop stripping it and it would silently enter
+ *   the hash.
  */
 export function stampStatus(storyText: string, status: string): string {
+  if (!(STORY_STATUS_VALUES as readonly string[]).includes(status)) {
+    throw new Error(
+      `'${status}' is not a legal story status. Must be one of: ${STORY_STATUS_VALUES.join(', ')}.`,
+    );
+  }
   if (!STATUS_LINE_RE.test(storyText)) {
     throw new Error(
       'the story has no **Status:** line to stamp. It is a template field; add it rather ' +

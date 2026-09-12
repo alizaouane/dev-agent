@@ -46,6 +46,27 @@ export const STATUS_LINE_RE =
   /^([ \t>-]*\*{0,2}Status\*{0,2}:?\*{0,2}:?[ \t]*)(?:Draft|Approved|In ?Progress|Review|Done|Blocked)\*{0,2}(?:[ \t].*)?$/im;
 
 /**
+ * The six legal values a story's `Status` line may hold.
+ *
+ * This is the write-side counterpart of `STATUS_LINE_RE`'s alternation and of
+ * the equivalent list `.standard/check.sh`'s story-schema check enforces on
+ * read: three encodings of the same lifecycle grammar. They must stay in
+ * step. If a value is added or renamed here without updating the other two,
+ * a status this array calls legal can be written but never recognised on the
+ * next read — `storyBodyForHashing` stops stripping it, it enters the
+ * digest, and the following status change breaks the story's approval
+ * silently, on text nobody touched.
+ */
+export const STORY_STATUS_VALUES = [
+  'Draft',
+  'Approved',
+  'InProgress',
+  'Review',
+  'Done',
+  'Blocked',
+] as const;
+
+/**
  * Strip the status header from a story before hashing it.
  *
  * dev-agent rewrites that line as the issue moves, so it is a projection of
