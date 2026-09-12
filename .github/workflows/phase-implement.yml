@@ -365,7 +365,7 @@ jobs:
           # after the path must resolve the same way in both places — either
           # both see a story, or neither does. Trailing whitespace is allowed
           # on both sides.
-          # Quoted regions come out first, exactly as the dashboard's
+          # Quoted regions come out first, as the dashboard's
           # stripQuotedRegions does (dashboard/lib/spec-approval-gate.ts):
           # fenced blocks that actually close, then inline backtick spans
           # across the joined body. Without this an ordinary SPEC issue that
@@ -374,6 +374,15 @@ jobs:
           # and the two then disagree about which document was approved.
           # An unpaired fence opener is left alone on purpose — otherwise a
           # stray backtick line would swallow the canonical link below it.
+          #
+          # This parity covers the Story: line only. The spec and plan greps
+          # below still read the raw body, which is the behaviour every
+          # shipped consumer repo has today; parseSpecRefs strips and they do
+          # not, so a spec path quoted in an example can still outrank the
+          # canonical Spec: link here. That divergence predates this workflow
+          # and is fail-closed in the common case (the quoted spec has no
+          # approval beside it), so it is left alone rather than changed
+          # under a story-routing fix.
           BODY_UNQUOTED=$(printf '%s' "$BODY" | awk '
             { line[NR] = $0; if ($0 ~ /^ ? ? ?(```|~~~)/) fence[++nf] = NR }
             END {
