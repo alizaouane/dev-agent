@@ -176,6 +176,26 @@ describe('buildStoryApproval', () => {
   });
 });
 
+describe('buildStoryApproval — storyPath normalisation', () => {
+  it('strips a leading ./ before storing and using the path', () => {
+    const { approval, outPath } = buildStoryApproval(input({ storyPath: `./${STORY_REL}` }));
+    expect(approval.story_path).toBe(STORY_REL);
+    expect(outPath).toBe(approvalPathForStory(STORY_REL));
+  });
+
+  it('refuses an absolute story path', () => {
+    expect(() => buildStoryApproval(input({ storyPath: `/${STORY_REL}` }))).toThrow(
+      /absolute/i,
+    );
+  });
+
+  it('refuses a story path containing a .. segment', () => {
+    expect(() =>
+      buildStoryApproval(input({ storyPath: `docs/../${STORY_REL}` })),
+    ).toThrow(/\.\./);
+  });
+});
+
 describe('stampStatus', () => {
   it('replaces the status in place', () => {
     expect(stampStatus(story(), 'Approved')).toContain('**Status:** Approved');

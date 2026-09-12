@@ -31,7 +31,7 @@
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
@@ -84,6 +84,33 @@ export function sourceSpecOf(storyText: string): string | null {
 }
 
 /**
+ * Canonicalise an incoming story path to a clean repo-relative POSIX path.
+ *
+ * `approvalPathForStory`, `approval.story_path`, and every read/write below
+ * must agree on the exact string dispatch will later compare against — an
+ * uncanonicalised `./docs/stories/x.md` reads the right file here but records
+ * a path dispatch names differently (`docs/stories/x.md`), producing a
+ * `path-mismatch` refusal that looks unrelated to its actual cause.
+ *
+ * @param rawPath - The `storyPath` as given to `buildStoryApproval`.
+ * @returns The same path with a leading `./` stripped.
+ * @throws If the path is absolute, or contains a `..` segment.
+ */
+function normalizeStoryPath(rawPath: string): string {
+  if (isAbsolute(rawPath)) {
+    throw new Error(`storyPath must be repo-relative, got an absolute path: ${rawPath}`);
+  }
+  let normalized = rawPath;
+  while (normalized.startsWith('./')) {
+    normalized = normalized.slice(2);
+  }
+  if (normalized.split('/').includes('..')) {
+    throw new Error(`storyPath must not contain a '..' segment: ${rawPath}`);
+  }
+  return normalized;
+}
+
+/**
  * Build the approval record for a story, enforcing every precondition.
  *
  * The source spec must already carry a clean approval — that is the design
@@ -101,7 +128,8 @@ export function buildStoryApproval(input: ApproveStoryInput): {
   approval: StoryApproval;
   outPath: string;
 } {
-  const { storyPath, reviewVerdict, reviewRounds, approvedBy, repoRoot } = input;
+  const storyPath = normalizeStoryPath(input.storyPath);
+  const { reviewVerdict, reviewRounds, approvedBy, repoRoot } = input;
 
   if (reviewVerdict !== 'ok') {
     throw new Error(
@@ -282,12 +310,17 @@ export function writeApproval(input: ApproveStoryInput): {
   storyPath: string;
 } {
   const { approval, outPath } = buildStoryApproval(input);
-  const storyAbs = resolve(input.repoRoot, input.storyPath);
+  // `approval.story_path` is the normalised path `buildStoryApproval`
+  // resolved from `input.storyPath` — reused here rather than
+  // re-normalising, so the story write and the record write are guaranteed
+  // to agree on the same file.
+  const storyPath = approval.story_path;
+  const storyAbs = resolve(input.repoRoot, storyPath);
   const stamped = stampStatus(readFileSync(storyAbs, 'utf8'), 'Approved');
 
   writeFileSync(storyAbs, stamped, 'utf8');
   writeFileSync(resolve(input.repoRoot, outPath), `${JSON.stringify(approval, null, 2)}\n`, 'utf8');
-  return { outPath, storyPath: input.storyPath };
+  return { outPath, storyPath };
 }
 
 /**
