@@ -129,7 +129,16 @@ export function buildStoryApproval(input: ApproveStoryInput): {
   outPath: string;
 } {
   const storyPath = normalizeStoryPath(input.storyPath);
-  const { reviewVerdict, reviewRounds, approvedBy, repoRoot } = input;
+  const { reviewVerdict, reviewRounds, repoRoot } = input;
+
+  const approvedBy = input.approvedBy.trim();
+  if (approvedBy === '') {
+    throw new Error(
+      'approvedBy must not be blank. `writeApproval` stamps the story Approved before the ' +
+        "record is written, so an unvalidated blank here would leave a story marked Approved " +
+        'beside a record `parseStoryApproval` rejects — nothing could ever read it back.',
+    );
+  }
 
   if (reviewVerdict !== 'ok') {
     throw new Error(

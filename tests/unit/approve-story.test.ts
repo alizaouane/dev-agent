@@ -196,6 +196,22 @@ describe('buildStoryApproval — storyPath normalisation', () => {
   });
 });
 
+describe('buildStoryApproval — approvedBy validation', () => {
+  it('refuses a blank approvedBy before writing anything', () => {
+    expect(() => buildStoryApproval(input({ approvedBy: '   ' }))).toThrow(/approvedBy/);
+    expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(false);
+  });
+
+  it('refuses an empty-string approvedBy', () => {
+    expect(() => buildStoryApproval(input({ approvedBy: '' }))).toThrow(/approvedBy/);
+  });
+
+  it('trims approvedBy before storing it', () => {
+    const { approval } = buildStoryApproval(input({ approvedBy: '  ali@example.com  ' }));
+    expect(approval.approved_by).toBe('ali@example.com');
+  });
+});
+
 describe('stampStatus', () => {
   it('replaces the status in place', () => {
     expect(stampStatus(story(), 'Approved')).toContain('**Status:** Approved');
