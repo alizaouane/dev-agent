@@ -170,5 +170,19 @@ export function parseStoryApproval(raw: string): StoryParseResult {
   if (!Number.isInteger(o.review_rounds) || (o.review_rounds as number) < 1) {
     return { ok: false, error: 'review_rounds must be an integer >= 1' };
   }
-  return { ok: true, approval: o as unknown as StoryApproval };
+  return {
+    ok: true,
+    approval: {
+      schema_version: o.schema_version as number,
+      kind: o.kind as 'story',
+      story_path: o.story_path as string,
+      story_sha256: o.story_sha256 as string,
+      source_spec_path: o.source_spec_path as string,
+      source_spec_sha256: o.source_spec_sha256 as string,
+      review_verdict: o.review_verdict as ReviewVerdict,
+      review_rounds: o.review_rounds as number,
+      approved_by: o.approved_by as string,
+      approved_at: o.approved_at as string,
+    },
+  };
 }
