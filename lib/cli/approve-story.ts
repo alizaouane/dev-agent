@@ -30,9 +30,10 @@
  * Exit code: 0 on success, 2 on any input, precondition, or filesystem error.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomUUID } from 'node:crypto';
 
 import {
   approvalPathForSpec,
@@ -253,6 +254,33 @@ export function buildStoryApproval(input: ApproveStoryInput): {
 }
 
 /**
+ * Write `contents` to `destAbs` atomically.
+ *
+ * `writeFileSync` on the destination directly opens it with `O_TRUNC`: the
+ * file is emptied before a single byte of the new content lands. If the
+ * write is then interrupted for any reason, what is left behind is neither
+ * the old record nor the new one but a truncated, malformed fragment — which
+ * trips the corrupt-record guard in `buildStoryApproval` on the next attempt
+ * and needs hand repair. Writing to a temporary sibling file first and
+ * `renameSync`-ing it over the destination avoids that: a rename that
+ * replaces an existing file is atomic on the same filesystem (POSIX
+ * `rename(2)`; Windows via Node's `fs` gives the same guarantee), so
+ * `destAbs` is always either its old content or the new content in full,
+ * never a mixture. The temp file lives beside the destination so the rename
+ * stays on one filesystem.
+ *
+ * @param destAbs - Absolute path to the final destination.
+ * @param contents - Full file contents to write.
+ * @throws Whatever the temp-file write or the rename throws (e.g. the
+ *   destination's directory is not writable).
+ */
+function writeFileAtomic(destAbs: string, contents: string): void {
+  const tmpAbs = `${destAbs}.${randomUUID()}.tmp`;
+  writeFileSync(tmpAbs, contents, 'utf8');
+  renameSync(tmpAbs, destAbs);
+}
+
+/**
  * Rewrite a story's status header in place.
  *
  * Uses `STATUS_LINE_RE` imported from `../story-approval` rather than a
@@ -328,7 +356,7 @@ export function writeApproval(input: ApproveStoryInput): {
   const stamped = stampStatus(readFileSync(storyAbs, 'utf8'), 'Approved');
 
   writeFileSync(storyAbs, stamped, 'utf8');
-  writeFileSync(resolve(input.repoRoot, outPath), `${JSON.stringify(approval, null, 2)}\n`, 'utf8');
+  writeFileAtomic(resolve(input.repoRoot, outPath), `${JSON.stringify(approval, null, 2)}\n`);
   return { outPath, storyPath };
 }
 

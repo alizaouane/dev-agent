@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync as read, copyFileSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync as read, copyFileSync, realpathSync, readdirSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
@@ -322,6 +322,53 @@ describe('writeApproval', () => {
     expect(() => writeApproval(input())).not.toThrow();
     const record = parseStoryApproval(read(join(root, outPath), 'utf8'));
     expect(record.ok).toBe(true);
+  });
+
+  it('leaves an existing record byte-for-byte untouched when the write cannot land', () => {
+    // A record write must be atomic: it either lands whole, or the
+    // destination is exactly what it was before. Pre-populate a stale (but
+    // well-formed) record whose story_sha256 does not match the current
+    // story text, so buildStoryApproval's "already approved" guard does not
+    // trip and a fresh write is actually attempted.
+    const outPath = approvalPathForStory(STORY_REL);
+    const stale = {
+      schema_version: 1,
+      kind: 'story',
+      story_path: STORY_REL,
+      story_sha256: 'a'.repeat(64),
+      source_spec_path: SPEC_REL,
+      source_spec_sha256: hashSpecAndPlan(SPEC_TEXT, null),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'someone-else@example.com',
+      approved_at: '2020-01-01T00:00:00.000Z',
+    };
+    const staleText = `${JSON.stringify(stale, null, 2)}\n`;
+    put(outPath, staleText);
+
+    // Writing an atomic replacement means creating a new temp file beside
+    // the destination and renaming it over — both need directory write
+    // permission. Overwriting the destination directly (the old,
+    // non-atomic behaviour) needs only file-level write permission, which
+    // this leaves untouched — so a directory-only restriction is what
+    // isolates "atomic write" from "in-place write" here.
+    const storyDirAbs = join(root, dirname(STORY_REL));
+    chmodSync(storyDirAbs, 0o555);
+
+    try {
+      expect(() => writeApproval(input())).toThrow();
+      expect(read(join(root, outPath), 'utf8')).toBe(staleText);
+    } finally {
+      chmodSync(storyDirAbs, 0o755);
+    }
+  });
+
+  it('leaves no temp file behind after a successful write', () => {
+    writeApproval(input());
+    const leftovers = readdirSync(join(root, dirname(STORY_REL))).filter((f) =>
+      f.includes('.tmp'),
+    );
+    expect(leftovers).toEqual([]);
   });
 });
 
