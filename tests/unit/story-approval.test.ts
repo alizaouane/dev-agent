@@ -7,6 +7,8 @@ import {
   parseStoryApproval,
   approvalPathForStory,
   storyDispatchGateDecision,
+  STORY_STATUS_VALUES,
+  STATUS_LINE_RE as RE,
 } from '../../lib/story-approval';
 import { hashSpecAndPlan, parseSpecApproval } from '../../lib/spec-approval';
 
@@ -280,6 +282,30 @@ describe('storyDispatchGateDecision', () => {
     });
     expect(d.allow).toBe(true);
     expect(d.reason).toBe('override');
+  });
+});
+
+describe('status values and the regex are one source', () => {
+  it('matches every value it declares legal', () => {
+    // Two hand-synced literals drift. When they do, stamping writes a status
+    // the regex no longer recognises, hashing stops stripping the line, and
+    // the next transition breaks the approval on a story nobody edited.
+    for (const value of STORY_STATUS_VALUES) {
+      RE.lastIndex = 0;
+      expect(RE.test(`**Status:** ${value}`), value).toBe(true);
+    }
+  });
+
+  it('matches the In Progress spelling the conformance check allows', () => {
+    RE.lastIndex = 0;
+    expect(RE.test('**Status:** In Progress')).toBe(true);
+  });
+
+  it('still rejects a value it does not declare', () => {
+    for (const bad of ['Merged', 'Doneish', 'Draft-old', 'Approvedish']) {
+      RE.lastIndex = 0;
+      expect(RE.test(`**Status:** ${bad}`), bad).toBe(false);
+    }
   });
 });
 
