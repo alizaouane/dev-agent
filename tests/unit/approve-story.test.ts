@@ -105,4 +105,10 @@ describe('buildStoryApproval', () => {
     put(outPath, JSON.stringify(approval));
     expect(() => buildStoryApproval(input())).toThrow(/already approved/);
   });
+
+  it('refuses when the story approval file is corrupt', () => {
+    const { outPath } = buildStoryApproval(input());
+    put(outPath, '{ truncated');
+    expect(() => buildStoryApproval(input())).toThrow(/could not be read/);
+  });
 });

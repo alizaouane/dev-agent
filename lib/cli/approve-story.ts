@@ -116,7 +116,13 @@ export function buildStoryApproval(input: ApproveStoryInput): {
   const outAbs = resolve(repoRoot, outPath);
   if (existsSync(outAbs)) {
     const existing = parseStoryApproval(readFileSync(outAbs, 'utf8'));
-    if (existing.ok && existing.approval.story_sha256 === storyHash) {
+    if (!existing.ok) {
+      throw new Error(
+        `the story's approval could not be read: ${existing.error}. Delete or repair ${outPath} ` +
+          'before approving.',
+      );
+    }
+    if (existing.approval.story_sha256 === storyHash) {
       throw new Error(
         `${storyPath} is already approved at its current text (${outPath}). Edit the story ` +
           'or delete the stale record; re-approving unchanged text records nothing new.',
