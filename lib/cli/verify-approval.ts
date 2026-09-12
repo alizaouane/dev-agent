@@ -21,13 +21,23 @@
  * divergence harmless — whichever spec the workflow picked, it has to be one a
  * human approved.
  *
- * Required env:
+ * Required env (exactly one of the following two — never both, never neither):
  *   SPEC_PATH        The spec path the workflow resolved, relative to the
  *                    checkout. This must be the same value handed to the
  *                    implement agent, not a re-derivation of it.
+ *   STORY_PATH       The sharded story path the workflow resolved, relative
+ *                    to the checkout, when the issue is a story-level unit of
+ *                    work rather than a program-level spec. Same "same value
+ *                    handed to the implement agent" requirement as SPEC_PATH.
+ *
+ * An issue is one kind or the other. Setting both is refused as a usage
+ * error rather than guessed at, because guessing which one to honour is how
+ * the wrong document ends up approved.
  *
  * Optional env:
  *   PLAN_PATH        The resolved plan path. Empty or unset means no plan.
+ *                     Only consulted alongside SPEC_PATH; a story carries no
+ *                     separate plan of its own.
  *   ISSUE_LABELS     Newline- or comma-separated issue labels, checked for
  *                    the `spec-approval:override` escape hatch.
  *   REPO_ROOT        Checkout root the paths are relative to. Defaults to cwd.
@@ -45,6 +55,7 @@ import {
   hashSpecAndPlan,
   type DispatchGateDecision,
 } from '../spec-approval';
+import { approvalPathForStory, hashStory, storyDispatchGateDecision } from '../story-approval';
 
 /** Inputs for one verification, already resolved from env. */
 export interface VerifyApprovalInput {
@@ -107,6 +118,47 @@ export function verifyApproval(input: VerifyApprovalInput): DispatchGateDecision
   });
 }
 
+/** Inputs for one story verification, already resolved from env. */
+export interface VerifyStoryApprovalInput {
+  storyPath: string;
+  labels: string[];
+  repoRoot: string;
+}
+
+/**
+ * Decide whether this checkout's story is approved for implementation.
+ *
+ * Mirrors `verifyApproval` above: a story not on the checkout refuses rather
+ * than throws, so a missing file cannot slip through as "nothing to check".
+ * Unlike the spec path, there is no plan to also read — a sharded story
+ * carries no plan of its own — and `storyDispatchGateDecision` never
+ * consults the story's source spec, so one late amendment to a program spec
+ * cannot invalidate a story already approved against it.
+ *
+ * @param input - Resolved story path, labels, and checkout root.
+ * @returns The gate decision.
+ */
+export function verifyStoryApproval(input: VerifyStoryApprovalInput): DispatchGateDecision {
+  const { storyPath, labels, repoRoot } = input;
+  const overrideRequested = labels.includes(OVERRIDE_LABEL);
+
+  const storyText = readOrNull(repoRoot, storyPath);
+  if (storyText === null) {
+    return {
+      allow: overrideRequested,
+      reason: overrideRequested ? 'override' : 'missing',
+      message: `${storyPath} is not on this checkout, so there is no approved text to implement.`,
+    };
+  }
+
+  return storyDispatchGateDecision({
+    approvalRaw: readOrNull(repoRoot, approvalPathForStory(storyPath)),
+    currentStoryHash: hashStory(storyText),
+    storyPath,
+    overrideRequested,
+  });
+}
+
 /**
  * Split a labels env value on newlines or commas.
  *
@@ -127,15 +179,39 @@ export function parseLabels(raw: string | undefined): string[] {
  * @returns Nothing; exits the process.
  */
 function main(): void {
-  const specPath = process.env.SPEC_PATH?.trim();
-  if (!specPath) throw new Error('SPEC_PATH required');
+  const specPath = process.env.SPEC_PATH?.trim() || undefined;
+  const storyPath = process.env.STORY_PATH?.trim() || undefined;
 
-  const decision = verifyApproval({
-    specPath,
-    planPath: process.env.PLAN_PATH?.trim() || null,
-    labels: parseLabels(process.env.ISSUE_LABELS),
-    repoRoot: process.env.REPO_ROOT ?? process.cwd(),
-  });
+  if (specPath && storyPath) {
+    throw new Error(
+      `SPEC_PATH and STORY_PATH are mutually exclusive, but both are set ` +
+        `(SPEC_PATH=${specPath}, STORY_PATH=${storyPath}). An issue is one kind or the ` +
+        'other; guessing which to honour is how the wrong document gets approved.',
+    );
+  }
+  if (!specPath && !storyPath) {
+    throw new Error('one of SPEC_PATH or STORY_PATH is required');
+  }
+
+  const repoRoot = process.env.REPO_ROOT ?? process.cwd();
+  const labels = parseLabels(process.env.ISSUE_LABELS);
+
+  let decision: DispatchGateDecision;
+  if (storyPath) {
+    decision = verifyStoryApproval({ storyPath, labels, repoRoot });
+  } else if (specPath) {
+    decision = verifyApproval({
+      specPath,
+      planPath: process.env.PLAN_PATH?.trim() || null,
+      labels,
+      repoRoot,
+    });
+  } else {
+    // Unreachable: the mutual-exclusivity checks above have already thrown
+    // for every other combination of specPath/storyPath, so this branch
+    // exists only to let TypeScript prove `decision` is always assigned.
+    throw new Error('unreachable: neither SPEC_PATH nor STORY_PATH was set');
+  }
 
   process.stderr.write(`${decision.message}\n`);
   process.stdout.write(`${decision.allow ? 'approved' : 'refused'} (${decision.reason})\n`);
