@@ -36,6 +36,8 @@ import { fileURLToPath } from 'node:url';
 
 import {
   approvalPathForSpec,
+  dispatchGateDecision,
+  hashSpecAndPlan,
   parseSpecApproval,
   type ReviewVerdict,
 } from '../spec-approval';
@@ -135,15 +137,44 @@ export function buildStoryApproval(input: ApproveStoryInput): {
         'before approving stories derived from it.',
     );
   }
-  const specApproval = parseSpecApproval(readFileSync(specApprovalAbs, 'utf8'));
-  if (!specApproval.ok) {
-    throw new Error(`the source spec's approval could not be read: ${specApproval.error}`);
+  const specApprovalRaw = readFileSync(specApprovalAbs, 'utf8');
+  const specApprovalParsed = parseSpecApproval(specApprovalRaw);
+  if (!specApprovalParsed.ok) {
+    throw new Error(`the source spec's approval could not be read: ${specApprovalParsed.error}`);
   }
-  if (specApproval.approval.review_verdict !== 'ok') {
-    throw new Error(
-      `the source spec was approved against a '${specApproval.approval.review_verdict}' ` +
-        'review, which authorises nothing. Correct the spec and re-approve it first.',
-    );
+  const specApproval = specApprovalParsed.approval;
+
+  // The plan named by the approval, not any plan floating around the repo:
+  // the hash below must reproduce exactly what was approved. A plan named at
+  // approval time that has since moved must refuse, not be silently treated
+  // as "no plan".
+  let planText: string | null = null;
+  if (specApproval.plan_path !== null) {
+    const planAbs = resolve(repoRoot, specApproval.plan_path);
+    if (!existsSync(planAbs)) {
+      throw new Error(
+        `the source spec's approval names a plan at ${specApproval.plan_path} that no longer ` +
+          'exists. Restore the plan or re-approve the spec against its current documents.',
+      );
+    }
+    planText = readFileSync(planAbs, 'utf8');
+  }
+
+  // Reuse the real dispatch gate rather than reimplementing it: it is the
+  // same check dispatch itself would apply to the spec, so a story cannot be
+  // authorised by anything dispatch would refuse. This catches both a spec
+  // edited after its own approval (hash mismatch) and an approval file
+  // copied from a different spec (spec_path mismatch) — a verdict-only check
+  // catches neither.
+  const specText = readFileSync(specAbs, 'utf8');
+  const decision = dispatchGateDecision({
+    approvalRaw: specApprovalRaw,
+    currentSpecHash: hashSpecAndPlan(specText, planText),
+    specPath,
+    planPath: specApproval.plan_path,
+  });
+  if (!decision.allow) {
+    throw new Error(`the source spec's approval does not authorise it: ${decision.message}`);
   }
 
   const storyHash = hashStory(storyText);
@@ -173,9 +204,9 @@ export function buildStoryApproval(input: ApproveStoryInput): {
     source_spec_path: specPath,
     // Copied from the spec's own approval rather than recomputed. It is
     // defined as "the spec's hash at approval time", which is precisely what
-    // that record already holds — and recomputing it would mean reading the
-    // plan, which throws when a plan named at approval time has since moved.
-    source_spec_sha256: specApproval.approval.spec_sha256,
+    // that record already holds — and once `dispatchGateDecision` above has
+    // allowed the story through, the two are equal by construction anyway.
+    source_spec_sha256: specApproval.spec_sha256,
     review_verdict: reviewVerdict,
     review_rounds: reviewRounds,
     approved_by: approvedBy,

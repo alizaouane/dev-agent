@@ -99,6 +99,62 @@ describe('buildStoryApproval', () => {
     expect(() => buildStoryApproval(input())).toThrow(/concerns/);
   });
 
+  it('refuses when the source spec was edited after its own approval', () => {
+    // Same approval file, same review_verdict — but the spec text it covers
+    // has since moved, so the recorded hash no longer matches.
+    put(SPEC_REL, SPEC_TEXT + '\nEdited after the spec was approved.\n');
+    expect(() => buildStoryApproval(input())).toThrow(/does not authorise/);
+    expect(() => buildStoryApproval(input())).toThrow(/changed after approval/);
+  });
+
+  it('refuses when the spec approval was copied from a different spec', () => {
+    // The approval file sits at the right path (SPEC_REL's sibling) but
+    // names a different spec_path inside it — e.g. copy-pasted from another
+    // feature's approval. Its hash still matches SPEC_TEXT, so only the
+    // real gate's path check catches this.
+    const copied = JSON.parse(specApproval());
+    copied.spec_path = 'docs/superpowers/specs/2026-01-01-unrelated.md';
+    put(SPEC_REL.replace(/\.md$/, '.approval.json'), JSON.stringify(copied));
+    expect(() => buildStoryApproval(input())).toThrow(/does not authorise/);
+  });
+
+  it('refuses when the spec approval names a plan that no longer exists', () => {
+    const planPath = 'docs/superpowers/plans/2026-07-09-program-design.md';
+    const planText = '# Plan\n\nSteps.\n';
+    put(SPEC_REL.replace(/\.md$/, '.approval.json'), JSON.stringify({
+      schema_version: 1,
+      spec_path: SPEC_REL,
+      plan_path: planPath,
+      spec_sha256: hashSpecAndPlan(SPEC_TEXT, planText),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'ali@example.com',
+      approved_at: '2026-07-09T00:00:00.000Z',
+    }));
+    // The plan file is deliberately never written: a null-plan approval
+    // whose named plan vanished must refuse, not silently be treated as an
+    // approval with no plan.
+    expect(() => buildStoryApproval(input())).toThrow(/plan/i);
+  });
+
+  it('hashes the spec together with the plan the approval names', () => {
+    const planPath = 'docs/superpowers/plans/2026-07-09-program-design.md';
+    const planText = '# Plan\n\nSteps.\n';
+    put(planPath, planText);
+    put(SPEC_REL.replace(/\.md$/, '.approval.json'), JSON.stringify({
+      schema_version: 1,
+      spec_path: SPEC_REL,
+      plan_path: planPath,
+      spec_sha256: hashSpecAndPlan(SPEC_TEXT, planText),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'ali@example.com',
+      approved_at: '2026-07-09T00:00:00.000Z',
+    }));
+    const { approval } = buildStoryApproval(input());
+    expect(approval.source_spec_sha256).toBe(hashSpecAndPlan(SPEC_TEXT, planText));
+  });
+
   it('refuses a derivation verdict that is not ok', () => {
     // Mirrors buildApproval: a story the reviewer still has something to say
     // about cannot even produce an artifact to argue about later.
