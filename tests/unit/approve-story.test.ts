@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync as read } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync as read } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
@@ -167,5 +167,40 @@ describe('writeApproval', () => {
     expect(() => writeApproval(input())).toThrow(/Source spec/);
     expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(false);
     expect(read(join(root, STORY_REL), 'utf8')).toContain('**Status:** Draft');
+  });
+
+  it('recovers when the second write fails: the story stays stamped and the retry succeeds', () => {
+    // Simulate the approval-record write failing after the story has already
+    // been stamped, without tripping buildStoryApproval's own "already
+    // exists" check (which reads the record path if anything is there — a
+    // directory placed directly at that path would throw EISDIR from that
+    // read, before either write is attempted, and would prove nothing about
+    // write order). Instead, strip write permission from the record's parent
+    // directory: the file does not exist yet (so the existence check takes
+    // the normal no-op path), but creating it fails with EACCES. Overwriting
+    // the already-existing story file in the same directory is unaffected —
+    // that needs write permission on the file, not on the directory.
+    const outPath = approvalPathForStory(STORY_REL);
+    const storyDirAbs = join(root, dirname(STORY_REL));
+    chmodSync(storyDirAbs, 0o555);
+
+    try {
+      expect(() => writeApproval(input())).toThrow();
+      // Recoverable state: the story is stamped Approved even though the
+      // record never landed. A stamped-but-unrecorded story is refused by
+      // the dispatch gate (fails closed) rather than silently treated as
+      // approved.
+      expect(read(join(root, STORY_REL), 'utf8')).toContain('**Status:** Approved');
+      expect(existsSync(join(root, outPath))).toBe(false);
+    } finally {
+      chmodSync(storyDirAbs, 0o755); // restore before retrying (and for cleanup either way)
+    }
+
+    // Retry. The story's hash is unchanged (the status line is excluded from
+    // hashStory) and no approval record exists yet, so neither guard in
+    // buildStoryApproval has anything to trip on.
+    expect(() => writeApproval(input())).not.toThrow();
+    const record = parseStoryApproval(read(join(root, outPath), 'utf8'));
+    expect(record.ok).toBe(true);
   });
 });

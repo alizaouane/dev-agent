@@ -183,11 +183,21 @@ export function stampStatus(storyText: string, status: string): string {
 }
 
 /**
- * Record an approval and stamp the story, in that order.
+ * Stamp the story and record its approval, in that order.
  *
  * `buildStoryApproval` throws before anything is written, so a refused
- * approval leaves both files untouched — the story is never stamped Approved
- * without a record to back it.
+ * approval leaves both files untouched. Between the two writes that follow,
+ * the story is stamped FIRST and the record written SECOND — not for style,
+ * but because that is the direction that recovers if the second write throws
+ * for any I/O reason. Stamp-then-record leaves, at worst, a stamped story
+ * with no approval record: the dispatch gate refuses that (fails closed,
+ * correctly), and a retry succeeds, because `hashStory` excludes the status
+ * line, so the story's hash is unchanged and no record exists yet to trip the
+ * "already approved at its current text" guard in `buildStoryApproval`.
+ * Record-then-stamp is the direction that cannot be recovered: a failure
+ * after the record lands but before the stamp produces a recorded-but-
+ * unstamped story, and re-running is then refused by that same guard, with no
+ * way to complete the operation short of hand-editing one of the two files.
  *
  * @param input - Resolved approval inputs.
  * @returns Where the record was written and which story was stamped.
@@ -201,8 +211,8 @@ export function writeApproval(input: ApproveStoryInput): {
   const storyAbs = resolve(input.repoRoot, input.storyPath);
   const stamped = stampStatus(readFileSync(storyAbs, 'utf8'), 'Approved');
 
-  writeFileSync(resolve(input.repoRoot, outPath), `${JSON.stringify(approval, null, 2)}\n`, 'utf8');
   writeFileSync(storyAbs, stamped, 'utf8');
+  writeFileSync(resolve(input.repoRoot, outPath), `${JSON.stringify(approval, null, 2)}\n`, 'utf8');
   return { outPath, storyPath: input.storyPath };
 }
 
@@ -236,4 +246,13 @@ function main(): void {
   console.log(`recorded ${outPath} and stamped ${storyPath} Approved`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+if (import.meta.url === `file://${process.argv[1]}`) {
+  try {
+    main();
+  } catch (err) {
+    process.stderr.write(
+      `approve-story failed: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    process.exit(2);
+  }
+}
