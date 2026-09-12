@@ -44,6 +44,7 @@ import {
 } from '../spec-approval';
 import {
   approvalPathForStory,
+  canonicalStoryPath,
   hashStory,
   parseStoryApproval,
   STATUS_LINE_RE,
@@ -101,10 +102,11 @@ function normalizeStoryPath(rawPath: string): string {
   if (isAbsolute(rawPath)) {
     throw new Error(`storyPath must be repo-relative, got an absolute path: ${rawPath}`);
   }
-  let normalized = rawPath;
-  while (normalized.startsWith('./')) {
-    normalized = normalized.slice(2);
-  }
+  // One definition, shared with every reader of a story reference. The extra
+  // validation below is this command's alone: a bad path here is an operator
+  // mistake worth stopping on, while a reader must refuse one issue rather
+  // than throw.
+  const normalized = canonicalStoryPath(rawPath);
   if (normalized.split('/').includes('..')) {
     throw new Error(`storyPath must not contain a '..' segment: ${rawPath}`);
   }

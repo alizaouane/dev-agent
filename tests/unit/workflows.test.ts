@@ -1275,6 +1275,22 @@ describe('.github/workflows/', () => {
         expect(resolve(body)).toBe('');
       });
 
+      it('strips a leading ./ so the shell agrees with canonicalStoryPath', () => {
+        // Codex, PR #164. `approve-story` records the path without a leading
+        // `./`, so a resolver that preserved the issue's spelling would hand
+        // the workflow-side gate `./docs/…` and be refused on a path mismatch
+        // for a story that was correctly approved.
+        expect(resolve('Story: ./docs/stories/epic-1/foo.md\n')).toBe(
+          'docs/stories/epic-1/foo.md',
+        );
+      });
+
+      it('strips repeated ./ segments, as the TypeScript readers do', () => {
+        expect(resolve('Story: ././docs/stories/epic-1/foo.md\n')).toBe(
+          'docs/stories/epic-1/foo.md',
+        );
+      });
+
       it('does NOT let an unpaired fence opener hide the real Story: line', () => {
         // Only fences that actually close are stripped — otherwise a stray
         // opener anywhere above would swallow the canonical link and the

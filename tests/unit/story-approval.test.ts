@@ -6,6 +6,7 @@ import {
   hashStory,
   parseStoryApproval,
   approvalPathForStory,
+  canonicalStoryPath,
   storyDispatchGateDecision,
   STORY_STATUS_VALUES,
   STATUS_LINE_RE as RE,
@@ -344,5 +345,37 @@ describe('dashboard mirror', () => {
     expect(readFileSync(resolve(root, 'dashboard/lib/story-approval.ts'), 'utf8')).toBe(
       readFileSync(resolve(root, 'lib/story-approval.ts'), 'utf8'),
     );
+  });
+});
+
+describe('canonicalStoryPath', () => {
+  it('strips a leading ./, which approve-story already strips before recording', () => {
+    // Codex, PR #164: the command normalised and the readers did not, so a
+    // `./docs/…` story was approved, filed, and then refused for ever on a
+    // path mismatch nobody could see or fix from the dashboard.
+    expect(canonicalStoryPath('./docs/stories/epic-8/8.1-x.md')).toBe(
+      'docs/stories/epic-8/8.1-x.md',
+    );
+  });
+
+  it('strips repeated leading ./ segments', () => {
+    expect(canonicalStoryPath('.././docs/x.md')).toBe('.././docs/x.md');
+    expect(canonicalStoryPath('././docs/x.md')).toBe('docs/x.md');
+  });
+
+  it('leaves an already-canonical path alone', () => {
+    expect(canonicalStoryPath('docs/stories/epic-8/8.1-x.md')).toBe(
+      'docs/stories/epic-8/8.1-x.md',
+    );
+  });
+
+  it('never throws, whatever it is handed', () => {
+    // It runs inside parsers that read untrusted issue bodies. Throwing there
+    // would take the dashboard down instead of refusing one issue; the
+    // approval command keeps the stricter validation that rejects an absolute
+    // path or a `..` segment.
+    expect(() => canonicalStoryPath('/etc/passwd')).not.toThrow();
+    expect(() => canonicalStoryPath('../../escape.md')).not.toThrow();
+    expect(() => canonicalStoryPath('')).not.toThrow();
   });
 });

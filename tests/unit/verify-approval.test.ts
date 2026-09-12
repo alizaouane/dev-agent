@@ -274,6 +274,32 @@ describe('verify-approval — story issues', () => {
   });
 });
 
+describe('verifyStoryApproval — path canonicalisation', () => {
+  it('accepts a ./-prefixed story path against a record written without one', () => {
+    // Codex, PR #164. The workflow resolver, the dashboard parser and this
+    // function must all hand the gate the spelling `approve-story` recorded.
+    const repoRoot = mkdtempSync(join(tmpdir(), 'story-dot-slash-'));
+    mkdirSync(dirname(join(repoRoot, STORY)), { recursive: true });
+    writeFileSync(join(repoRoot, STORY), STORY_TEXT);
+    const approval: StoryApproval = {
+      schema_version: 1,
+      kind: 'story',
+      story_path: STORY,
+      story_sha256: hashStory(STORY_TEXT),
+      source_spec_path: SPEC,
+      source_spec_sha256: 'a'.repeat(64),
+      review_verdict: 'ok',
+      review_rounds: 1,
+      approved_by: 'ali@example.com',
+      approved_at: '2026-09-09T10:00:00.000Z',
+    };
+    writeFileSync(join(repoRoot, approvalPathForStory(STORY)), JSON.stringify(approval));
+
+    const d = verifyStoryApproval({ storyPath: `./${STORY}`, labels: [], repoRoot });
+    expect(d.allow).toBe(true);
+  });
+});
+
 describe('verifyStoryApproval — a missing story is not overridable', () => {
   it('refuses a story absent from the checkout even with the override label', () => {
     // Agrees with the dashboard gate, which must refuse the same case. The

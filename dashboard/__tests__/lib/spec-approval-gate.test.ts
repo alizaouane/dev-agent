@@ -208,6 +208,12 @@ describe('parseStoryRef', () => {
     expect(parseStoryRef(body)?.story_path).toBe('docs/stories/epic-8/8.1-gate-hardening.md');
   });
 
+  it('canonicalises a leading ./ out of the parsed path', () => {
+    expect(parseStoryRef('Story: ./docs/stories/epic-8/8.1-x.md\n')?.story_path).toBe(
+      'docs/stories/epic-8/8.1-x.md',
+    );
+  });
+
   it('returns null for a spec-based issue', () => {
     const body = 'Spec: docs/superpowers/specs/2026-05-01-a-design.md\nPlan: docs/superpowers/plans/2026-05-01-a.md\n';
     expect(parseStoryRef(body)).toBeNull();
@@ -316,6 +322,19 @@ describe('evaluateSpecApproval — story issues', () => {
       owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [],
     });
     expect(d.allow).toBe(false);
+  });
+
+  it('canonicalises a ./-prefixed Story: line so the gate matches the record', async () => {
+    // Codex, PR #164: `approve-story` strips the leading `./` before it writes
+    // story_path. A parser that preserved the issue's spelling compared
+    // `./docs/…` against the recorded `docs/…` and refused with path-mismatch
+    // for ever, on a story that was correctly approved and correctly filed.
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [STORY]: STORY_TEXT, [APPROVAL]: storyApproval() }),
+      owner: 'q', repo: 'r', ref: 'main',
+      issueBody: `Story: ./${STORY}\n`, labels: [],
+    });
+    expect(d.allow).toBe(true);
   });
 
   it('refuses a story that is not on the branch even under the override label', async () => {

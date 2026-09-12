@@ -55,7 +55,12 @@ import {
   hashSpecAndPlan,
   type DispatchGateDecision,
 } from '../spec-approval';
-import { approvalPathForStory, hashStory, storyDispatchGateDecision } from '../story-approval';
+import {
+  approvalPathForStory,
+  canonicalStoryPath,
+  hashStory,
+  storyDispatchGateDecision,
+} from '../story-approval';
 
 /** Inputs for one verification, already resolved from env. */
 export interface VerifyApprovalInput {
@@ -139,7 +144,11 @@ export interface VerifyStoryApprovalInput {
  * @returns The gate decision.
  */
 export function verifyStoryApproval(input: VerifyStoryApprovalInput): DispatchGateDecision {
-  const { storyPath, labels, repoRoot } = input;
+  const { labels, repoRoot } = input;
+  // Same canonicalisation the dashboard's parser applies and the approval
+  // command already applied when it wrote the record, so all three readers
+  // compare one spelling.
+  const storyPath = canonicalStoryPath(input.storyPath);
   const overrideRequested = labels.includes(OVERRIDE_LABEL);
 
   const storyText = readOrNull(repoRoot, storyPath);

@@ -153,6 +153,30 @@ const VERDICTS: readonly string[] = ['ok', 'concerns', 'blocker'];
 const DIGEST_RE = /^[0-9a-f]{64}$/;
 
 /**
+ * Reduce a story path to the one spelling the approval record uses.
+ *
+ * `approve-story` strips a leading `./` before it writes `story_path`, so a
+ * reader that preserves the issue's spelling compares `./docs/…` against the
+ * recorded `docs/…` and refuses with `path-mismatch` for ever — on a story that
+ * was correctly approved and correctly filed. Every reader of a story reference
+ * runs this, so all of them arrive at the gate with the same string.
+ *
+ * Total on purpose: it never throws. An issue body is untrusted input, and a
+ * parser that threw on an odd spelling would take the dashboard down instead of
+ * refusing one issue. The approval command keeps its own stricter validation,
+ * which rejects absolute paths and `..` segments.
+ *
+ * @param storyPath - A story path as written in an issue, a record, or an env
+ *   variable.
+ * @returns The same path with any leading `./` segments removed.
+ */
+export function canonicalStoryPath(storyPath: string): string {
+  let normalized = storyPath;
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized;
+}
+
+/**
  * Name the approval artifact that sits beside a story.
  *
  * @param storyPath - Repo-relative path to the story, ending in `.md`.

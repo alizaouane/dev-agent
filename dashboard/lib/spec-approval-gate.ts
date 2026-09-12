@@ -10,7 +10,12 @@ import {
   resolveRefusal,
   type DispatchGateDecision,
 } from '@/lib/spec-approval';
-import { approvalPathForStory, hashStory, storyDispatchGateDecision } from '@/lib/story-approval';
+import {
+  approvalPathForStory,
+  canonicalStoryPath,
+  hashStory,
+  storyDispatchGateDecision,
+} from '@/lib/story-approval';
 
 /**
  * Server-side half of the spec-approval gate: fetch the three documents the
@@ -94,12 +99,17 @@ export interface StoryRef {
  * returning null is how a spec issue is recognised, not an error.
  *
  * @param body - The issue body, or null for an empty issue.
- * @returns The declared story, or null when there is no `Story:` line.
+ * @returns The declared story with any leading `./` removed, or null when
+ *   there is no `Story:` line.
  */
 export function parseStoryRef(body: string | null | undefined): StoryRef | null {
   if (!body) return null;
   const story = stripQuotedRegions(body).match(/^\s*Story:\s*(\S+\.md)\s*$/m)?.[1];
-  return story ? { story_path: story } : null;
+  // Canonicalised here, at the point the path enters the system as data, so
+  // the gate compares the same spelling `approve-story` recorded. Without it
+  // a `./docs/…` line is approved, filed, and then refused for ever on a
+  // path mismatch the operator can neither see nor fix from the dashboard.
+  return story ? { story_path: canonicalStoryPath(story) } : null;
 }
 
 /**

@@ -364,7 +364,10 @@ jobs:
           # (/^\s*Story:\s*(\S+\.md)\s*$/m): a Story: line with trailing text
           # after the path must resolve the same way in both places — either
           # both see a story, or neither does. Trailing whitespace is allowed
-          # on both sides.
+          # on both sides. A leading `./` is stripped for the same reason:
+          # `approve-story` records the path without one, so preserving the
+          # issue's spelling refuses a correctly approved story for ever on a
+          # path mismatch. `canonicalStoryPath` is the TS side of this.
           # Quoted regions come out first, as the dashboard's
           # stripQuotedRegions does (dashboard/lib/spec-approval-gate.ts):
           # fenced blocks that actually close, then inline backtick spans
@@ -394,7 +397,7 @@ jobs:
               printf "%s", out
             }')
 
-          STORY_PATH=$(printf '%s' "$BODY_UNQUOTED" | grep -oE '^[[:space:]]*Story:[[:space:]]*[^[:space:]]+\.md[[:space:]]*$' | head -1 | sed -E 's/^[[:space:]]*Story:[[:space:]]*//' | sed -E 's/[[:space:]]*$//' || true)
+          STORY_PATH=$(printf '%s' "$BODY_UNQUOTED" | grep -oE '^[[:space:]]*Story:[[:space:]]*[^[:space:]]+\.md[[:space:]]*$' | head -1 | sed -E 's/^[[:space:]]*Story:[[:space:]]*//' | sed -E 's/[[:space:]]*$//' | sed -E 's#^(\./)+##' || true)
           # Unconditional, including under spec-approval:override. Both gates
           # refuse an absent story regardless of that label for the same
           # reason — it authorises dispatch past a problem with the approval
