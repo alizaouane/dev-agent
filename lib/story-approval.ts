@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ReviewVerdict } from './spec-approval';
+import { resolveRefusal, type DispatchGateDecision, type GateReason, type ReviewVerdict } from './spec-approval';
 
 /**
  * Approval of a sharded story, as stored on disk beside the story file.
@@ -185,4 +185,85 @@ export function parseStoryApproval(raw: string): StoryParseResult {
       approved_at: o.approved_at as string,
     },
   };
+}
+
+/**
+ * Decide whether a story may be dispatched.
+ *
+ * Checks the approval exists, is readable, is a schema this code understands,
+ * carries a clean verdict, names this story, and still matches its text. It
+ * deliberately does not read the source spec: the spec was a precondition when
+ * the story was approved, and consulting it here would let one late amendment
+ * invalidate every story derived from it.
+ *
+ * @param input.approvalRaw - The artifact's contents, or null when it is
+ *   genuinely absent. A read that failed for any other reason must not be
+ *   passed as null — the caller refuses instead.
+ * @param input.currentStoryHash - `hashStory` over the story as it is now.
+ * @param input.storyPath - Repo-relative path the issue names.
+ * @param input.overrideRequested - Whether the override label is present.
+ * @returns Whether to dispatch, why, and a message for the operator.
+ */
+export function storyDispatchGateDecision(input: {
+  approvalRaw: string | null;
+  currentStoryHash: string;
+  storyPath: string;
+  overrideRequested?: boolean;
+}): DispatchGateDecision {
+  const { approvalRaw, currentStoryHash, storyPath, overrideRequested } = input;
+  const at = approvalPathForStory(storyPath);
+
+  const refuse = (reason: GateReason, message: string): DispatchGateDecision =>
+    resolveRefusal(reason, message, overrideRequested);
+
+  if (approvalRaw === null) {
+    return refuse(
+      'missing',
+      `no approval recorded at ${at}. Stories are approved in the Claude Code intake ` +
+        'session, after the derivation review comes back clean. The dashboard starts ' +
+        'approved work; it does not approve it.',
+    );
+  }
+
+  const parsed = parseStoryApproval(approvalRaw);
+  if (!parsed.ok) {
+    return refuse(
+      'malformed',
+      `the approval at ${at} could not be read (${parsed.error}). Re-run the intake ` +
+        'session to record a valid approval.',
+    );
+  }
+  const approval = parsed.approval;
+
+  if (approval.schema_version > STORY_APPROVAL_SCHEMA_VERSION) {
+    return refuse(
+      'schema-too-new',
+      `the approval declares schema version ${approval.schema_version}, but this code ` +
+        `understands up to ${STORY_APPROVAL_SCHEMA_VERSION}. Upgrade rather than guessing ` +
+        'at fields it does not know.',
+    );
+  }
+  if (approval.review_verdict !== 'ok') {
+    return refuse(
+      'unclean-verdict',
+      `the approval was recorded against a '${approval.review_verdict}' derivation review. ` +
+        'Correct the story, re-run the review until it is clean, and approve that result.',
+    );
+  }
+  if (approval.story_path !== storyPath) {
+    return refuse(
+      'path-mismatch',
+      `the approval at ${at} covers ${approval.story_path}, but the issue names ${storyPath}.`,
+    );
+  }
+  if (approval.story_sha256 !== currentStoryHash) {
+    return refuse(
+      'spec-changed',
+      'the story changed after approval, so the approval no longer covers what would be ' +
+        'built. Re-run the review and approve the current text. (Its status line is ' +
+        'excluded from the hash, so a status change is not what caused this.)',
+    );
+  }
+
+  return { allow: true, reason: 'ok', message: `approved by ${approval.approved_by}` };
 }

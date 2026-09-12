@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { storyBodyForHashing, hashStory, parseStoryApproval, approvalPathForStory } from '../../lib/story-approval';
+import {
+  storyBodyForHashing,
+  hashStory,
+  parseStoryApproval,
+  approvalPathForStory,
+  storyDispatchGateDecision,
+} from '../../lib/story-approval';
 import { hashSpecAndPlan, parseSpecApproval } from '../../lib/spec-approval';
 
 const STORY = [
@@ -132,5 +138,111 @@ describe('parseStoryApproval', () => {
     });
     expect(parseStoryApproval(specRecord).ok).toBe(false);
     expect(parseSpecApproval(record()).ok).toBe(false);
+  });
+});
+
+const OK_HASH = hashStory(STORY);
+
+/** A record whose hash matches STORY. */
+const approved = (over: Record<string, unknown> = {}) =>
+  record({ story_sha256: OK_HASH, ...over });
+
+describe('storyDispatchGateDecision', () => {
+  it('allows a story that still matches its approval', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved(),
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('ok');
+  });
+
+  it('refuses when no approval was recorded', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: null,
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('missing');
+    expect(d.message).toContain('8.1-gate-hardening.approval.json');
+  });
+
+  it('refuses a record it cannot read', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: '{ truncated',
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.reason).toBe('malformed');
+  });
+
+  it('refuses a schema newer than this code understands', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved({ schema_version: 99 }),
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.reason).toBe('schema-too-new');
+  });
+
+  it('refuses a verdict that is not ok', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved({ review_verdict: 'concerns' }),
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.reason).toBe('unclean-verdict');
+  });
+
+  it('refuses an approval that names a different story', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved({ story_path: 'docs/stories/epic-8/8.2-other.md' }),
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.reason).toBe('path-mismatch');
+  });
+
+  it('refuses a story edited after approval', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved(),
+      currentStoryHash: hashStory(STORY.replace('truthful', 'different')),
+      storyPath: STORY_PATH,
+    });
+    expect(d.reason).toBe('spec-changed');
+  });
+
+  it('allows a story whose status line moved on', () => {
+    // The projection must not invalidate the approval it was projected from.
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved(),
+      currentStoryHash: hashStory(STORY.replace('**Status:** Draft', '**Status:** Review')),
+      storyPath: STORY_PATH,
+    });
+    expect(d.allow).toBe(true);
+  });
+
+  it('does not consult the source spec', () => {
+    // The asymmetry: the spec was a precondition at approval time and is
+    // lineage afterwards. A spec amended later must not kill a running story.
+    const d = storyDispatchGateDecision({
+      approvalRaw: approved({ source_spec_sha256: 'f'.repeat(64) }),
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+    });
+    expect(d.allow).toBe(true);
+  });
+
+  it('lets the override label through, on the record', () => {
+    const d = storyDispatchGateDecision({
+      approvalRaw: null,
+      currentStoryHash: OK_HASH,
+      storyPath: STORY_PATH,
+      overrideRequested: true,
+    });
+    expect(d.allow).toBe(true);
+    expect(d.reason).toBe('override');
   });
 });
