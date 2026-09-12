@@ -220,7 +220,24 @@ describe('parseStoryRef', () => {
   });
 
   it('ignores a path inside backticks', () => {
+    // Documents the contract: a single-line backticked path cannot discriminate
+    // (the `$` anchor rejects it regardless). The multi-line test below is the
+    // actual guard that stripping works.
     expect(parseStoryRef('Story: `docs/stories/epic-8/8.1-x.md`\n')).toBeNull();
+  });
+
+  it('ignores a Story: line swallowed by a multi-line backtick span', () => {
+    // A single-line backticked path cannot discriminate: the `$` anchor already
+    // rejects a line ending in a backtick. A span across lines can — without
+    // stripping, the decoy on line 2 matches first and wins.
+    const body = [
+      'Intro `code',
+      'Story: docs/stories/epic-8/8.1-decoy.md',
+      'more` text',
+      '',
+      'Story: docs/stories/epic-8/8.1-real.md',
+    ].join('\n');
+    expect(parseStoryRef(body)?.story_path).toBe('docs/stories/epic-8/8.1-real.md');
   });
 
   it('returns null for an empty body', () => {
