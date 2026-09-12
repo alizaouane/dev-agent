@@ -55,7 +55,17 @@ export function InboxApproveButton({
       <Button type="submit" size="sm" disabled={pending}>
         {pending ? 'Starting…' : label}
       </Button>
-      {error ? <p className="max-w-xs text-right text-xs text-destructive">{error}</p> : null}
+      {/*
+        role="alert" because the message arrives after the action resolves.
+        Without it a screen-reader user hears nothing and the button just
+        appears not to have worked, which is the failure this component was
+        added to fix, one layer down.
+      */}
+      {error ? (
+        <p role="alert" className="max-w-xs text-right text-xs text-destructive">
+          {error}
+        </p>
+      ) : null}
     </form>
   );
 }

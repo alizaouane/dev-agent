@@ -63,11 +63,19 @@ jobs:
       cancel-in-progress: false
     # See phase-implement.yml for rationale on the long ceiling.
     timeout-minutes: 360
+    # `contents: read`, because nothing in this job writes to the repo. It
+    # deploys and smokes; the session log is committed by a separate job
+    # below, from a workspace this agent never touched. Telling the agent not
+    # to push is an instruction; withholding the permission is a boundary.
     permissions:
-      contents: write
+      contents: read
       issues: write
       pull-requests: write
       id-token: write
+    outputs:
+      overtaken: ${{ steps.slot.outputs.overtaken }}
+      phase_outcome: ${{ steps.parse.outputs.phase_outcome }}
+      next_hint: ${{ steps.parse.outputs.next_hint }}
     steps:
       # Pillar 5 — Harden runner against unexpected egress + sudo. See
       # phase-bug-scout.yml for the v1 audit-mode rationale.
@@ -114,9 +122,15 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root.
+      # persist-credentials: false. The job token is read-only now, but a
+      # checkout left at its default still writes whatever token it has into
+      # git config, where an agent with Bash can find it. The session log is
+      # committed by a separate job with its own fresh checkout.
       - uses: actions/checkout@v4
         if: steps.slot.outputs.overtaken != 'true'
-        with: { fetch-depth: 0 }
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       # Engine repo with the dev-agent CLIs + prompt templates this
       # workflow invokes. See phase-implement.yml for rationale.
@@ -127,6 +141,8 @@ jobs:
           repository: alizaouane/dev-agent
           ref: main
           path: .dev-agent-engine
+          # Nothing pushes to the engine checkout; it only needs the files.
+          persist-credentials: false
 
       - uses: actions/setup-node@v4
         if: steps.slot.outputs.overtaken != 'true'
@@ -313,23 +329,94 @@ jobs:
           echo "phase_outcome=${OUTCOME}" >> "$GITHUB_OUTPUT"
           echo "next_hint=${HINT}" >> "$GITHUB_OUTPUT"
 
+  # A separate job, with its own checkout, because the agent above shares a
+  # workspace with whatever commits from it. Dropping persisted credentials
+  # narrowed that window without closing it: the agent could still edit
+  # SESSION_LOG.md, stage other files, or rewrite append-session-log.ts and
+  # have a later step in the same job push the result. Here the workspace is
+  # fresh and the agent has never seen it, so `contents: write` is safe to
+  # grant — and it is granted nowhere else in this workflow.
+  session-log:
+    needs: staging-deploy
+    if: always() && inputs.invocation_mode == 'live' && needs.staging-deploy.outputs.overtaken != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Pinned to an immutable revision, not `main`. This job is the only one
+      # in this workflow holding `contents: write`, and it executes engine code
+      # — so a mutable ref means the code running beside that credential can
+      # change between review and run (CWE-829).
+      #
+      # MAINTENANCE: bump this in the same pull request that changes anything
+      # under lib/cli/ that this job runs. A stale pin runs old CLI code; an
+      # unpinned ref runs unreviewed code with a write token, which is worse.
+      - name: Checkout dev-agent engine
+        uses: actions/checkout@v4
+        with:
+          repository: alizaouane/dev-agent
+          ref: 5d5d31413e12f4f4c5c810662508adcab8fd1470
+          path: .dev-agent-engine
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+
+      - name: Install engine deps
+        working-directory: .dev-agent-engine
+        run: npm ci --omit=dev --ignore-scripts
+
+      # No GH_TOKEN here, deliberately. This step runs engine code; the step
+      # below holds the credential and runs none. The pin bounds what code can
+      # run; this bounds what that code can reach if the pin is ever wrong.
       - name: Append SESSION_LOG.md entry
-        if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
         env:
           PHASE: staging-deploy
           ISSUE_NUMBER: ${{ inputs.issue_number }}
-          OUTCOME: ${{ steps.parse.outputs.phase_outcome || 'aborted' }}
-          NEXT_SESSION_HINT: ${{ steps.parse.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
+          OUTCOME: ${{ needs.staging-deploy.outputs.phase_outcome || 'aborted' }}
+          NEXT_SESSION_HINT: ${{ needs.staging-deploy.outputs.next_hint || 'inspect the staging-deploy run logs.' }}
           TRIGGER: 'PR merged to default branch — staging deploy + smoke verify run.'
         run: |
           set -euo pipefail
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
+
+      - name: Commit and push the session log
+        env:
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
           if git diff --quiet -- SESSION_LOG.md; then
             echo "SESSION_LOG.md unchanged — no commit needed."
             exit 0
           fi
           git config user.name 'dev-agent[bot]'
           git config user.email 'dev-agent@users.noreply.github.com'
+          # Only the log. `git add -A` here would sweep anything else the
+          # checkout produced into a commit nobody reviewed.
           git add SESSION_LOG.md
           git commit -m "chore(dev-agent): session log — staging-deploy issue #${ISSUE_NUMBER}"
-          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"
+
+          # Two runs for different issues append to the same file, so whichever
+          # pushes second gets a non-fast-forward. The previous `|| echo`
+          # swallowed exactly that and the job went green having dropped the
+          # entry. Rebase and retry instead; only a push still failing after
+          # three attempts is reported, and loudly.
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for attempt in 1 2 3; do
+            if git push "$REMOTE" HEAD; then
+              echo "session log pushed on attempt $attempt"
+              exit 0
+            fi
+            echo "push attempt $attempt failed; rebasing onto the current tip"
+            git pull --rebase "$REMOTE" HEAD || break
+            sleep $((attempt * 3))
+          done
+          echo "::warning::could not push the session log after 3 attempts — the entry is committed locally only. A protected branch does this; so does a rebase that could not replay."
+          exit 0

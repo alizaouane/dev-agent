@@ -670,10 +670,87 @@ describe('.github/workflows/', () => {
     });
 
     it('gates every step in the deploy job on that verdict', () => {
-      const job = raw.slice(raw.indexOf('  staging-deploy:'));
+      const job = raw.slice(raw.indexOf('  staging-deploy:'), raw.indexOf('  session-log:'));
       const steps = job.match(/^ {6}- (name:|uses:|run:)/gm) ?? [];
       const guards = job.match(/steps\.slot\.outputs\.overtaken != 'true'/g) ?? [];
       expect(guards.length).toBe(steps.length - 1);
+    });
+
+    it('does not leave a push credential in git config for the agent', () => {
+      // This job grants contents: write, the issue title reaches the prompt
+      // unwrapped, and the live agent has Bash. A checkout that persists the
+      // token by default hands a prompt-injected title everything it needs to
+      // push. The prompt's "do not push" instruction is not a boundary.
+      const checkouts = raw.match(/uses: actions\/checkout@v4[\s\S]{0,240}?(?=\n      - |\n      #)/g) ?? [];
+      expect(checkouts.length).toBeGreaterThanOrEqual(2);
+      for (const c of checkouts) {
+        expect(c, c.slice(0, 80)).toMatch(/persist-credentials: false/);
+      }
+    });
+
+    it('runs engine code with no write token in its environment', () => {
+      // The session-log job is the only one holding `contents: write`. Running
+      // engine code and holding the credential in the same step means a change
+      // to the engine can use that token against the consumer's repository.
+      // Splitting them does not make the script safe, but it stops the script
+      // reading a credential that is not in its environment.
+      const logJob = raw.slice(raw.indexOf('  session-log:'));
+      const appendStep = logJob.slice(
+        logJob.indexOf('      - name: Append SESSION_LOG.md entry'),
+        logJob.indexOf('      - name: Commit and push the session log'),
+      );
+      expect(appendStep, 'append step not found before the push step').not.toBe('');
+      expect(appendStep).not.toMatch(/GH_TOKEN/);
+    });
+
+    it('pins the engine checkout to an immutable revision in that job', () => {
+      // `ref: main` is a mutable pointer. Executing code fetched from it in the
+      // job that holds a write token is CWE-829 — the revision can change
+      // between review and run.
+      const logJob = raw.slice(raw.indexOf('  session-log:'));
+      const engineCheckout = logJob.slice(logJob.indexOf('repository: alizaouane/dev-agent'));
+      expect(engineCheckout.slice(0, 400)).toMatch(/ref: [0-9a-f]{40}/);
+      expect(engineCheckout.slice(0, 400)).not.toMatch(/ref: main/);
+    });
+
+    it('retries the session-log push instead of losing the entry', () => {
+      // Two runs for different issues append to the same file. Whichever
+      // pushes second gets a non-fast-forward, and the old `|| echo` swallowed
+      // it — the job went green having dropped the entry.
+      const logJob = raw.slice(raw.indexOf('  session-log:'));
+      expect(logJob).toMatch(/for attempt in/);
+      expect(logJob).toMatch(/pull --rebase/);
+      expect(logJob).toMatch(/::warning::/);
+    });
+
+    it('pushes the session log from a job the agent never touched', () => {
+      // Dropping persisted credentials narrowed the window and did not close
+      // it: the agent shares the workspace, so it can edit SESSION_LOG.md or
+      // append-session-log.ts before a later step in the same job commits and
+      // pushes them. A separate job gets a fresh checkout.
+      const deployJob = raw.slice(
+        raw.indexOf('  staging-deploy:'),
+        raw.indexOf('  session-log:'),
+      );
+      expect(deployJob).not.toMatch(/git push/);
+      expect(raw).toMatch(/^  session-log:$/m);
+      expect(raw).toMatch(/needs: staging-deploy/);
+    });
+
+    it('grants the agent job no write access to contents', () => {
+      // It deploys and smokes. Nothing in it needs to write to the repo, and
+      // the prompt telling the agent not to push is not a boundary.
+      //
+      // Read off the permissions block rather than the job text, so a comment
+      // mentioning the words cannot pass or fail this.
+      const deployJob = raw.slice(
+        raw.indexOf('  staging-deploy:'),
+        raw.indexOf('  session-log:'),
+      );
+      const perms = deployJob.match(/^    permissions:\n((?:^      \S+: \S+\n)+)/m);
+      expect(perms, 'permissions block not found on staging-deploy').not.toBeNull();
+      expect(perms![1]).toContain('contents: read');
+      expect(perms![1]).not.toContain('contents: write');
     });
 
     it('lists the state staging-deploy starts from, not the ones it does not', () => {
@@ -713,6 +790,27 @@ describe('.github/workflows/', () => {
       // Better a visibly failed run than an issue advancing to a state that
       // implies production off the back of a comment nobody earned.
       expect(promoteStep).toMatch(/^\s+exit 1$/m);
+    });
+
+    it('moves the issue to a failure state instead of leaving it promoting', () => {
+      // The gate sets state:promoting and this phase exits 1. Leaving the
+      // label alone parks the issue in a state the dashboard reads as in
+      // flight, with no gate offering a retry. state:blocked is what
+      // phase-staging-deploy uses for the same situation.
+      expect(raw).toMatch(/--add-label state:blocked/);
+      expect(raw).toMatch(/--remove-label state:promoting/);
+    });
+
+    it('applies the failure label from a step that runs on failure', () => {
+      // Inline after the comment, `set -e` skipped the label edit whenever
+      // `gh issue comment` failed, and `|| true` hid the edit's own failure.
+      // Either way the issue stayed at state:promoting — the exact outcome
+      // the label change exists to prevent.
+      const failStep = raw.slice(raw.indexOf('      - name: Mark the promotion blocked'));
+      expect(failStep, 'no failure-cleanup step').toMatch(/if: failure\(\)/);
+      expect(failStep).toMatch(/--add-label state:blocked/);
+      // Retried, because a single API call is the thing that just failed.
+      expect(failStep).toMatch(/for attempt in/);
     });
 
     it('does not log a success outcome for a run that failed', () => {
