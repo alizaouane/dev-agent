@@ -709,9 +709,23 @@ AC-12, AC-13, AC-14 and AC-15 belong to slice 4.
 - Task 3 asks you to confirm the dashboard's repo-read helper throws on non-404 errors rather than returning null. Say which it does in your report even if no change is needed — that property is load-bearing and has been wrong three times in this repo.
 - Tasks 1 and 3 touch mirrored modules. Re-copy and `cmp` in the same task, or the drift test fails in the next one.
 
-## What slice 4 needs decided first
+## What slice 4 needs decided first — DECIDED 2026-09-12
 
-Slice 4 is **not planned here**, because it rests on a design decision that should be made deliberately rather than invented inside a plan.
+**Two lists.** The panel grows a second section: approved specs in one, approved
+stories in the other, and the operator chooses which kind of thing they are
+starting. `SpecPair` keeps its shape and a parallel story type sits beside it,
+rather than both being forced into one neutral type.
+
+That settles the rest of slice 4's shape: `dispatchFromSpec` keeps taking
+`spec_path` and `plan_path` untouched, and a sibling action takes `story_path`.
+No existing pipeline is refactored to accommodate stories.
+
+The reasoning that led there is kept below, because a future reader will want to
+know which alternatives were weighed.
+
+---
+
+Slice 4 rests on a design decision that should be made deliberately rather than invented inside a plan.
 
 The dashboard's picker is built on `SpecPair`, which is spec-and-plan shaped all the way through: a `specPath`, a `planPath`, a dated `YYYY-MM-DD-<topic>` slug, and a title derived from that slug. `pairSpecsAndPlans` matches specs to plans on that slug; `verifySpecPairs` re-derives approval through the spec gate; the panel renders "(no plan)" and the server action submits `spec_path` and `plan_path`.
 
