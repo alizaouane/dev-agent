@@ -360,7 +360,12 @@ jobs:
           # resolves the story AS the spec and the approval check then reads a
           # story approval through the spec path and refuses it as malformed —
           # fail-closed, but with a message that sends the operator the wrong way.
-          STORY_PATH=$(printf '%s' "$BODY" | grep -oE '^[[:space:]]*Story:[[:space:]]*[^[:space:]]+\.md' | head -1 | sed -E 's/^[[:space:]]*Story:[[:space:]]*//' || true)
+          # End-anchored to agree with the dashboard's parseStoryRef
+          # (/^\s*Story:\s*(\S+\.md)\s*$/m): a Story: line with trailing text
+          # after the path must resolve the same way in both places — either
+          # both see a story, or neither does. Trailing whitespace is allowed
+          # on both sides.
+          STORY_PATH=$(printf '%s' "$BODY" | grep -oE '^[[:space:]]*Story:[[:space:]]*[^[:space:]]+\.md[[:space:]]*$' | head -1 | sed -E 's/^[[:space:]]*Story:[[:space:]]*//' | sed -E 's/[[:space:]]*$//' || true)
           if [ -n "$STORY_PATH" ] && [ ! -f "$STORY_PATH" ]; then
             echo "::error::the issue names $STORY_PATH, which is not on this branch"
             exit 1

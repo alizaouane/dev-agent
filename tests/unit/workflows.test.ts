@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import yaml from 'js-yaml';
 
 const workflowsDir = resolve(__dirname, '../../.github/workflows');
@@ -1179,6 +1180,58 @@ describe('.github/workflows/', () => {
       expect(renderStep).toMatch(/STORY_PATH:\s*\$\{\{\s*steps\.issue\.outputs\.story_path\s*\}\}/);
       expect(renderStep).toMatch(/DOC_PATH="\$\{STORY_PATH:-\$SPEC_PATH\}"/);
       expect(renderStep).toMatch(/--arg spec_path "\$DOC_PATH"/);
+    });
+
+    describe('the Story: grep agrees with the dashboard parser (end-anchored)', () => {
+      // The dashboard's parseStoryRef is /^\s*Story:\s*(\S+\.md)\s*$/m —
+      // end-anchored, so a `Story:` line with trailing text after the path
+      // is "no Story: line" to the dashboard. Extract the actual grep
+      // pattern from the "Read issue" step and run it for real, rather than
+      // just asserting a literal string is present, so the test tracks
+      // behavior instead of spelling.
+      const readIssueStep = raw.slice(
+        raw.indexOf('- name: Read issue'),
+        raw.indexOf('- name: Verify spec approval'),
+      );
+
+      const extractStoryGrepPattern = (): string => {
+        const match = readIssueStep.match(/grep -oE '([^']+)' \| head -1/);
+        if (!match) {
+          throw new Error('could not find the Story: grep pattern in the "Read issue" step');
+        }
+        return match[1];
+      };
+
+      const runGrep = (body: string): string | null => {
+        try {
+          // Strip only the trailing newline grep's output carries — a plain
+          // .trim() would also eat the trailing spaces the whitespace test
+          // below is specifically checking survive the match.
+          return execFileSync('grep', ['-oE', extractStoryGrepPattern()], {
+            input: body,
+            encoding: 'utf8',
+          }).replace(/\n$/, '');
+        } catch {
+          // grep exits non-zero on no match.
+          return null;
+        }
+      };
+
+      it('does NOT resolve a Story: line followed by trailing text as a story', () => {
+        expect(runGrep('Story: docs/stories/epic-1/foo.md some extra text\n')).toBeNull();
+      });
+
+      it('still resolves a clean Story: line', () => {
+        expect(runGrep('Story: docs/stories/epic-1/foo.md\n')).toBe(
+          'Story: docs/stories/epic-1/foo.md',
+        );
+      });
+
+      it('still resolves a Story: line with only trailing whitespace, like the dashboard regex allows', () => {
+        expect(runGrep('Story: docs/stories/epic-1/foo.md   \n')).toBe(
+          'Story: docs/stories/epic-1/foo.md   ',
+        );
+      });
     });
   });
 });
