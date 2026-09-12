@@ -137,10 +137,21 @@ describe('parseStoryApproval', () => {
     ['source_spec_sha256', { source_spec_sha256: 'nope' }],
     ['review_verdict', { review_verdict: 'maybe' }],
     ['review_rounds', { review_rounds: 0 }],
+    ['approved_at', { approved_at: 'not-a-date' }],
+    // A valid Date input that does not round-trip to itself is not the
+    // ISO-8601 format the record documents (no time component, no
+    // milliseconds, no explicit UTC offset) — accepting it would let
+    // approved_at drift from the one canonical rendering the field claims.
+    ['approved_at', { approved_at: '2026-09-12' }],
   ])('rejects a bad %s', (field, over) => {
     const parsed = parseStoryApproval(record(over));
     expect(parsed.ok).toBe(false);
     if (!parsed.ok) expect(parsed.error).toContain(field);
+  });
+
+  it('accepts a well-formed ISO-8601 approved_at with milliseconds and Z', () => {
+    const parsed = parseStoryApproval(record({ approved_at: '2026-09-12T10:00:00.000Z' }));
+    expect(parsed.ok).toBe(true);
   });
 
   it('rejects text that is not JSON', () => {

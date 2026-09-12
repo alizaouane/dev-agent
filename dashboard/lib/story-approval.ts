@@ -185,6 +185,16 @@ export function parseStoryApproval(raw: string): StoryParseResult {
       return { ok: false, error: `${key} must be a non-empty string` };
     }
   }
+  // approved_at documents ISO-8601, not merely "any non-empty string": a
+  // value Date can parse but does not render back verbatim (no time, no
+  // milliseconds, no explicit UTC offset) is not the one canonical rendering
+  // the field claims, and a value Date cannot parse at all is rejected the
+  // same way.
+  const approvedAt = o.approved_at as string;
+  const approvedAtDate = new Date(approvedAt);
+  if (Number.isNaN(approvedAtDate.getTime()) || approvedAtDate.toISOString() !== approvedAt) {
+    return { ok: false, error: 'approved_at must be an ISO-8601 timestamp' };
+  }
   for (const key of ['story_sha256', 'source_spec_sha256'] as const) {
     if (typeof o[key] !== 'string' || !DIGEST_RE.test(o[key] as string)) {
       return { ok: false, error: `${key} must be a 64-character lowercase hex digest` };
