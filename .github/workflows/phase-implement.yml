@@ -355,33 +355,92 @@ jobs:
           PLANS_DIR=$(jq -r '.artifacts.plans_dir // "docs/plans"' /tmp/config.json)
           BODY=$(jq -r '.body' issue.json)
 
-          # Spec: try ${SPECS_DIR}/*.md first, then any docs/**/*.md
-          # reference in the body; fall back to a placeholder.
-          SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "${SPECS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
-          if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
-            SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]+\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
-          fi
-          if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
-            SPEC_PATH="${SPECS_DIR}/placeholder-no-spec.md"
-            mkdir -p "$SPECS_DIR"
-            printf '# (no spec linked)\n\nThe issue body did not reference a spec file under `%s/` or any `docs/**/*.md` path that exists on this branch. Treat the issue body as the spec.\n' "$SPECS_DIR" > "$SPEC_PATH"
+          # A Story: line wins over the spec fallback. The existing spec grep
+          # matches any docs/**/*.md that exists, so without this a story issue
+          # resolves the story AS the spec and the approval check then reads a
+          # story approval through the spec path and refuses it as malformed —
+          # fail-closed, but with a message that sends the operator the wrong way.
+          # End-anchored to agree with the dashboard's parseStoryRef
+          # (/^\s*Story:\s*(\S+\.md)\s*$/m): a Story: line with trailing text
+          # after the path must resolve the same way in both places — either
+          # both see a story, or neither does. Trailing whitespace is allowed
+          # on both sides. A leading `./` is stripped for the same reason:
+          # `approve-story` records the path without one, so preserving the
+          # issue's spelling refuses a correctly approved story for ever on a
+          # path mismatch. `canonicalStoryPath` is the TS side of this.
+          # Quoted regions come out first, as the dashboard's
+          # stripQuotedRegions does (dashboard/lib/spec-approval-gate.ts):
+          # fenced blocks that actually close, then inline backtick spans
+          # across the joined body. Without this an ordinary SPEC issue that
+          # shows a `Story:` line inside an example routes down the story
+          # branch here while the dashboard routes it down the spec branch,
+          # and the two then disagree about which document was approved.
+          # An unpaired fence opener is left alone on purpose — otherwise a
+          # stray backtick line would swallow the canonical link below it.
+          #
+          # This parity covers the Story: line only. The spec and plan greps
+          # below still read the raw body, which is the behaviour every
+          # shipped consumer repo has today; parseSpecRefs strips and they do
+          # not, so a spec path quoted in an example can still outrank the
+          # canonical Spec: link here. That divergence predates this workflow
+          # and is fail-closed in the common case (the quoted spec has no
+          # approval beside it), so it is left alone rather than changed
+          # under a story-routing fix.
+          BODY_UNQUOTED=$(printf '%s' "$BODY" | awk '
+            { line[NR] = $0; if ($0 ~ /^ ? ? ?(```|~~~)/) fence[++nf] = NR }
+            END {
+              for (i = 1; i + 1 <= nf; i += 2)
+                for (n = fence[i]; n <= fence[i + 1]; n++) strip[n] = 1
+              out = ""
+              for (n = 1; n <= NR; n++) if (!strip[n]) out = out line[n] "\n"
+              gsub(/`[^`]*`/, "", out)
+              printf "%s", out
+            }')
+
+          STORY_PATH=$(printf '%s' "$BODY_UNQUOTED" | grep -oE '^[[:space:]]*Story:[[:space:]]*[^[:space:]]+\.md[[:space:]]*$' | head -1 | sed -E 's/^[[:space:]]*Story:[[:space:]]*//' | sed -E 's/[[:space:]]*$//' | sed -E 's#^(\./)+##' || true)
+          # Unconditional, including under spec-approval:override. Both gates
+          # refuse an absent story regardless of that label for the same
+          # reason — it authorises dispatch past a problem with the approval
+          # RECORD, not past a document that is not there — so this exit now
+          # agrees with them rather than stranding an issue the dashboard had
+          # already flipped to state:implementing.
+          if [ -n "$STORY_PATH" ] && [ ! -f "$STORY_PATH" ]; then
+            echo "::error::the issue names $STORY_PATH, which is not on this branch"
+            exit 1
           fi
 
-          # Plan: optional. Try ${PLANS_DIR}/*.md, then any docs/**/plans*/**/*.md
-          # in the body. Empty string if not present — implement.md handles
-          # the optional case.
-          PLAN_PATH=$(printf '%s' "$BODY" | grep -oE "${PLANS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
-          if [ -z "$PLAN_PATH" ] || [ ! -f "$PLAN_PATH" ]; then
-            PLAN_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]*plans?[^[:space:])\"\\\`]*\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
+          SPEC_PATH=""
+          PLAN_PATH=""
+          if [ -z "$STORY_PATH" ]; then
+            # Spec: try ${SPECS_DIR}/*.md first, then any docs/**/*.md
+            # reference in the body; fall back to a placeholder.
+            SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "${SPECS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
+            if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
+              SPEC_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]+\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
+            fi
+            if [ -z "$SPEC_PATH" ] || [ ! -f "$SPEC_PATH" ]; then
+              SPEC_PATH="${SPECS_DIR}/placeholder-no-spec.md"
+              mkdir -p "$SPECS_DIR"
+              printf '# (no spec linked)\n\nThe issue body did not reference a spec file under `%s/` or any `docs/**/*.md` path that exists on this branch. Treat the issue body as the spec.\n' "$SPECS_DIR" > "$SPEC_PATH"
+            fi
+
+            # Plan: optional. Try ${PLANS_DIR}/*.md, then any docs/**/plans*/**/*.md
+            # in the body. Empty string if not present — implement.md handles
+            # the optional case.
+            PLAN_PATH=$(printf '%s' "$BODY" | grep -oE "${PLANS_DIR}/[^[:space:])\"\\\`]+\.md" | head -1 || true)
+            if [ -z "$PLAN_PATH" ] || [ ! -f "$PLAN_PATH" ]; then
+              PLAN_PATH=$(printf '%s' "$BODY" | grep -oE "docs/[^[:space:])\"\\\`]*plans?[^[:space:])\"\\\`]*\.md" | while read -r p; do [ -f "$p" ] && echo "$p" && break; done || true)
+            fi
+            # PLAN_PATH stays empty if no plan link present — that's valid
+            # for legacy issues filed via the old dashboard chat.
           fi
-          # PLAN_PATH stays empty if no plan link present — that's valid
-          # for legacy issues filed via the old dashboard chat.
 
           LABELS=$(jq -r '[.labels[].name] | join(",")' issue.json)
 
           echo "title=$TITLE" >> "$GITHUB_OUTPUT"
           echo "spec_path=$SPEC_PATH" >> "$GITHUB_OUTPUT"
           echo "plan_path=$PLAN_PATH" >> "$GITHUB_OUTPUT"
+          echo "story_path=$STORY_PATH" >> "$GITHUB_OUTPUT"
           echo "labels=$LABELS" >> "$GITHUB_OUTPUT"
 
       # The enforcing half of the spec-approval gate. The dashboard runs the
@@ -398,11 +457,21 @@ jobs:
         if: steps.slot.outputs.overtaken != 'true'
         env:
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          STORY_PATH: ${{ steps.issue.outputs.story_path }}
           PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
           ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
+
+          # A story issue resolves STORY_PATH and leaves SPEC_PATH empty (see
+          # "Read issue" above); a spec issue is the reverse — the two are
+          # mutually exclusive. DOC_PATH is whichever one is actually set, so
+          # the materialization and working-tree comparison below need only
+          # one code path. verify-approval.ts still receives SPEC_PATH and
+          # STORY_PATH separately below, and refuses as a usage error if both
+          # or neither are non-empty.
+          DOC_PATH="${STORY_PATH:-$SPEC_PATH}"
 
           # The same escape hatch the verifier honours, applied to the
           # working-tree comparison below so one label releases the whole gate
@@ -412,13 +481,13 @@ jobs:
             *,spec-approval:override,*) OVERRIDE=true ;;
           esac
 
-          # Read the spec, plan and approval from the DEFAULT BRANCH, never
-          # from the working tree. The prefetch step above checks out
+          # Read the spec/story, plan and approval from the DEFAULT BRANCH,
+          # never from the working tree. The prefetch step above checks out
           # `feat/dev-agent-issue-<n>` when it exists, and that branch is
           # written by the agent — so verifying against the working tree would
           # let a previous run's agent commit its own approval file and
-          # authorize itself. Materialize the three files out of the protected
-          # ref with `git show` and verify those copies.
+          # authorize itself. Materialize the files out of the protected ref
+          # with `git show` and verify those copies.
           BASE="${DEFAULT_BRANCH:-}"
           if [ -z "$BASE" ]; then
             BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)
@@ -430,28 +499,28 @@ jobs:
           git fetch --quiet origin "$BASE"
 
           BASE_ROOT=$(mktemp -d)
-          APPROVAL_PATH="${SPEC_PATH%.md}.approval.json"
-          for REL in "$SPEC_PATH" "$APPROVAL_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
+          APPROVAL_PATH="${DOC_PATH%.md}.approval.json"
+          for REL in "$DOC_PATH" "$APPROVAL_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
             mkdir -p "$BASE_ROOT/$(dirname "$REL")"
             # A path absent from the base ref stays absent in BASE_ROOT; the
-            # verifier refuses on a missing spec, plan, or approval.
+            # verifier refuses on a missing spec/story, plan, or approval.
             git show "origin/$BASE:$REL" > "$BASE_ROOT/$REL" 2>/dev/null \
               || rm -f "$BASE_ROOT/$REL"
           done
 
           if ! REPO_ROOT="$BASE_ROOT" .dev-agent-engine/node_modules/.bin/tsx \
               .dev-agent-engine/lib/cli/verify-approval.ts; then
-            echo "::error::Refusing to implement a spec with no matching human approval on ${BASE}. Approve it in the Claude Code intake session (start-feature Phase 3.6), or apply the spec-approval:override label to proceed on the record." >&2
+            echo "::error::Refusing to implement a spec or story with no matching human approval on ${BASE}. Approve it in the Claude Code intake session (start-feature Phase 3.6), or apply the spec-approval:override label to proceed on the record." >&2
             exit 1
           fi
 
-          # The check above proved the DEFAULT BRANCH copies are approved. The
-          # agent, however, is handed the WORKING TREE copies — which sit on
+          # The check above proved the DEFAULT BRANCH copy is approved. The
+          # agent, however, is handed the WORKING TREE copy — which sits on
           # the agent-written feature branch. Approved text on one branch and
           # different text on the other would put the whole binding back where
           # it started, so the two must be identical.
           if [ "${OVERRIDE:-}" != "true" ]; then
-            for REL in "$SPEC_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
+            for REL in "$DOC_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
               if ! cmp -s "$BASE_ROOT/$REL" "$REL"; then
                 echo "::error::${REL} differs between ${BASE} and the working branch. The approval covers the ${BASE} copy; the agent would read the other one. Push the approved text, or re-approve the current one." >&2
                 exit 1
@@ -465,11 +534,18 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          STORY_PATH: ${{ steps.issue.outputs.story_path }}
           PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
         run: |
           set -euo pipefail
+          # A story issue's context document is the story, not the spec — the
+          # two are mutually exclusive on the "Read issue" step above. Same
+          # DOC_PATH idiom as "Verify spec approval" and "Build agent prompt",
+          # so the rendered system prompt's {{spec_path}} names the document
+          # the agent was actually handed, instead of rendering empty.
+          DOC_PATH="${STORY_PATH:-$SPEC_PATH}"
           export PROMPT_VARS_JSON=$(jq -nc \
-            --arg spec_path "$SPEC_PATH" \
+            --arg spec_path "$DOC_PATH" \
             --arg plan_path "${PLAN_PATH:-}" \
             --arg branch_name "feat/dev-agent-issue-${ISSUE_NUMBER}" \
             --argjson issue "$ISSUE_NUMBER" \
@@ -498,23 +574,32 @@ jobs:
           ISSUE_NUMBER: ${{ inputs.issue_number }}
           ISSUE_TITLE: ${{ steps.issue.outputs.title }}
           SPEC_PATH: ${{ steps.issue.outputs.spec_path }}
+          STORY_PATH: ${{ steps.issue.outputs.story_path }}
           PLAN_PATH: ${{ steps.issue.outputs.plan_path }}
         run: |
           set -euo pipefail
+          # A story issue's context document is the story, not the spec — the
+          # two are mutually exclusive on the "Read issue" step above, so
+          # exactly one of these is non-empty.
+          CONTEXT_PATH="${STORY_PATH:-$SPEC_PATH}"
+          CONTEXT_LABEL="Spec"
+          if [ -n "$STORY_PATH" ]; then
+            CONTEXT_LABEL="Story"
+          fi
           {
             echo "# Implementation task — issue #$ISSUE_NUMBER"
             echo ""
             echo "**Issue title:** $ISSUE_TITLE"
-            echo "**Spec file:** \`$SPEC_PATH\`"
+            echo "**${CONTEXT_LABEL} file:** \`$CONTEXT_PATH\`"
             if [ -n "$PLAN_PATH" ] && [ -f "$PLAN_PATH" ]; then
               echo "**Plan file:** \`$PLAN_PATH\`"
             fi
             echo ""
             echo "---"
             echo ""
-            echo "## Spec content"
+            echo "## ${CONTEXT_LABEL} content"
             echo ""
-            cat "$SPEC_PATH"
+            cat "$CONTEXT_PATH"
             echo ""
             if [ -n "$PLAN_PATH" ] && [ -f "$PLAN_PATH" ]; then
               echo "---"

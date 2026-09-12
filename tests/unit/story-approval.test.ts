@@ -6,7 +6,10 @@ import {
   hashStory,
   parseStoryApproval,
   approvalPathForStory,
+  canonicalStoryPath,
   storyDispatchGateDecision,
+  STORY_STATUS_VALUES,
+  STATUS_LINE_RE as RE,
 } from '../../lib/story-approval';
 import { hashSpecAndPlan, parseSpecApproval } from '../../lib/spec-approval';
 
@@ -283,6 +286,56 @@ describe('storyDispatchGateDecision', () => {
   });
 });
 
+describe('status values and the regex are one source', () => {
+  it('matches every value it declares legal', () => {
+    // Two hand-synced literals drift. When they do, stamping writes a status
+    // the regex no longer recognises, hashing stops stripping the line, and
+    // the next transition breaks the approval on a story nobody edited.
+    for (const value of STORY_STATUS_VALUES) {
+      RE.lastIndex = 0;
+      expect(RE.test(`**Status:** ${value}`), value).toBe(true);
+    }
+  });
+
+  it('matches the In Progress spelling the conformance check allows', () => {
+    RE.lastIndex = 0;
+    expect(RE.test('**Status:** In Progress')).toBe(true);
+  });
+
+  it('still rejects a value it does not declare', () => {
+    for (const bad of ['Merged', 'Doneish', 'Draft-old', 'Approvedish']) {
+      RE.lastIndex = 0;
+      expect(RE.test(`**Status:** ${bad}`), bad).toBe(false);
+    }
+  });
+
+  it('treats regex metacharacters in values as literals, not patterns', () => {
+    // A future value containing . ? or other metacharacters must match exactly,
+    // not change the grammar. E.g., In.Progress should not also accept InXProgress.
+    RE.lastIndex = 0;
+    // '.' is a regex metacharacter — it matches any character. If unescaped,
+    // In.Review would also match InXReview, InAReview, etc.
+    // Since we escape it, the dot must be literal in the input.
+    expect(RE.test('**Status:** In.Review')).toBe(false);
+    expect(RE.test('**Status:** InXReview')).toBe(false);
+  });
+
+  it('derives its alternation from STORY_STATUS_VALUES, not a hardcoded list', () => {
+    // Every other test here passes just as well against a hardcoded
+    // alternation — it only diverges the day someone adds a status to
+    // STORY_STATUS_VALUES and the regex stops recognising it, at which point
+    // hashing stops stripping the line and breaks the approval on a story
+    // nobody edited. So pin the derivation itself, in both directions.
+    for (const value of STORY_STATUS_VALUES) {
+      const alternative = value === 'InProgress' ? 'In ?Progress' : value;
+      expect(RE.source, value).toContain(alternative);
+    }
+    const alternation = RE.source.match(/\(\?:(.+?)\)/);
+    expect(alternation, 'the status alternation group moved — update this test').not.toBeNull();
+    expect(alternation![1].split('|')).toHaveLength(STORY_STATUS_VALUES.length);
+  });
+});
+
 describe('dashboard mirror', () => {
   it('is byte-identical to the engine copy', () => {
     // The dashboard deploys with rootDirectory=dashboard/, which excludes the
@@ -292,5 +345,37 @@ describe('dashboard mirror', () => {
     expect(readFileSync(resolve(root, 'dashboard/lib/story-approval.ts'), 'utf8')).toBe(
       readFileSync(resolve(root, 'lib/story-approval.ts'), 'utf8'),
     );
+  });
+});
+
+describe('canonicalStoryPath', () => {
+  it('strips a leading ./, which approve-story already strips before recording', () => {
+    // Codex, PR #164: the command normalised and the readers did not, so a
+    // `./docs/…` story was approved, filed, and then refused for ever on a
+    // path mismatch nobody could see or fix from the dashboard.
+    expect(canonicalStoryPath('./docs/stories/epic-8/8.1-x.md')).toBe(
+      'docs/stories/epic-8/8.1-x.md',
+    );
+  });
+
+  it('strips repeated leading ./ segments', () => {
+    expect(canonicalStoryPath('.././docs/x.md')).toBe('.././docs/x.md');
+    expect(canonicalStoryPath('././docs/x.md')).toBe('docs/x.md');
+  });
+
+  it('leaves an already-canonical path alone', () => {
+    expect(canonicalStoryPath('docs/stories/epic-8/8.1-x.md')).toBe(
+      'docs/stories/epic-8/8.1-x.md',
+    );
+  });
+
+  it('never throws, whatever it is handed', () => {
+    // It runs inside parsers that read untrusted issue bodies. Throwing there
+    // would take the dashboard down instead of refusing one issue; the
+    // approval command keeps the stricter validation that rejects an absolute
+    // path or a `..` segment.
+    expect(() => canonicalStoryPath('/etc/passwd')).not.toThrow();
+    expect(() => canonicalStoryPath('../../escape.md')).not.toThrow();
+    expect(() => canonicalStoryPath('')).not.toThrow();
   });
 });
