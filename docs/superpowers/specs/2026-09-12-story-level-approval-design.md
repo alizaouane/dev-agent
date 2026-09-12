@@ -126,8 +126,16 @@ and inherits its standing rule: **it is never run on the user's behalf**, becaus
 
 It writes the approval artifact and stamps `**Status:** Approved` into the story
 header in one invocation, and the intake commits both together — matching how
-`approve-spec` writes the record and the skill commits it. Neither file is
-written without the other, so the two records cannot disagree by construction.
+`approve-spec` writes the record and the skill commits it. Every precondition
+is checked before either file is touched, so a refused approval writes
+neither. Of the two writes that follow, the story is stamped first and the
+approval record second — not record-then-stamp — because that is the
+direction that recovers: if the second write fails, the worst case is a
+stamped-but-unrecorded story, which the dispatch gate already refuses (fails
+closed) and a retry then completes cleanly, since the story's hash excludes
+the status line. The reverse order has no such recovery — a failure between
+the two writes leaves a recorded-but-unstamped story that every retry refuses
+via the "already approved" guard, with no way out short of hand-editing.
 
 Preconditions, each refusing with its own message:
 
@@ -256,8 +264,12 @@ invisible to the manifest that is supposed to bind them to tests.
       story has no resolving `Source spec:` line, when that spec's approval
       verdict is not `ok`, when the derivation verdict is not `ok`, or when the
       story is already approved at its current hash.
-- [ ] AC-3: Approving a story writes the artifact and stamps `Status: Approved`
-      in one invocation; neither file is written without the other.
+- [ ] AC-3: A refused approval (any precondition failure) writes neither the
+      artifact nor the status stamp. Once preconditions pass, the story is
+      stamped `Status: Approved` before the artifact is written, so a write
+      failure between the two leaves the story stamped and the approval
+      record absent — a state the dispatch gate refuses, and a retry
+      completes cleanly.
 - [ ] AC-4: A story whose source spec is amended after approval still dispatches.
 - [ ] AC-5: A story edited after approval is refused at dispatch.
 - [ ] AC-6: Rewriting only the `**Status:**` line does not invalidate the
