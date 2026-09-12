@@ -1137,4 +1137,32 @@ describe('.github/workflows/', () => {
       expect(raw).toMatch(/grep -oE "docs\//);
     });
   });
+
+  describe('phase-implement.yml — story issues', () => {
+    const raw = readFileSync(resolve(workflowsDir, 'phase-implement.yml'), 'utf8');
+    // Sliced to the "Read issue" step specifically, not the whole file — a
+    // whole-file match let an unrelated `exit 1` pass on an earlier branch
+    // for the wrong reason.
+    const readIssueStep = raw.slice(
+      raw.indexOf('- name: Read issue'),
+      raw.indexOf('- name: Verify spec approval'),
+    );
+
+    it('resolves a Story: reference before falling back to a spec', () => {
+      // A Story: line names a docs/**/*.md path that exists, so the existing
+      // spec grep would otherwise claim it and hand a story to the spec gate,
+      // which refuses it as malformed with a misleading message.
+      expect(readIssueStep).toMatch(/STORY_PATH=/);
+      expect(readIssueStep).toMatch(/story_path=/);
+    });
+
+    it('passes the story path to the approval check instead of a spec path', () => {
+      const verifyStep = raw.slice(raw.indexOf('- name: Verify spec approval'));
+      expect(verifyStep.slice(0, 600)).toMatch(/STORY_PATH:/);
+    });
+
+    it('feeds the story to the agent as its context bundle', () => {
+      expect(raw).toMatch(/steps\.issue\.outputs\.story_path/);
+    });
+  });
 });
