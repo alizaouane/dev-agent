@@ -10,6 +10,7 @@ import {
   resolveRefusal,
   type DispatchGateDecision,
 } from '@/lib/spec-approval';
+import { approvalPathForStory, hashStory, storyDispatchGateDecision } from '@/lib/story-approval';
 
 /**
  * Server-side half of the spec-approval gate: fetch the three documents the
@@ -151,6 +152,32 @@ export async function evaluateSpecApproval(input: {
 }): Promise<DispatchGateDecision> {
   const { octokit, owner, repo, ref, issueBody, labels } = input;
   const overrideRequested = labels.includes(OVERRIDE_LABEL);
+
+  // A story-based issue is checked against the story alone. Its source spec
+  // was a precondition when the story was approved and is lineage afterwards,
+  // so re-reading it here would let one late amendment to a program spec
+  // invalidate every story derived from it.
+  const storyRef = parseStoryRef(issueBody);
+  if (storyRef) {
+    const storyText = await fetchText(octokit, owner, repo, storyRef.story_path, ref);
+    if (storyText === null) {
+      return resolveRefusal(
+        'missing',
+        `the issue names ${storyRef.story_path}, which is not on ${ref}. Check the story ` +
+          'was committed before the issue was filed.',
+        overrideRequested,
+      );
+    }
+    const approvalRaw = await fetchText(
+      octokit, owner, repo, approvalPathForStory(storyRef.story_path), ref,
+    );
+    return storyDispatchGateDecision({
+      approvalRaw,
+      currentStoryHash: hashStory(storyText),
+      storyPath: storyRef.story_path,
+      overrideRequested,
+    });
+  }
 
   const refs = parseSpecRefs(issueBody);
   if (!refs) {

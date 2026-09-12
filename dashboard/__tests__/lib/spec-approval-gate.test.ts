@@ -6,6 +6,7 @@ import {
   SPEC_APPROVAL_SCHEMA_VERSION,
   hashSpecAndPlan,
 } from '@/lib/spec-approval';
+import { hashStory } from '@/lib/story-approval';
 
 const SPEC = 'docs/superpowers/specs/2026-09-09-thing-design.md';
 const PLAN = 'docs/superpowers/plans/2026-09-09-thing.md';
@@ -243,5 +244,105 @@ describe('parseStoryRef', () => {
   it('returns null for an empty body', () => {
     expect(parseStoryRef(null)).toBeNull();
     expect(parseStoryRef('')).toBeNull();
+  });
+});
+
+const STORY = 'docs/stories/epic-8/8.1-gate-hardening.md';
+const STORY_TEXT = '# Story 8.1\n\n**Status:** Approved\n**Source spec:** docs/superpowers/specs/2026-07-09-p-design.md\n\nBody.\n';
+const STORY_BODY = `Story: ${STORY}\n\n## TL;DR\n\nImplementing it.\n`;
+
+/** Serve a path-to-content map, 404ing anything absent. */
+function octokitFor(files: Record<string, string>) {
+  return {
+    repos: {
+      getContent: vi.fn(async ({ path }: { path: string }) => {
+        const content = files[path];
+        if (content === undefined) throw Object.assign(new Error('Not Found'), { status: 404 });
+        return { data: { content: Buffer.from(content, 'utf8').toString('base64') } };
+      }),
+    },
+  } as unknown as Parameters<typeof evaluateSpecApproval>[0]['octokit'];
+}
+
+/** A story approval whose hash matches STORY_TEXT. */
+function storyApproval(over: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    schema_version: 1,
+    kind: 'story',
+    story_path: STORY,
+    story_sha256: hashStory(STORY_TEXT),
+    source_spec_path: 'docs/superpowers/specs/2026-07-09-p-design.md',
+    source_spec_sha256: 'a'.repeat(64),
+    review_verdict: 'ok',
+    review_rounds: 1,
+    approved_by: 'ali@example.com',
+    approved_at: '2026-09-12T10:00:00.000Z',
+    ...over,
+  });
+}
+
+describe('evaluateSpecApproval — story issues', () => {
+  const APPROVAL = 'docs/stories/epic-8/8.1-gate-hardening.approval.json';
+
+  it('allows a story whose approval still matches', async () => {
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [STORY]: STORY_TEXT, [APPROVAL]: storyApproval() }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [],
+    });
+    expect(d.allow).toBe(true);
+  });
+
+  it('refuses a story edited after approval', async () => {
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [STORY]: STORY_TEXT.replace('Body.', 'Edited.'), [APPROVAL]: storyApproval() }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [],
+    });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('spec-changed');
+  });
+
+  it('allows a story whose status line alone moved on', async () => {
+    const moved = STORY_TEXT.replace('**Status:** Approved', '**Status:** InProgress');
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [STORY]: moved, [APPROVAL]: storyApproval() }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [],
+    });
+    expect(d.allow).toBe(true);
+  });
+
+  it('refuses when the story file itself is gone', async () => {
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({ [APPROVAL]: storyApproval() }),
+      owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [],
+    });
+    expect(d.allow).toBe(false);
+  });
+
+  it('rejects rather than reporting absence when a read fails', async () => {
+    // A 500 is not a missing approval. `fetchText` throws on any non-404
+    // status, and the story branch has no catch around that read — so a
+    // broken repo read must surface as a rejection, not a resolved refusal.
+    // Turning this into a resolved `allow: false` would leave the story path
+    // behaving differently from the spec path at the one moment fail-closed
+    // behaviour matters most.
+    const octokit = {
+      repos: {
+        getContent: vi.fn().mockRejectedValue(Object.assign(new Error('boom'), { status: 500 })),
+      },
+    } as unknown as Parameters<typeof evaluateSpecApproval>[0]['octokit'];
+    await expect(
+      evaluateSpecApproval({
+        octokit, owner: 'q', repo: 'r', ref: 'main', issueBody: STORY_BODY, labels: [],
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('still refuses an issue carrying neither reference', async () => {
+    const d = await evaluateSpecApproval({
+      octokit: octokitFor({}), owner: 'q', repo: 'r', ref: 'main',
+      issueBody: '## TL;DR\n\nNo references.\n', labels: [],
+    });
+    expect(d.allow).toBe(false);
+    expect(d.reason).toBe('missing');
   });
 });
