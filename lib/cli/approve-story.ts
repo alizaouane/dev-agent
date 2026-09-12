@@ -10,6 +10,7 @@ import {
   approvalPathForStory,
   hashStory,
   parseStoryApproval,
+  STATUS_LINE_RE,
   STORY_APPROVAL_SCHEMA_VERSION,
   type StoryApproval,
 } from '../story-approval';
@@ -147,4 +148,36 @@ export function buildStoryApproval(input: ApproveStoryInput): {
     approved_at: new Date().toISOString(),
   };
   return { approval, outPath };
+}
+
+/**
+ * Rewrite a story's status header in place.
+ *
+ * Uses `STATUS_LINE_RE` imported from `../story-approval` rather than a
+ * second regex of its own: that module already exports the single grammar
+ * `hashStory` strips before digesting, and two regexes encoding the same
+ * grammar can drift — if stamping ever wrote a line hashing no longer
+ * recognised, every approval would break silently at the next status change.
+ *
+ * The regex has a single capture group for the prefix on either side of the
+ * status word, so the replacement (`$1${status}`) deliberately drops any
+ * trailing annotation the line carried (e.g. `**Status:** Review — code
+ * merged`) along with the closing bold markers, if any. An annotation
+ * describing the previous state is misleading once the state has moved on.
+ * `hashStory` strips the whole line either way, so the annotation's loss
+ * never touches the hash.
+ *
+ * @param storyText - Full story contents.
+ * @param status - One of the lifecycle values the conformance check accepts.
+ * @returns The story with its status header replaced.
+ * @throws When the story carries no status header, rather than inventing one.
+ */
+export function stampStatus(storyText: string, status: string): string {
+  if (!STATUS_LINE_RE.test(storyText)) {
+    throw new Error(
+      'the story has no **Status:** line to stamp. It is a template field; add it rather ' +
+        'than letting this invent one.',
+    );
+  }
+  return storyText.replace(STATUS_LINE_RE, `$1${status}`);
 }

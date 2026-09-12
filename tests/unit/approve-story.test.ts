@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { buildStoryApproval, sourceSpecOf } from '../../lib/cli/approve-story';
+import { buildStoryApproval, sourceSpecOf, stampStatus } from '../../lib/cli/approve-story';
 import { hashSpecAndPlan } from '../../lib/spec-approval';
+import { hashStory } from '../../lib/story-approval';
 
 const STORY_REL = 'docs/stories/epic-8/8.1-gate-hardening.md';
 const SPEC_REL = 'docs/superpowers/specs/2026-07-09-program-design.md';
@@ -110,5 +111,39 @@ describe('buildStoryApproval', () => {
     const { outPath } = buildStoryApproval(input());
     put(outPath, '{ truncated');
     expect(() => buildStoryApproval(input())).toThrow(/could not be read/);
+  });
+});
+
+describe('stampStatus', () => {
+  it('replaces the status in place', () => {
+    expect(stampStatus(story(), 'Approved')).toContain('**Status:** Approved');
+    expect(stampStatus(story(), 'Approved')).not.toContain('**Status:** Draft');
+  });
+
+  it('leaves every other line untouched', () => {
+    const before = story();
+    const after = stampStatus(before, 'Approved');
+    expect(hashStory(after)).toBe(hashStory(before));
+  });
+
+  it('a status line with a trailing annotation survives the round trip', () => {
+    // The controller ruling: stamping drops the annotation on purpose (it
+    // describes a state that is about to stop being true), but the hash must
+    // still agree before and after, exactly as it does for a bare status line.
+    const before = `# Story 8.1\n\n**Status:** Review — code merged\n**Source spec:** \`${SPEC_REL}\`\n\n## Story\n\nBody.\n`;
+    const after = stampStatus(before, 'Approved');
+    expect(after).toContain('**Status:** Approved');
+    expect(after).not.toContain('code merged');
+    expect(hashStory(after)).toBe(hashStory(before));
+  });
+
+  it('is idempotent', () => {
+    const once = stampStatus(story(), 'Approved');
+    expect(stampStatus(once, 'Approved')).toBe(once);
+  });
+
+  it('throws when the story has no status line to stamp', () => {
+    // Silently appending one would invent a header the template owns.
+    expect(() => stampStatus('# Story\n\nBody.\n', 'Approved')).toThrow(/no \*\*Status:\*\*/);
   });
 });
