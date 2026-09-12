@@ -44,6 +44,16 @@ describe('storyBodyForHashing', () => {
       expect(storyBodyForHashing(doc)).not.toMatch(/Status/);
     }
   });
+
+  it('strips a CRLF status line (.standard/check.sh:91 treats \\r as trailing [[:space:]])', () => {
+    const doc = '# S\r\n\r\n**Status:** Approved\r\n\r\nbody\r\n';
+    expect(storyBodyForHashing(doc)).not.toMatch(/Status/);
+  });
+
+  it('strips a status line with more than two asterisks (.standard/check.sh:91 allows \\** — any count)', () => {
+    const doc = '# S\n\n***Status:*** Approved\n\nbody\n';
+    expect(storyBodyForHashing(doc)).not.toMatch(/Status/);
+  });
 });
 
 describe('hashStory', () => {
@@ -63,6 +73,19 @@ describe('hashStory', () => {
     // a planless spec over identical bytes produce the same hash.
     const body = storyBodyForHashing(STORY);
     expect(hashStory(STORY)).not.toBe(hashSpecAndPlan(body, null));
+  });
+
+  it('is unchanged by a status transition on a CRLF story', () => {
+    const crlfStory = STORY.replace(/\n/g, '\r\n');
+    const draft = crlfStory;
+    const done = crlfStory.replace('**Status:** Draft', '**Status:** Done');
+    expect(hashStory(done)).toBe(hashStory(draft));
+  });
+
+  it('is unchanged by a status transition on a story using more than two asterisks', () => {
+    const draft = STORY.replace('**Status:** Draft', '***Status:*** Draft');
+    const done = draft.replace('***Status:*** Draft', '***Status:*** Done');
+    expect(hashStory(done)).toBe(hashStory(draft));
   });
 });
 

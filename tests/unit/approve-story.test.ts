@@ -153,6 +153,24 @@ describe('stampStatus', () => {
     expect(() => stampStatus('# Story\n\nBody.\n', 'Approved')).toThrow(/no \*\*Status:\*\*/);
   });
 
+  it('stamps a CRLF story and leaves the hash unchanged (.standard/check.sh:91 accepts \\r as trailing whitespace)', () => {
+    const before = story().replace(/\n/g, '\r\n');
+    const after = stampStatus(before, 'Approved');
+    expect(after).toContain('**Status:** Approved');
+    expect(hashStory(after)).toBe(hashStory(before));
+  });
+
+  it('stamps a status line using more than two asterisks and leaves the hash unchanged (.standard/check.sh:91 allows \\**, unbounded)', () => {
+    const before = story().replace('**Status:** Draft', '***Status:*** Draft');
+    const after = stampStatus(before, 'Approved');
+    // The prefix (including its three asterisks) is preserved verbatim by the
+    // single capture group; only the status word and any trailing markers
+    // after it are replaced.
+    expect(after).toContain('***Status:*** Approved');
+    expect(after).not.toContain('Draft');
+    expect(hashStory(after)).toBe(hashStory(before));
+  });
+
   it('throws on a status value outside the legal lifecycle set', () => {
     // `stampStatus('...', 'Merged')` would write `**Status:** Merged`, which
     // STATUS_LINE_RE's alternation does not match. storyBodyForHashing would

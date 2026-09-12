@@ -29,8 +29,13 @@ const SEPARATOR = '\u0000';
 
 /**
  * Matches the story's status header in the spellings the kit's conformance
- * check accepts (`check.sh`): bare, bold-label, and bold-with-colon forms,
- * optionally followed by a trailing annotation after whitespace.
+ * check accepts (`.standard/check.sh:91`, the authority this regex must track):
+ * bare, bold-label, and bold-with-colon forms, any number of surrounding
+ * asterisks (`check.sh` uses `\**`, unbounded — not capped at two), optionally
+ * followed by a trailing annotation after whitespace, and an optional trailing
+ * `\r` so a CRLF story's line still ends the match (`check.sh`'s
+ * `[[:space:]]` class already treats `\r` as an acceptable trailing
+ * character; `[ \t]` alone does not).
  *
  * Exported because the module that stamps the status line must strip and write
  * the same grammar — if the two drift, stamping produces a line hashing no
@@ -43,7 +48,7 @@ const SEPARATOR = '\u0000';
  * either way, so both uses stay consistent.
  */
 export const STATUS_LINE_RE =
-  /^([ \t>-]*\*{0,2}Status\*{0,2}:?\*{0,2}:?[ \t]*)(?:Draft|Approved|In ?Progress|Review|Done|Blocked)\*{0,2}(?:[ \t].*)?$/im;
+  /^([ \t>-]*\**Status\**:?\**:?[ \t]*)(?:Draft|Approved|In ?Progress|Review|Done|Blocked)\**(?:[ \t].*)?\r?$/im;
 
 /**
  * The six legal values a story's `Status` line may hold.
