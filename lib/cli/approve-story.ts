@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   approvalPathForSpec,
@@ -246,7 +247,8 @@ function main(): void {
   console.log(`recorded ${outPath} and stamped ${storyPath} Approved`);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+const invokedAsCli = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);
+if (invokedAsCli) {
   try {
     main();
   } catch (err) {

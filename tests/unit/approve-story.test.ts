@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync as read } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, chmodSync, readFileSync as read, copyFileSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve } from 'node:path';
 import {
   buildStoryApproval,
   sourceSpecOf,
@@ -202,5 +203,63 @@ describe('writeApproval', () => {
     expect(() => writeApproval(input())).not.toThrow();
     const record = parseStoryApproval(read(join(root, outPath), 'utf8'));
     expect(record.ok).toBe(true);
+  });
+});
+
+describe('CLI invocation guard', () => {
+  // `import.meta.url` percent-encodes reserved characters (a space becomes
+  // `%20`), but `process.argv[1]` never does. A guard that compares
+  // `import.meta.url` against a raw `file://${process.argv[1]}` string is
+  // therefore false whenever the script's own path contains a space — main()
+  // silently never runs, and the process exits 0 having written nothing. This
+  // repo's own checkout can sit under a path like ".../Software Dev/...",
+  // which triggers exactly this. Reproduced here by copying the CLI and its
+  // two dependencies into a temp directory whose name contains a space, then
+  // invoking it as a real subprocess the way the calling skill does.
+  const tsxBin = resolve(process.cwd(), 'node_modules/.bin/tsx');
+
+  it('still runs main() when its own script path contains a space', () => {
+    // realpathSync: on macOS, os.tmpdir() sits under /var, which is itself a
+    // symlink to /private/var. Node's loader resolves that symlink when
+    // building `import.meta.url` but leaves `process.argv[1]` as given, which
+    // would make the two disagree for a reason that has nothing to do with
+    // spaces. Resolving the base path up front keeps the test isolated to the
+    // one thing under test: percent-encoding of the space itself.
+    const spaceRoot = mkdtempSync(join(realpathSync(tmpdir()), 'approve story cli-'));
+    expect(spaceRoot).toMatch(/ /); // sanity: the reproduction requires a space
+
+    for (const rel of ['lib/cli/approve-story.ts', 'lib/story-approval.ts', 'lib/spec-approval.ts']) {
+      const dest = join(spaceRoot, rel);
+      mkdirSync(dirname(dest), { recursive: true });
+      copyFileSync(resolve(process.cwd(), rel), dest);
+    }
+
+    try {
+      execFileSync(tsxBin, [join(spaceRoot, 'lib/cli/approve-story.ts')], {
+        // `cwd: root` rather than relying on a REPO_ROOT env var: at the time
+        // this test was written `main()` still read `process.cwd()`
+        // unconditionally (see Finding 4), so this keeps the reproduction
+        // independent of that separate fix.
+        cwd: root,
+        env: {
+          ...process.env,
+          STORY_PATH: STORY_REL,
+          REVIEW_VERDICT: 'ok',
+          REVIEW_ROUNDS: '1',
+          APPROVED_BY: 'ali@example.com',
+          REPO_ROOT: root,
+        },
+        encoding: 'utf8',
+        stdio: 'pipe',
+      });
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string };
+      throw new Error(`subprocess failed: ${err.stderr ?? err.stdout ?? String(e)}`);
+    } finally {
+      rmSync(spaceRoot, { recursive: true, force: true });
+    }
+
+    expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(true);
+    expect(read(join(root, STORY_REL), 'utf8')).toContain('**Status:** Approved');
   });
 });
