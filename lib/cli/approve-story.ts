@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import {
@@ -181,3 +181,59 @@ export function stampStatus(storyText: string, status: string): string {
   }
   return storyText.replace(STATUS_LINE_RE, `$1${status}`);
 }
+
+/**
+ * Record an approval and stamp the story, in that order.
+ *
+ * `buildStoryApproval` throws before anything is written, so a refused
+ * approval leaves both files untouched — the story is never stamped Approved
+ * without a record to back it.
+ *
+ * @param input - Resolved approval inputs.
+ * @returns Where the record was written and which story was stamped.
+ * @throws Whatever `buildStoryApproval` or `stampStatus` throws.
+ */
+export function writeApproval(input: ApproveStoryInput): {
+  outPath: string;
+  storyPath: string;
+} {
+  const { approval, outPath } = buildStoryApproval(input);
+  const storyAbs = resolve(input.repoRoot, input.storyPath);
+  const stamped = stampStatus(readFileSync(storyAbs, 'utf8'), 'Approved');
+
+  writeFileSync(resolve(input.repoRoot, outPath), `${JSON.stringify(approval, null, 2)}\n`, 'utf8');
+  writeFileSync(storyAbs, stamped, 'utf8');
+  return { outPath, storyPath: input.storyPath };
+}
+
+/**
+ * CLI entry point. Reads the same environment-variable shape as `approve-spec`
+ * (`STORY_PATH`, `REVIEW_VERDICT`, `REVIEW_ROUNDS`, `APPROVED_BY`), builds and
+ * writes the approval, and logs where it landed.
+ *
+ * `APPROVED_BY` records a human's identity — this entry point exists to be
+ * run by a human approving their own review, never invoked on a user's
+ * behalf.
+ *
+ * @throws If a required environment variable is missing, or whatever
+ *   `writeApproval` throws when a precondition fails.
+ */
+function main(): void {
+  const storyPath = process.env.STORY_PATH;
+  if (!storyPath) throw new Error('STORY_PATH is required');
+  const verdict = (process.env.REVIEW_VERDICT ?? '') as ReviewVerdict;
+  const rounds = Number.parseInt(process.env.REVIEW_ROUNDS ?? '', 10);
+  const approvedBy = process.env.APPROVED_BY ?? '';
+  if (!approvedBy) throw new Error('APPROVED_BY is required');
+
+  const { outPath } = writeApproval({
+    storyPath,
+    reviewVerdict: verdict,
+    reviewRounds: rounds,
+    approvedBy,
+    repoRoot: process.cwd(),
+  });
+  console.log(`recorded ${outPath} and stamped ${storyPath} Approved`);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) main();

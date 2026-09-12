@@ -1,10 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, readFileSync as read } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { buildStoryApproval, sourceSpecOf, stampStatus } from '../../lib/cli/approve-story';
+import {
+  buildStoryApproval,
+  sourceSpecOf,
+  stampStatus,
+  writeApproval,
+} from '../../lib/cli/approve-story';
 import { hashSpecAndPlan } from '../../lib/spec-approval';
-import { hashStory } from '../../lib/story-approval';
+import { hashStory, parseStoryApproval, approvalPathForStory } from '../../lib/story-approval';
 
 const STORY_REL = 'docs/stories/epic-8/8.1-gate-hardening.md';
 const SPEC_REL = 'docs/superpowers/specs/2026-07-09-program-design.md';
@@ -145,5 +150,22 @@ describe('stampStatus', () => {
   it('throws when the story has no status line to stamp', () => {
     // Silently appending one would invent a header the template owns.
     expect(() => stampStatus('# Story\n\nBody.\n', 'Approved')).toThrow(/no \*\*Status:\*\*/);
+  });
+});
+
+describe('writeApproval', () => {
+  it('writes the record and stamps the story together', () => {
+    const { outPath } = writeApproval(input());
+    const record = parseStoryApproval(read(join(root, outPath), 'utf8'));
+    expect(record.ok).toBe(true);
+    expect(read(join(root, STORY_REL), 'utf8')).toContain('**Status:** Approved');
+  });
+
+  it('writes nothing when a precondition fails', () => {
+    // Neither file is written without the other.
+    put(STORY_REL, '# Story\n\n**Status:** Draft\n\nBody.\n');
+    expect(() => writeApproval(input())).toThrow(/Source spec/);
+    expect(existsSync(join(root, approvalPathForStory(STORY_REL)))).toBe(false);
+    expect(read(join(root, STORY_REL), 'utf8')).toContain('**Status:** Draft');
   });
 });
