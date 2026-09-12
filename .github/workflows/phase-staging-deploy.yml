@@ -126,7 +126,7 @@ jobs:
       # checkout left at its default still writes whatever token it has into
       # git config, where an agent with Bash can find it. The session log is
       # committed by a separate job with its own fresh checkout.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.slot.outputs.overtaken != 'true'
         with:
           fetch-depth: 0
@@ -136,7 +136,7 @@ jobs:
       # workflow invokes. See phase-implement.yml for rationale.
       - name: Checkout dev-agent engine
         if: steps.slot.outputs.overtaken != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
@@ -344,7 +344,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -358,7 +358,7 @@ jobs:
       # under lib/cli/ that this job runs. A stale pin runs old CLI code; an
       # unpinned ref runs unreviewed code with a write token, which is worse.
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: 5d5d31413e12f4f4c5c810662508adcab8fd1470

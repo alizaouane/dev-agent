@@ -84,7 +84,7 @@ jobs:
           disable-sudo: true
 
       - name: Checkout head
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ inputs.head_ref }}
           fetch-depth: 0
