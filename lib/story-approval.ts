@@ -28,17 +28,21 @@ const SEPARATOR = '\u0000';
 
 /**
  * Matches the story's status header in the spellings the kit's conformance
- * check accepts (`check.sh`): bare, bold-label, and bold-with-colon forms.
+ * check accepts (`check.sh`): bare, bold-label, and bold-with-colon forms,
+ * optionally followed by a trailing annotation after whitespace.
  *
  * Exported because the module that stamps the status line must strip and write
  * the same grammar — if the two drift, stamping produces a line hashing no
  * longer removes, and every approval breaks silently at the next status change.
  *
- * The capture groups wrap the parts on either side of the status word, so
- * a later task can rewrite the status line while preserving its formatting.
+ * The single capture group wraps the prefix on either side of the status word.
+ * Later task stamps a new status by writing $1<status>, which deliberately DROPS
+ * any trailing annotation — an annotation describing the previous state is
+ * misleading once the state has moved on. Hashing strips the whole matched line
+ * either way, so both uses stay consistent.
  */
 export const STATUS_LINE_RE =
-  /^([ \t>-]*\*{0,2}Status\*{0,2}:?\*{0,2}:?[ \t]*)(?:Draft|Approved|In ?Progress|Review|Done|Blocked)(\*{0,2}[ \t]*)$/im;
+  /^([ \t>-]*\*{0,2}Status\*{0,2}:?\*{0,2}:?[ \t]*)(?:Draft|Approved|In ?Progress|Review|Done|Blocked)\*{0,2}(?:[ \t].*)?$/im;
 
 /**
  * Strip the status header from a story before hashing it.

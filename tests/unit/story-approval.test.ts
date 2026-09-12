@@ -31,7 +31,7 @@ describe('storyBodyForHashing', () => {
   });
 
   it('accepts the status spellings the conformance check accepts', () => {
-    for (const line of ['**Status:** Approved', '**Status**: Approved', 'Status: Approved']) {
+    for (const line of ['**Status:** Approved', '**Status**: Approved', 'Status: Approved', '**Status:** Review — code merged']) {
       const doc = `# S\n\n${line}\n\nbody\n`;
       expect(storyBodyForHashing(doc)).not.toMatch(/Status/);
     }
