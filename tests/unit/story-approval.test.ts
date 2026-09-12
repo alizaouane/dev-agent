@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import {
   storyBodyForHashing,
   hashStory,
@@ -244,5 +246,17 @@ describe('storyDispatchGateDecision', () => {
     });
     expect(d.allow).toBe(true);
     expect(d.reason).toBe('override');
+  });
+});
+
+describe('dashboard mirror', () => {
+  it('is byte-identical to the engine copy', () => {
+    // The dashboard deploys with rootDirectory=dashboard/, which excludes the
+    // engine's lib/. The copy is what ships; this test is what keeps a fix to
+    // one of them from silently missing the other.
+    const root = resolve(__dirname, '../..');
+    expect(readFileSync(resolve(root, 'dashboard/lib/story-approval.ts'), 'utf8')).toBe(
+      readFileSync(resolve(root, 'lib/story-approval.ts'), 'utf8'),
+    );
   });
 });
