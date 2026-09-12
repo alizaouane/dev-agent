@@ -259,6 +259,19 @@ describe('skills/', () => {
         expect(lookup('docs/stories/epic-8/8.1-x.md', [issue({ body: null })])).toBe('');
       });
 
+      it('takes only the FIRST Story: reference, as the other readers do', () => {
+        // Codex, PR #164: the dashboard's `.match()` and the workflow's
+        // `head -1` both take the first reference. This collected every one
+        // and tested membership, so entering the door for a later path
+        // reported it already filed — and dispatching that issue would have
+        // implemented the FIRST story instead.
+        const twoLines = {
+          body: 'Story: docs/stories/epic-8/8.1-first.md\nStory: docs/stories/epic-8/8.2-second.md\n',
+        };
+        expect(lookup('docs/stories/epic-8/8.1-first.md', [issue(twoLines)])).not.toBe('');
+        expect(lookup('docs/stories/epic-8/8.2-second.md', [issue(twoLines)])).toBe('');
+      });
+
       it('leaves an unpaired fence opener alone, as stripQuotedRegions does', () => {
         // A stray opener must not swallow the canonical reference below it.
         const found = lookup('docs/stories/epic-8/8.1-x.md', [

@@ -345,6 +345,11 @@ fi
 # filed as `Story: ./docs/...` names the same story as one filed without the
 # prefix, and a comparison that cannot see that files the duplicate this
 # guard exists to prevent.
+#
+# Only the FIRST reference counts, which is what the dashboard's `.match()`
+# and the workflow's `head -1` both do. Testing membership across every
+# reference instead would report a story as already filed on the strength of
+# an issue that will dispatch a different one.
 EXISTING=$(jq -c --arg want "$STORY_PATH" '
   def strip_quoted:
     (split("\n") | map(sub("\r$"; ""))) as $lines
@@ -358,7 +363,7 @@ EXISTING=$(jq -c --arg want "$STORY_PATH" '
        | map(sub("^[ \t]+"; "") | sub("[ \t]+$"; ""))
        | map(select(test("^Story:[ \t]*[^ \t]+\\.md$")))
        | map(capture("^Story:[ \t]*(?<p>[^ \t]+\\.md)$").p | sub("^(\\./)+"; ""))
-     ) | index($want)))
+     ) | .[0] == $want))
   | .[0] // empty' <<<"$ISSUES")
 
 if [ -n "$EXISTING" ]; then
