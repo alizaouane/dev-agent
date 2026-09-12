@@ -142,6 +142,17 @@ describe('skills/', () => {
     it('states that a story issue carries no Plan: line', () => {
       expect(raw).toMatch(/no `Plan:` line/i);
     });
+
+    it('stops and asks for the epic number if the directory does not match epic-N- pattern', () => {
+      // Guard against silent malformation when a story directory doesn't match
+      // ^epic-N-...: sed leaves non-matching input unchanged, turning
+      // docs/stories/misc-fixes/... into EPIC=misc-fixes. A guard must check
+      // EPIC is numeric and stop clearly, because a wrong label is invisible
+      // until grouping by epic starts (slice 4).
+      expect(raw).toMatch(/\[\[.*EPIC|test.*EPIC/); // shell test condition
+      expect(raw).toMatch(/\[0-9\]/); // numeric pattern check
+      expect(raw).toMatch(/(ERROR|exit 1|stop)/i); // error/stop action
+    });
   });
 
   describe('/quick-dev', () => {

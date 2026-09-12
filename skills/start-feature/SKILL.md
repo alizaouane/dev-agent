@@ -246,6 +246,16 @@ SOURCE_SPEC=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
 TITLE="<story title, from its # Story N.M — Name heading>"
 KIND="feature"  # or "bug" or "improvement" — whatever kind the story itself is
 EPIC="$(basename "$(dirname "$STORY_PATH")" | sed -E 's/^epic-([0-9]+)-.*/\1/')"
+
+# Guard: EPIC must be numeric. The sed pattern leaves non-matching input
+# unchanged, so docs/stories/misc-fixes/ silently produces EPIC=misc-fixes
+# instead of failing. That malformed label is invisible until something
+# (slice 4's grouping by epic) depends on it. Stop and ask.
+if [[ ! "$EPIC" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: Could not derive epic number from story directory. The story must be in docs/stories/epic-N-<name>/ (e.g., epic-8-agent-reliability/). Enter the epic number manually and try again."
+  exit 1
+fi
+
 TLDR="<a few lines summarizing what the story ships>"
 APPROVAL_PATH="${STORY_PATH%.md}.approval.json"
 
