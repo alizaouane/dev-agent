@@ -124,6 +124,12 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
   // the spec and plan — so a stale approval passes a filename check and fails
   // dispatch. Only pairs that already have an artifact are read, so a repo
   // with hundreds of unapproved specs costs nothing here.
+  //
+  // A verification that could not run at all — a rate limit, an expired token
+  // — rejects. Falling back to an empty list is right, but only with the flag
+  // set: an empty list alone renders "Nothing here yet", which reports an
+  // outage as specs nobody approved.
+  let specVerifyFailed = false;
   const specPairs = await verifySpecPairs(
     octokit,
     repo.owner,
@@ -131,7 +137,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     repo.default_branch,
     pairSpecsAndPlans(specPlanFiles.specs, specPlanFiles.plans, specPlanFiles.approvals),
     specPlanFiles.blobShas,
-  ).catch(() => []);
+  ).catch(() => {
+    specVerifyFailed = true;
+    return [];
+  });
 
   // Stories are listed from the directory the consumer's own config names, and
   // verified through the story gate — the same treatment specs get, because
@@ -224,7 +233,7 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
           <StartFromSpecPanel
             repo={name}
             pairs={specPairs}
-            listingIncomplete={specPlanFiles.unreadable}
+            listingIncomplete={specPlanFiles.unreadable || specVerifyFailed}
             stories={storyItems}
             storyListingIncomplete={
               artifactsConfig.unreadable || storyFiles.unreadable || storyVerifyFailed
