@@ -546,20 +546,36 @@ jobs:
       # no Done stamp to wire.
       #
       # Placed after "Verify spec approval" on purpose: a failed verification
-      # exits 1 and stops the job, so this step cannot stamp a story that is
-      # not approved. It never runs for a spec issue — story_path is empty.
+      # exits 1 and stops the job. That alone does not keep an unapproved story
+      # from being stamped — the spec-approval:override label lets the gate
+      # pass with no approval on the record — so the script also skips any
+      # issue carrying that label, rather than erase the evidence that the
+      # story was never approved. It never runs for a spec issue (story_path is
+      # empty) or a stub run (no agent starts, so no work is under way).
       #
       # Every failure here warns and continues. A status line that was not
       # written is a cosmetic disagreement between two records; failing the
       # run over it would throw away a real implementation.
       - name: Project the story status
-        if: steps.slot.outputs.overtaken != 'true' && steps.issue.outputs.story_path != ''
+        if: steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != ''
         env:
           STORY_PATH: ${{ steps.issue.outputs.story_path }}
           STATUS: InProgress
           BASE: ${{ github.event.repository.default_branch }}
+          ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
         run: |
           set -euo pipefail
+          # The override label lets the approval gate pass with no approval on
+          # the record. Stamping such a story would erase the evidence that it
+          # was never approved, so skip. Matched as a whole label, the same way
+          # the gate matches it, so a label merely containing the text does not
+          # count.
+          case ",${ISSUE_LABELS:-}," in
+            *,spec-approval:override,*)
+              echo "::warning::${STORY_PATH} was not stamped to ${STATUS}: work proceeded under spec-approval:override without an approval"
+              exit 0
+              ;;
+          esac
           # Empty on trigger shapes that carry no repository payload. The
           # approval gate derives its own fallback and refuses without one;
           # here there is nothing to refuse, so warn and skip.
@@ -1149,13 +1165,25 @@ jobs:
       # script is identical to "Project the story status" above; only STATUS
       # differs, and a test holds the two bodies equal.
       - name: Project the story status (pull request open)
-        if: steps.slot.outputs.overtaken != 'true' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'
+        if: steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'
         env:
           STORY_PATH: ${{ steps.issue.outputs.story_path }}
           STATUS: Review
           BASE: ${{ github.event.repository.default_branch }}
+          ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
         run: |
           set -euo pipefail
+          # The override label lets the approval gate pass with no approval on
+          # the record. Stamping such a story would erase the evidence that it
+          # was never approved, so skip. Matched as a whole label, the same way
+          # the gate matches it, so a label merely containing the text does not
+          # count.
+          case ",${ISSUE_LABELS:-}," in
+            *,spec-approval:override,*)
+              echo "::warning::${STORY_PATH} was not stamped to ${STATUS}: work proceeded under spec-approval:override without an approval"
+              exit 0
+              ;;
+          esac
           # Empty on trigger shapes that carry no repository payload. The
           # approval gate derives its own fallback and refuses without one;
           # here there is nothing to refuse, so warn and skip.

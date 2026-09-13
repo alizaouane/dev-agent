@@ -1575,7 +1575,7 @@ describe('.github/workflows/', () => {
             /\n {6}- (name|uses):/,
           );
           expect(ifOf(block)).toBe(
-            "steps.slot.outputs.overtaken != 'true' && steps.issue.outputs.story_path != ''",
+            "steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != ''",
           );
           expect(block).toMatch(/^\s*STATUS: InProgress$/m);
           expect(block).toMatch(/^\s*STORY_PATH: \$\{\{ steps\.issue\.outputs\.story_path \}\}$/m);
@@ -1593,7 +1593,7 @@ describe('.github/workflows/', () => {
           // when the agent opened no pull request; without this gate the story
           // would read Review with nothing to review.
           expect(ifOf(block)).toBe(
-            "steps.slot.outputs.overtaken != 'true' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'",
+            "steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'",
           );
           expect(block).toMatch(/^\s*STATUS: Review$/m);
         });
@@ -1603,6 +1603,20 @@ describe('.github/workflows/', () => {
             const condition = ifOf(stepBlock(name));
             expect(condition.startsWith("steps.slot.outputs.overtaken != 'true' && ")).toBe(true);
             expect(condition).toContain("steps.issue.outputs.story_path != ''");
+          }
+        });
+
+        it('skips both steps on a stub run, which starts no agent', () => {
+          // A stub run implements nothing, so a stamp would push a real commit
+          // to a consumer's default branch claiming work that never started.
+          for (const name of [IN_PROGRESS, REVIEW]) {
+            expect(ifOf(stepBlock(name))).toContain("&& inputs.invocation_mode == 'live' &&");
+          }
+        });
+
+        it('hands both steps the issue labels, for the override check', () => {
+          for (const name of [IN_PROGRESS, REVIEW]) {
+            expect(stepBlock(name)).toMatch(/^\s*ISSUE_LABELS: \$\{\{ steps\.issue\.outputs\.labels \}\}$/m);
           }
         });
 
@@ -1651,7 +1665,7 @@ describe('.github/workflows/', () => {
          */
         const stamp = (
           consumer: string,
-          env: Partial<Record<'BASE' | 'STORY_PATH' | 'STATUS', string>> = {},
+          env: Partial<Record<'BASE' | 'STORY_PATH' | 'STATUS' | 'ISSUE_LABELS', string>> = {},
         ) =>
           runBash(runBody(stepBlock(IN_PROGRESS)), consumer, {
             GITHUB_WORKSPACE: consumer,
@@ -1718,6 +1732,31 @@ describe('.github/workflows/', () => {
           expect(result.status).toBe(0);
           expect(result.stdout).toMatch(/::warning::.*after 3 attempts/);
           expect(git(origin, 'show', `main:${STORY_REL}`)).toContain('**Status:** Approved');
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('does not stamp a story that proceeded under the override label', { timeout: 60000 }, () => {
+          // The override lets an issue through with no approval on the record.
+          // Stamping it InProgress would erase the evidence that it was never
+          // approved — a Draft story would read as work under way.
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { ISSUE_LABELS: 'state:implementing,spec-approval:override,type:feature' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::.*not stamped.*spec-approval:override.*without an approval/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+          expect(git(origin, 'show', `main:${STORY_REL}`)).toContain('**Status:** Approved');
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('matches the override label whole, not as a substring', { timeout: 60000 }, () => {
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const result = stamp(consumer, { ISSUE_LABELS: 'not-spec-approval:override-x,state:implementing' });
+          expect(result.stdout).not.toContain('::warning::');
+          expect(result.status).toBe(0);
+          expect(git(origin, 'show', `main:${STORY_REL}`)).toContain('**Status:** InProgress');
           expect(worktreeCount(consumer)).toBe(1);
         });
 
