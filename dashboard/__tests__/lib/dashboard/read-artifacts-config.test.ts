@@ -218,6 +218,25 @@ describe('readArtifactsConfig', () => {
     });
   });
 
+  it('marks itself unreadable when a segment holds a newline', async () => {
+    // A mis-indented block scalar, or a double-quoted newline escape, parses
+    // to a real newline inside the value. No tree path contains one, and
+    // trimming only looks at a segment's edges, so it is refused outright.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: "docs/sto\\nries"\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when a segment holds a NUL', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: "docs/sto\\0ries"\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
   it('keeps a directory whose name has an inner space', async () => {
     // Git allows spaces inside a path segment, so this is a real directory
     // the tree can match, not a spelling to refuse.

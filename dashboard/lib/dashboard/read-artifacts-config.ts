@@ -42,9 +42,9 @@ export interface ArtifactsConfig {
  * use: surrounding whitespace is trimmed, and `.` and empty segments are
  * dropped wherever they appear, so `./docs`, `docs/./stories`, `docs//stories`
  * and a trailing `/` all resolve. An absolute path, a `..` segment, a segment
- * with surrounding whitespace or made only of whitespace, a backslash, or a
- * value with nothing left names no directory the tree can match, and is
- * reported as unreadable.
+ * with surrounding whitespace or made only of whitespace, a backslash, a
+ * control character, or a value with nothing left names no directory the tree
+ * can match, and is reported as unreadable.
  *
  * @param octokit - Authenticated client for the consumer repo.
  * @param owner - Repo owner.
@@ -116,9 +116,15 @@ export async function readArtifactsConfig(
   // tree can match: listing with it would read as an empty directory, so it is
   // unusable rather than silently absent.
   const trimmed = raw.trim();
-  // A backslash is a Windows spelling the tree never uses: the whole value
-  // would be one segment matching nothing.
-  if (trimmed.startsWith('/') || trimmed.includes('\\')) {
+  // Characters no git-tree path uses make the value unmatchable wherever they
+  // sit: a backslash (a Windows separator; the tree uses `/` only), and a
+  // control character, such as a newline from a mis-indented block scalar.
+  // Trimming only reaches a segment's edges, so these are refused outright.
+  if (
+    trimmed.startsWith('/') ||
+    trimmed.includes('\\') ||
+    /[\u0000-\u001f\u007f]/.test(trimmed)
+  ) {
     return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
   }
   const segments = trimmed.split('/').filter((segment) => segment !== '' && segment !== '.');
