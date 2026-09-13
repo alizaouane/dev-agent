@@ -28,6 +28,14 @@ import { parseSpecRefs } from './spec-approval-gate';
  */
 export const FORCE_IMPLEMENT_LABEL = 'dev-agent:force-implement';
 
+/** The parts of an issue these helpers read, whichever kind it is. */
+export interface TrackedIssue {
+  /** Whether the issue is still open. */
+  open: boolean;
+  /** Current labels. */
+  labels: string[];
+}
+
 /** An open issue that already names a given spec. */
 export interface SpecIssue {
   /** Issue number. */
@@ -116,10 +124,13 @@ export async function findIssuesForSpec(
  * `state:implementing` is work in progress rather than work waiting. A closed
  * issue is never waiting, whatever it is labelled.
  *
+ * Reads any tracked issue, whichever kind it is — a spec issue or a story
+ * issue both carry `open` and `labels`, and this check doesn't care which.
+ *
  * @param issue - A matched issue.
  * @returns True only when `state:spec-ready` is its sole state label.
  */
-export function isWaitingToStart(issue: SpecIssue): boolean {
+export function isWaitingToStart(issue: TrackedIssue): boolean {
   if (!issue.open) return false;
   const states = issue.labels.filter((l) => l.startsWith('state:'));
   return states.length === 1 && states[0] === 'state:spec-ready';
@@ -173,9 +184,12 @@ export function withSpecRefs(
 /**
  * The state label an issue currently carries.
  *
+ * Reads any tracked issue, whichever kind it is — only the label list
+ * matters, so a spec issue and a story issue are equally acceptable here.
+ *
  * @param issue - A matched issue.
  * @returns The `state:*` label, or null when it has none.
  */
-export function stateLabel(issue: SpecIssue): string | null {
+export function stateLabel(issue: Pick<TrackedIssue, 'labels'>): string | null {
   return issue.labels.find((l) => l.startsWith('state:')) ?? null;
 }

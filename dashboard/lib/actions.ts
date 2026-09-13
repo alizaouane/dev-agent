@@ -39,6 +39,9 @@ import {
   stateLabel,
   withSpecRefs,
 } from './find-spec-issue';
+import { findIssuesForStory } from './find-story-issue';
+import { epicOf } from './story-items';
+import { canonicalStoryPath } from './story-approval';
 import {
   SCHEDULE_PRESETS,
   writeBugScoutSchedule,
@@ -1166,6 +1169,196 @@ export async function dispatchFromSpec(
   redirect(
     `/features/${issueNumberForRedirect}?repo=${encodeURIComponent(repoFullForRedirect!)}`,
   );
+}
+
+/**
+ * Start work on an approved story, from the repo page's story list.
+ *
+ * A sibling of `dispatchFromSpec` rather than a generalisation of it. A story
+ * has no plan, so there is no plan reconciliation and no `Plan:` line to bring
+ * into line with the approval; everything else — reuse over creation, the
+ * closed-issue check, the active-run check, gating before creation — is the
+ * same set of guards, each of which exists because it was needed.
+ *
+ * @param formData - `repo`, `story_path`, `title`, `custom_title`.
+ * @returns An error to render inline, or nothing before redirecting.
+ */
+export async function dispatchFromStory(
+  formData: FormData,
+): Promise<ApproveAndStartError | void> {
+  let issueNumberForRedirect: number | null = null;
+  let repoFullForRedirect: string | null = null;
+  let issueUrl: string | null = null;
+
+  try {
+    const session_username = await getCurrentUsername();
+    const octokit = await getOctokit();
+    const repoFull = (formData.get('repo') as string).trim();
+    // Canonicalised, as every other reader of a story path is: the approval
+    // records the path without a leading `./`, so an uncanonical spelling
+    // would pass the existence check and then refuse at the gate.
+    const story_path = canonicalStoryPath((formData.get('story_path') as string).trim());
+    const title = (formData.get('title') as string).trim();
+    const custom_title = ((formData.get('custom_title') as string) ?? '').trim();
+    if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
+    if (!story_path) return { error: 'story_path is required' };
+    if (!title) return { error: 'title is required' };
+
+    const [owner, repo] = repoFull.split('/');
+    await assertWritePermission(octokit, owner, repo, session_username);
+
+    const repoData = await wrapStep('looking up repo', () => octokit.repos.get({ owner, repo }));
+    const default_branch = repoData.data.default_branch;
+
+    const storyExists = await fileExistsOnBranch(
+      octokit, owner, repo, story_path, default_branch,
+    );
+    if (!storyExists) {
+      return { error: `story_path not found on ${default_branch}: ${story_path}` };
+    }
+
+    const body = [
+      `Story: ${story_path}`,
+      '',
+      '## TL;DR',
+      '',
+      `Implementing the story at \`${story_path}\`.`,
+      '',
+      'Filed from the dashboard "Start work on an approved story" panel.',
+    ].join('\n');
+
+    const matching = await wrapStep('looking for the issue this story was filed under', () =>
+      findIssuesForStory(octokit, owner, repo, story_path),
+    );
+
+    const started = matching.find((i) => !isWaitingToStart(i));
+    if (started) {
+      const why = started.open
+        ? `is at ${stateLabel(started) ?? 'an unknown state'}`
+        : 'is closed, so this story has already been through the pipeline';
+      return {
+        error: `work has already started on this story — issue #${started.number} ${why}`,
+        issue_url: started.html_url,
+      };
+    }
+
+    for (const candidate of matching) {
+      // Fail-closed: a run list this cannot read is not an empty one.
+      const activeRuns = await wrapStep('checking for runs already in flight', () =>
+        fetchActiveRunsForIssue(octokit, owner, repo, candidate.number, { strict: true }),
+      );
+      if (activeRuns.length > 0) {
+        const phases = activeRuns.map((r) => r.phase ?? 'unknown').join(', ');
+        return {
+          error: `dispatch refused — issue #${candidate.number} already has ${activeRuns.length} active run(s) (${phases}). Wait for them to finish.`,
+          issue_url: candidate.html_url,
+        };
+      }
+    }
+
+    const existing = matching[0] ?? null;
+
+    // Run before anything is created. A refusal must not leave an orphan
+    // `state:spec-ready` issue behind that nothing comes back for. On the
+    // reuse path the real issue's labels are read, so an override a human
+    // applied counts; on the create path there is no issue and no override.
+    const gate = await wrapStep('checking story approval', () =>
+      evaluateSpecApproval({
+        octokit,
+        owner,
+        repo,
+        ref: default_branch,
+        issueBody: existing?.body ?? body,
+        labels: existing?.labels ?? [],
+      }),
+    );
+    if (!gate.allow) {
+      return { error: `work cannot start — ${gate.message}` };
+    }
+
+    let issue_number: number;
+    // Fallback for the label flip below when there is no `existing` issue to
+    // read labels off. Starts as the create branch's default and is
+    // overwritten with the labels actually applied, epic included — a flip
+    // that fell back to a hardcoded `['kind:feature']` here would replace the
+    // whole label set moments after `epic:N` was applied, wiping it before
+    // anyone saw it.
+    let createdLabels: string[] = ['kind:feature'];
+    if (existing) {
+      issue_number = existing.number;
+      issueUrl = existing.html_url;
+      if (custom_title && custom_title !== existing.title) {
+        await wrapStep('renaming the issue', () =>
+          octokit.issues.update({ owner, repo, issue_number, title: custom_title }),
+        );
+      }
+    } else {
+      // The epic label is what stops eight stories from one program appearing
+      // as eight unrelated items. Omitted rather than guessed when the story
+      // is not in an epic directory: a wrong epic groups work incorrectly,
+      // which is worse than not grouping it.
+      const epic = epicOf(story_path);
+      createdLabels = [
+        'kind:feature',
+        'state:spec-ready',
+        ...(epic === null ? [] : [`epic:${epic}`]),
+      ];
+      const created = await wrapStep('creating spec-ready issue', () =>
+        octokit.issues.create({
+          owner,
+          repo,
+          title,
+          body,
+          labels: createdLabels,
+        }),
+      );
+      issue_number = created.data.number;
+      issueUrl = created.data.html_url;
+    }
+
+    await wrapStep('dispatching implement workflow', () =>
+      octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: 'dev-agent.yml',
+        ref: default_branch,
+        inputs: {
+          phase: 'implement',
+          issue_number: String(issue_number),
+          invocation_mode: 'live',
+        },
+      }),
+    );
+
+    const keptLabels = (existing?.labels ?? createdLabels).filter(
+      (l) => !l.startsWith('state:'),
+    );
+    const nextLabels = [...keptLabels, 'state:implementing'];
+    try {
+      await octokit.issues.setLabels({ owner, repo, issue_number, labels: nextLabels });
+    } catch (err) {
+      // The run is already dispatched. Throwing here would report a failure
+      // that did not happen and invite a second click.
+      console.warn(
+        `dispatchFromStory: state:implementing label flip failed for ${owner}/${repo}#${issue_number} (run is already dispatched):`,
+        err,
+      );
+    }
+
+    issueNumberForRedirect = issue_number;
+    repoFullForRedirect = repoFull;
+  } catch (e) {
+    const message = formatApproveError(e, issueUrl);
+    console.error('[dispatchFromStory] failed', {
+      message,
+      issueUrl,
+      raw: e instanceof Error ? { name: e.name, message: e.message, stack: e.stack } : e,
+    });
+    return { error: message, ...(issueUrl ? { issue_url: issueUrl } : {}) };
+  }
+
+  revalidatePath('/');
+  redirect(`/features/${issueNumberForRedirect}?repo=${encodeURIComponent(repoFullForRedirect!)}`);
 }
 
 /**

@@ -520,13 +520,147 @@ jobs:
           # different text on the other would put the whole binding back where
           # it started, so the two must be identical.
           if [ "${OVERRIDE:-}" != "true" ]; then
-            for REL in "$DOC_PATH" ${PLAN_PATH:+"$PLAN_PATH"}; do
+            # The document is compared by what its approval actually binds. For
+            # a story that excludes the **Status:** line, which dev-agent
+            # rewrites as the issue moves — a byte comparison would hard-fail
+            # on precisely the difference the approval was built to ignore.
+            # A spec stays byte-exact, which is what every consumer has today.
+            if ! BASE_PATH="$BASE_ROOT/$DOC_PATH" HEAD_PATH="$DOC_PATH" \
+                 KIND="$([ -n "${STORY_PATH:-}" ] && echo story || echo spec)" \
+                 .dev-agent-engine/node_modules/.bin/tsx \
+                 .dev-agent-engine/lib/cli/compare-approved-text.ts; then
+              echo "::error::${DOC_PATH} differs between ${BASE} and the working branch. The approval covers the ${BASE} copy; the agent would read the other one. Push the approved text, or re-approve the current one." >&2
+              exit 1
+            fi
+            for REL in ${PLAN_PATH:+"$PLAN_PATH"}; do
               if ! cmp -s "$BASE_ROOT/$REL" "$REL"; then
                 echo "::error::${REL} differs between ${BASE} and the working branch. The approval covers the ${BASE} copy; the agent would read the other one. Push the approved text, or re-approve the current one." >&2
                 exit 1
               fi
             done
           fi
+
+      # Project the story's status onto its **Status:** line: InProgress here,
+      # Review once the pull request is open (see "Project the story status
+      # (pull request open)" below). Nothing sets state:done yet, so there is
+      # no Done stamp to wire.
+      #
+      # Placed after "Verify spec approval" on purpose: a failed verification
+      # exits 1 and stops the job. That alone does not keep an unapproved story
+      # from being stamped — the spec-approval:override label lets the gate
+      # pass with no approval on the record — so the script also skips any
+      # issue carrying that label, rather than erase the evidence that the
+      # story was never approved. It never runs for a spec issue (story_path is
+      # empty) or a stub run (no agent starts, so no work is under way).
+      #
+      # Every failure here warns and continues. A status line that was not
+      # written is a cosmetic disagreement between two records; failing the
+      # run over it would throw away a real implementation.
+      - name: Project the story status
+        if: steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != ''
+        env:
+          STORY_PATH: ${{ steps.issue.outputs.story_path }}
+          STATUS: InProgress
+          BASE: ${{ github.event.repository.default_branch }}
+          ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_STATE: state:implementing
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The override label lets the approval gate pass with no approval on
+          # the record. Stamping such a story would erase the evidence that it
+          # was never approved, so skip. Matched as a whole label, the same way
+          # the gate matches it, so a label merely containing the text does not
+          # count.
+          case ",${ISSUE_LABELS:-}," in
+            *,spec-approval:override,*)
+              echo "::warning::${STORY_PATH} was not stamped to ${STATUS}: work proceeded under spec-approval:override without an approval"
+              exit 0
+              ;;
+          esac
+          # A projection of the issue's state, so read that state now rather
+          # than trusting how this run began. An implement run can start from
+          # state:spec-ready — dispatched directly, or after the dashboard's
+          # own label flip failed — and a story must not read InProgress, or
+          # Review, while its issue says otherwise. The expected state must be
+          # the issue's ONLY state label, whole: both dispatch gates require
+          # exactly one, because a half-applied flip or a retry can leave two,
+          # and an issue at state:implementing and state:blocked is not in
+          # progress. Unknown is not a match: a read that fails skips the stamp
+          # rather than guessing the issue moved.
+          if ! LIVE_LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
+            echo "::warning::could not read issue #${ISSUE_NUMBER}'s state; ${STORY_PATH} was not stamped to ${STATUS}"
+            exit 0
+          fi
+          STATES=$(printf '%s\n' "$LIVE_LABELS" | tr ',' '\n' | grep '^state:' || true)
+          if [ "$STATES" != "$EXPECTED_STATE" ]; then
+            echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS} (its state labels: ${STATES//$'\n'/, })"
+            exit 0
+          fi
+          # Empty on trigger shapes that carry no repository payload. The
+          # approval gate derives its own fallback and refuses without one;
+          # here there is nothing to refuse, so warn and skip.
+          if [ -z "${BASE:-}" ]; then
+            echo "::warning::could not determine the default branch; ${STORY_PATH} was not stamped to ${STATUS}"
+            exit 0
+          fi
+          # The story's status is a fact about the repository, not about this
+          # pull request, so it is pushed to the base branch rather than
+          # committed on the agent branch — where it would sit inside a diff a
+          # reviewer has to read. The hash deliberately excludes this line, so
+          # stamping it cannot invalidate the approval verified above.
+          #
+          # The work happens in a separate worktree of the consumer checkout, so
+          # the agent branch's working tree is never disturbed, and it pushes
+          # with the credentials actions/checkout already persisted — no token
+          # is ever put in a URL or a process argument.
+          CONSUMER_DIR="$PWD"
+          STAMP_DIR=$(mktemp -d)
+          # Removed on every exit path. A worktree registration that survived
+          # would be visible to later steps, including the salvage step's
+          # `git add -A` in this checkout.
+          cleanup() {
+            git -C "$CONSUMER_DIR" worktree remove --force "$STAMP_DIR" >/dev/null 2>&1 || true
+            rm -rf "$STAMP_DIR"
+            git -C "$CONSUMER_DIR" worktree prune >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          warn() {
+            echo "::warning::$1; the status line of ${STORY_PATH} and the issue now disagree"
+            exit 0
+          }
+
+          git fetch --quiet origin "$BASE" || warn "could not fetch ${BASE}"
+          git worktree add --quiet --detach "$STAMP_DIR" "origin/$BASE" \
+            || warn "could not check out ${BASE} to stamp ${STATUS}"
+          cd "$STAMP_DIR"
+          # The job's bot identity, as the other commit steps use. Exported
+          # rather than written with `git config`: a worktree shares the
+          # consumer checkout's config file, so `git config` here would leak
+          # into every later step, the agent's own commits included.
+          export GIT_AUTHOR_NAME='dev-agent[bot]' GIT_COMMITTER_NAME='dev-agent[bot]'
+          export GIT_AUTHOR_EMAIL='dev-agent@users.noreply.github.com' GIT_COMMITTER_EMAIL='dev-agent@users.noreply.github.com'
+
+          STORY_PATH="$STORY_PATH" STATUS="$STATUS" \
+            "${GITHUB_WORKSPACE}/.dev-agent-engine/node_modules/.bin/tsx" \
+            "${GITHUB_WORKSPACE}/.dev-agent-engine/lib/cli/stamp-story-status.ts" \
+            || warn "could not stamp ${STORY_PATH} to ${STATUS}"
+          if git diff --quiet -- "$STORY_PATH"; then exit 0; fi
+          git add -- "$STORY_PATH" || warn "could not stage the ${STATUS} stamp"
+          git commit --quiet -m "docs(story): ${STORY_PATH} -> ${STATUS}" \
+            || warn "could not commit the ${STATUS} stamp"
+          # Retried, because the base branch moves. Warned about rather than
+          # fatal: the implementation succeeded, and failing the run here
+          # would report work that was done as work that was not.
+          for attempt in 1 2 3; do
+            if git push --quiet origin "HEAD:${BASE}"; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              git pull --rebase --quiet origin "$BASE" \
+                || git rebase --abort >/dev/null 2>&1 || true
+            fi
+          done
+          warn "could not push the ${STATUS} stamp after 3 attempts"
 
       - name: Render system prompt
         if: steps.slot.outputs.overtaken != 'true'
@@ -1042,9 +1176,130 @@ jobs:
           fi
           BODY=$(printf '🤖 Phase: implement\nModel: claude-sonnet-4-6\nMode: live\nStatus: success\nBranch: %s\nPR: #%s\n' "$BRANCH_NAME" "$PR_NUMBER")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
-          gh issue edit "$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review || true
+          # Still non-fatal, as its `|| true` was: a refused flip must not fail a
+          # run whose pull request is open. But the story's Review stamp below
+          # is a projection of this label, so record which way it went — a
+          # stamp that reads Review on an issue still at state:implementing
+          # contradicts the record it projects.
+          if gh issue edit "$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review; then
+            echo "state_flipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "state_flipped=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "phase_outcome=success" >> "$GITHUB_OUTPUT"
           echo "pr_url=https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      # The Review half of the projection. Its own step, gated on
+      # phase_outcome == 'success': the telemetry step above writes
+      # phase_outcome=blocked and exits early when the agent opened no pull
+      # request, and a story must not read Review with nothing to review. The
+      # script is identical to "Project the story status" above; only STATUS
+      # differs, and a test holds the two bodies equal.
+      - name: Project the story status (pull request open)
+        if: steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success' && steps.telemetry.outputs.state_flipped == 'true'
+        env:
+          STORY_PATH: ${{ steps.issue.outputs.story_path }}
+          STATUS: Review
+          BASE: ${{ github.event.repository.default_branch }}
+          ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_STATE: state:pr-review
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The override label lets the approval gate pass with no approval on
+          # the record. Stamping such a story would erase the evidence that it
+          # was never approved, so skip. Matched as a whole label, the same way
+          # the gate matches it, so a label merely containing the text does not
+          # count.
+          case ",${ISSUE_LABELS:-}," in
+            *,spec-approval:override,*)
+              echo "::warning::${STORY_PATH} was not stamped to ${STATUS}: work proceeded under spec-approval:override without an approval"
+              exit 0
+              ;;
+          esac
+          # A projection of the issue's state, so read that state now rather
+          # than trusting how this run began. An implement run can start from
+          # state:spec-ready — dispatched directly, or after the dashboard's
+          # own label flip failed — and a story must not read InProgress, or
+          # Review, while its issue says otherwise. The expected state must be
+          # the issue's ONLY state label, whole: both dispatch gates require
+          # exactly one, because a half-applied flip or a retry can leave two,
+          # and an issue at state:implementing and state:blocked is not in
+          # progress. Unknown is not a match: a read that fails skips the stamp
+          # rather than guessing the issue moved.
+          if ! LIVE_LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
+            echo "::warning::could not read issue #${ISSUE_NUMBER}'s state; ${STORY_PATH} was not stamped to ${STATUS}"
+            exit 0
+          fi
+          STATES=$(printf '%s\n' "$LIVE_LABELS" | tr ',' '\n' | grep '^state:' || true)
+          if [ "$STATES" != "$EXPECTED_STATE" ]; then
+            echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS} (its state labels: ${STATES//$'\n'/, })"
+            exit 0
+          fi
+          # Empty on trigger shapes that carry no repository payload. The
+          # approval gate derives its own fallback and refuses without one;
+          # here there is nothing to refuse, so warn and skip.
+          if [ -z "${BASE:-}" ]; then
+            echo "::warning::could not determine the default branch; ${STORY_PATH} was not stamped to ${STATUS}"
+            exit 0
+          fi
+          # The story's status is a fact about the repository, not about this
+          # pull request, so it is pushed to the base branch rather than
+          # committed on the agent branch — where it would sit inside a diff a
+          # reviewer has to read. The hash deliberately excludes this line, so
+          # stamping it cannot invalidate the approval verified above.
+          #
+          # The work happens in a separate worktree of the consumer checkout, so
+          # the agent branch's working tree is never disturbed, and it pushes
+          # with the credentials actions/checkout already persisted — no token
+          # is ever put in a URL or a process argument.
+          CONSUMER_DIR="$PWD"
+          STAMP_DIR=$(mktemp -d)
+          # Removed on every exit path. A worktree registration that survived
+          # would be visible to later steps, including the salvage step's
+          # `git add -A` in this checkout.
+          cleanup() {
+            git -C "$CONSUMER_DIR" worktree remove --force "$STAMP_DIR" >/dev/null 2>&1 || true
+            rm -rf "$STAMP_DIR"
+            git -C "$CONSUMER_DIR" worktree prune >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          warn() {
+            echo "::warning::$1; the status line of ${STORY_PATH} and the issue now disagree"
+            exit 0
+          }
+
+          git fetch --quiet origin "$BASE" || warn "could not fetch ${BASE}"
+          git worktree add --quiet --detach "$STAMP_DIR" "origin/$BASE" \
+            || warn "could not check out ${BASE} to stamp ${STATUS}"
+          cd "$STAMP_DIR"
+          # The job's bot identity, as the other commit steps use. Exported
+          # rather than written with `git config`: a worktree shares the
+          # consumer checkout's config file, so `git config` here would leak
+          # into every later step, the agent's own commits included.
+          export GIT_AUTHOR_NAME='dev-agent[bot]' GIT_COMMITTER_NAME='dev-agent[bot]'
+          export GIT_AUTHOR_EMAIL='dev-agent@users.noreply.github.com' GIT_COMMITTER_EMAIL='dev-agent@users.noreply.github.com'
+
+          STORY_PATH="$STORY_PATH" STATUS="$STATUS" \
+            "${GITHUB_WORKSPACE}/.dev-agent-engine/node_modules/.bin/tsx" \
+            "${GITHUB_WORKSPACE}/.dev-agent-engine/lib/cli/stamp-story-status.ts" \
+            || warn "could not stamp ${STORY_PATH} to ${STATUS}"
+          if git diff --quiet -- "$STORY_PATH"; then exit 0; fi
+          git add -- "$STORY_PATH" || warn "could not stage the ${STATUS} stamp"
+          git commit --quiet -m "docs(story): ${STORY_PATH} -> ${STATUS}" \
+            || warn "could not commit the ${STATUS} stamp"
+          # Retried, because the base branch moves. Warned about rather than
+          # fatal: the implementation succeeded, and failing the run here
+          # would report work that was done as work that was not.
+          for attempt in 1 2 3; do
+            if git push --quiet origin "HEAD:${BASE}"; then exit 0; fi
+            if [ "$attempt" -lt 3 ]; then
+              git pull --rebase --quiet origin "$BASE" \
+                || git rebase --abort >/dev/null 2>&1 || true
+            fi
+          done
+          warn "could not push the ${STATUS} stamp after 3 attempts"
 
       - name: Append SESSION_LOG.md entry
         if: steps.slot.outputs.overtaken != 'true' && (always() && inputs.invocation_mode == 'live')
@@ -1054,6 +1309,7 @@ jobs:
           OUTCOME: ${{ steps.telemetry.outputs.phase_outcome || 'aborted' }}
           PR_URL: ${{ steps.telemetry.outputs.pr_url }}
           NEXT_SESSION_HINT: ${{ steps.telemetry.outputs.phase_outcome == 'success' && 'review the PR against the agreed scope and merge to default branch (= staging) when ready.' || 'inspect the implement-phase logs and decide whether to retry, abandon, or hand-edit the scope.' }}
+          BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
@@ -1065,4 +1321,14 @@ jobs:
           git config user.email 'dev-agent@users.noreply.github.com'
           git add SESSION_LOG.md
           git commit -m "chore(dev-agent): session log — implement issue #${ISSUE_NUMBER}"
-          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"
+          # A first push that lands is the whole story, as before. Only when it
+          # is refused — on a story run still sitting on the base branch, the
+          # "Project the story status" step has already moved origin's base —
+          # rebase onto the base once and retry. A rebase that fails is aborted
+          # so the checkout is not left mid-rebase for later steps. With no
+          # base branch known there is nothing to rebase onto, so no retry.
+          git push origin HEAD || {
+            [ -n "${BASE:-}" ] \
+              && { git pull --rebase origin "$BASE" || { git rebase --abort || true; false; }; } \
+              && git push origin HEAD
+          } || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"
