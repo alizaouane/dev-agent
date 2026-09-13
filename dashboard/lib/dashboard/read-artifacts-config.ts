@@ -5,9 +5,10 @@ import { load } from 'js-yaml';
 
 /**
  * Where stories live when the consumer has not said, or has said something
- * we cannot use. Matches `schema/defaults.yml`.
+ * we cannot use. Matches `schema/defaults.yml`. Exported so callers and tests
+ * can compare against the fallback without restating it.
  */
-const DEFAULT_STORIES_DIR = 'docs/stories';
+export const DEFAULT_STORIES_DIR = 'docs/stories';
 
 /** What the consumer's config says about where artifacts live. */
 export interface ArtifactsConfig {
@@ -36,6 +37,11 @@ export interface ArtifactsConfig {
  * failure wearing a different hat: the operator named something and we
  * would be silently listing a different directory instead. All three
  * unreadable-shaped cases return the default with `unreadable: true`.
+ *
+ * A usable `stories_dir` is returned repo-relative: surrounding whitespace,
+ * any leading `./` segments and trailing slashes are removed. A value that is
+ * absolute, contains a `..` segment, or is empty after that cleanup cannot
+ * be matched against git-tree paths and is treated as unusable.
  *
  * @param octokit - Authenticated client for the consumer repo.
  * @param owner - Repo owner.
@@ -98,7 +104,15 @@ export async function readArtifactsConfig(
   if (raw === undefined) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: false };
   if (typeof raw !== 'string') return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
 
-  const trimmed = raw.trim().replace(/\/+$/, '');
-  if (trimmed === '') return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
-  return { storiesDir: trimmed, unreadable: false };
+  // Tree paths are repo-relative and never start with `./` or `/`, and the
+  // lister matches them by prefix. A leading `./` is just a spelling and is
+  // removed. An absolute path or a `..` segment names something outside the
+  // tree's own vocabulary: listing with it would match nothing and read as an
+  // empty directory, so it is unusable rather than silently absent.
+  const trimmed = raw.trim();
+  if (trimmed.startsWith('/')) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
+  const cleaned = trimmed.replace(/^(?:\.\/+)+/, '').replace(/\/+$/, '');
+  if (cleaned === '') return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
+  if (cleaned.split('/').includes('..')) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
+  return { storiesDir: cleaned, unreadable: false };
 }

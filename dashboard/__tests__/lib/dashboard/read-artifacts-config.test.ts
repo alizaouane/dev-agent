@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Octokit } from '@octokit/rest';
-import { readArtifactsConfig } from '@/lib/dashboard/read-artifacts-config';
+import { DEFAULT_STORIES_DIR, readArtifactsConfig } from '@/lib/dashboard/read-artifacts-config';
 
 const getContent = vi.fn();
 const octokit = { repos: { getContent } } as unknown as Octokit;
@@ -29,7 +29,7 @@ describe('readArtifactsConfig', () => {
   it('defaults when the config has no stories_dir', async () => {
     getContent.mockResolvedValue(file('artifacts:\n  specs_dir: docs/specs\n'));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: false,
     });
   });
@@ -37,7 +37,7 @@ describe('readArtifactsConfig', () => {
   it('defaults, readably, when there is no config at all', async () => {
     getContent.mockRejectedValue(httpError(404));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: false,
     });
   });
@@ -47,7 +47,7 @@ describe('readArtifactsConfig', () => {
     // the two together is how an outage becomes a decision nobody made.
     getContent.mockRejectedValue(httpError(403));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: true,
     });
   });
@@ -62,12 +62,12 @@ describe('readArtifactsConfig', () => {
     // would report a directory the operator did not configure as if they had.
     getContent.mockResolvedValue(file('artifacts:\n  stories_dir: 17\n'));
     const result = await readArtifactsConfig(octokit, 'o', 'r', 'main');
-    expect(result).toEqual({ storiesDir: 'docs/stories', unreadable: true });
+    expect(result).toEqual({ storiesDir: DEFAULT_STORIES_DIR, unreadable: true });
   });
 
   it('strips a trailing slash so path prefixes compose', async () => {
     getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs/stories/\n'));
-    expect((await readArtifactsConfig(octokit, 'o', 'r', 'main')).storiesDir).toBe('docs/stories');
+    expect((await readArtifactsConfig(octokit, 'o', 'r', 'main')).storiesDir).toBe(DEFAULT_STORIES_DIR);
   });
 
   it('defaults, readably, when the file is empty', async () => {
@@ -75,7 +75,7 @@ describe('readArtifactsConfig', () => {
     // directory, which is the same fact as no config at all.
     getContent.mockResolvedValue(file(''));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: false,
     });
   });
@@ -85,7 +85,7 @@ describe('readArtifactsConfig', () => {
     // bare string, so this is not the same fact as an absent config.
     getContent.mockResolvedValue(file('just a string\n'));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: true,
     });
   });
@@ -93,7 +93,7 @@ describe('readArtifactsConfig', () => {
   it('marks itself unreadable when the top-level document is an array', async () => {
     getContent.mockResolvedValue(file('- foo\n- bar\n'));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: true,
     });
   });
@@ -104,7 +104,50 @@ describe('readArtifactsConfig', () => {
     // the same lie as the top-level-array case, one level deeper.
     getContent.mockResolvedValue(file('artifacts:\n  - foo\n'));
     expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
-      storiesDir: 'docs/stories',
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+  it('strips a leading ./ so the prefix matches git-tree paths', async () => {
+    // Tree paths never start with `./`. Keeping it would list nothing and
+    // report that empty listing as readable.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: ./docs/work/stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/work/stories',
+      unreadable: false,
+    });
+  });
+
+  it('strips repeated leading ./ segments', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: ././docs/work/stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/work/stories',
+      unreadable: false,
+    });
+  });
+
+  it('marks itself unreadable when stories_dir is an absolute path', async () => {
+    // A repo-relative directory cannot be named absolutely. Listing the
+    // default instead is only honest if the caller is told.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: /docs/work/stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when stories_dir has a .. segment', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs/../work/stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when stories_dir is a bare ./', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: ./\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
       unreadable: true,
     });
   });
