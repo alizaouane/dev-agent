@@ -32,7 +32,7 @@ Recorded so the executor does not re-open them, and so a later reader can see wh
 2. **`stories_dir` is optional in the schema, with a default.** Making it required would fail config parsing in every consumer repo that predates the key — which is all of them. `z.string().min(1).default('docs/stories')`, and absent from the JSON schema's `required` list.
 3. **The dashboard starts reading the consumer's `.dev-agent.yml`.** It never has: `list-spec-plan-files.ts` hardcodes its directories. AC-13 requires the picker to resolve stories from `artifacts.stories_dir`, so Task 3 adds a small reader. A config that is absent yields the default. A config that cannot be read, or can be read but not honoured, marks the listing short rather than silently listing a different directory.
 4. **Sort ascending by epic then story number, numerically.** Specs sort newest-first because a spec from March is history. A story list is a work queue: 8.1 comes before 8.2, and 8.9 before 8.10. String comparison gets that last pair wrong, so the comparison is segment-wise numeric.
-5. **The working-tree identity check compares a story's hashed body, not its bytes.** `phase-implement.yml:515` runs `cmp -s` between the base copy and the branch copy. Once dev-agent stamps the status line that comparison fails on a difference the approval deliberately ignores. The fix is to compare exactly what the approval binds, via a CLI that reuses `storyBodyForHashing` — not a fourth hand-written copy of the status-line grammar in bash.
+5. **The working-tree identity check compares a story's hashed body, not its bytes.** `phase-implement.yml:524` runs `cmp -s` between the base copy and the branch copy. Once dev-agent stamps the status line that comparison fails on a difference the approval deliberately ignores. The fix is to compare exactly what the approval binds, via a CLI that reuses `storyBodyForHashing` — not a fourth hand-written copy of the status-line grammar in bash.
 6. **The status stamp is pushed to the base branch, not committed on the agent branch.** The story's status is a projection of issue state, and the issue is a fact about the repository rather than about one pull request. Stamping on the agent branch would put the projection inside a diff a reviewer has to read, and would leave `Done` unreachable once the branch is deleted.
 
 ## Global Constraints
@@ -45,6 +45,7 @@ Recorded so the executor does not re-open them, and so a later reader can see wh
 - Never write a literal control character into source — escape sequences only.
 - Engine tests: `tests/unit/**`, run with `npx vitest run tests/unit/<file>`. Dashboard tests: `dashboard/__tests__/**`, run from `dashboard/` with `npx vitest run __tests__/<path>`.
 - Server-side dashboard modules start with `import 'server-only';`.
+- Every reader of a story path canonicalises it with `canonicalStoryPath` from `lib/story-approval.ts` (shipped in slice 3's PR, #164). `approve-story` records the path without a leading `./`; a reader that keeps the caller's spelling refuses a correctly approved story for ever on a path mismatch. Paths that come from the git-tree listing are already canonical; paths from a form field, an env variable or an issue body are not.
 - A `"use server"` module may only export async functions. Constants and sync helpers live in a sibling module.
 
 ## File Structure
@@ -1775,6 +1776,7 @@ Create `dashboard/__tests__/lib/actions-dispatch-from-story.test.ts`. Follow wha
 11. dispatches dev-agent.yml with phase=implement and the issue number
 12. flips the issue to state:implementing, keeping its non-state labels
 13. does not throw when the label flip fails after a successful dispatch
+14. accepts a `./`-prefixed story_path and files the issue with the canonical spelling
 ```
 
 Case 3 is the load-bearing one: an issue created before a refusal is an orphan in the queue that nothing comes back for.
@@ -1786,7 +1788,7 @@ Expected: FAIL — `dispatchFromStory` is not exported.
 
 - [ ] **Step 3: Write the action**
 
-Add to `dashboard/lib/actions.ts`, directly after `dispatchFromSpec`. Import `findIssuesForStory` from `./find-story-issue` and `epicOf` from `./story-items`.
+Add to `dashboard/lib/actions.ts`, directly after `dispatchFromSpec`. Import `findIssuesForStory` from `./find-story-issue`, `epicOf` from `./story-items`, and `canonicalStoryPath` from `./story-approval`.
 
 ```ts
 /**
@@ -1812,7 +1814,10 @@ export async function dispatchFromStory(
     const session_username = await getCurrentUsername();
     const octokit = await getOctokit();
     const repoFull = (formData.get('repo') as string).trim();
-    const story_path = (formData.get('story_path') as string).trim();
+    // Canonicalised, as every other reader of a story path is: the approval
+    // records the path without a leading `./`, so an uncanonical spelling
+    // would pass the existence check and then refuse at the gate.
+    const story_path = canonicalStoryPath((formData.get('story_path') as string).trim());
     const title = (formData.get('title') as string).trim();
     const custom_title = ((formData.get('custom_title') as string) ?? '').trim();
     if (!repoFull.includes('/')) throw new Error('repo must be in owner/name format');
@@ -1972,7 +1977,7 @@ export async function dispatchFromStory(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run, from `dashboard/`: `npx vitest run __tests__/lib/actions-dispatch-from-story.test.ts`
-Expected: PASS, thirteen cases.
+Expected: PASS, fourteen cases.
 
 - [ ] **Step 5: Run the whole dashboard suite**
 
@@ -2096,7 +2101,7 @@ Two small CLIs, both of which exist so the status-line grammar stays in one plac
 
 `stamp-story-status` writes the line. It reuses `stampStatus` from `approve-story.ts`, which validates the status against `STORY_STATUS_VALUES` and replaces via the shared `STATUS_LINE_RE`.
 
-`compare-approved-text` replaces the `cmp -s` at `phase-implement.yml:515` for the document path. That comparison is byte-exact, and it will hard-fail the moment the status line is stamped — on a difference the approval was deliberately built to ignore. Comparing `storyBodyForHashing` instead compares exactly what the approval binds. This is not a loosening: it is the same predicate the gate uses.
+`compare-approved-text` replaces the `cmp -s` at `phase-implement.yml:524` for the document path. That comparison is byte-exact, and it will hard-fail the moment the status line is stamped — on a difference the approval was deliberately built to ignore. Comparing `storyBodyForHashing` instead compares exactly what the approval binds. This is not a loosening: it is the same predicate the gate uses.
 
 **Files:**
 - Create: `lib/cli/stamp-story-status.ts`
@@ -2322,7 +2327,7 @@ git commit -m "feat(approval): write the status line, and compare what the appro
 
 ### Task 11: Wire the projection into the two transitions that exist (AC-15)
 
-`phase-implement.yml` owns both: it starts the work, and at line 1036 it flips the issue to `state:pr-review` after opening the pull request. Nothing in this repo sets `state:done` — `phase-promote-to-prod.yml:118` reports promotion unimplemented and exits 1 — so the third stamp has nowhere to hang. Do not invent a transition for it.
+`phase-implement.yml` owns both: it starts the work, and at line 1045 it flips the issue to `state:pr-review` after opening the pull request. Nothing in this repo sets `state:done` — `phase-promote-to-prod.yml:118` reports promotion unimplemented and exits 1 — so the third stamp has nowhere to hang. Do not invent a transition for it.
 
 The stamp is pushed to the **base branch**, not committed on the agent branch: the story's status is a fact about the repository rather than about one pull request, and a stamp on the branch would put the projection inside a diff a reviewer has to read.
 
@@ -2354,7 +2359,7 @@ Expected: FAIL on all seven.
 
 - [ ] **Step 3: Replace the identity check**
 
-At `phase-implement.yml:513-520`, keep the loop for the plan and route the document through the new CLI:
+At `phase-implement.yml:522-529`, keep the loop for the plan and route the document through the new CLI:
 
 ```yaml
           if [ "${OVERRIDE:-}" != "true" ]; then
@@ -2381,7 +2386,7 @@ At `phase-implement.yml:513-520`, keep the loop for the plan and route the docum
 
 - [ ] **Step 4: Add the two stamping steps**
 
-Both are their own step, with this shape. Place the first immediately after the `Verify spec approval` step, and the second immediately after the `gh issue edit ... --add-label state:pr-review` at line 1036.
+Both are their own step, with this shape. Place the first immediately after the `Verify spec approval` step, and the second immediately after the `gh issue edit ... --add-label state:pr-review` at line 1045.
 
 ```yaml
       - name: Project the story status
@@ -2438,7 +2443,7 @@ Both are their own step, with this shape. Place the first immediately after the 
 The second step is identical with `STATUS: Review` and the name "Project the story status (pull request open)".
 
 Implementer notes:
-- The base branch comes from `${{ github.event.repository.default_branch }}`, the same expression the approval gate's step reads at line 454. That gate derives its own fallback from `origin/HEAD` and refuses without one; these steps warn and skip instead, because there is no decision here to fail closed on. Do not add an output to the gate step to share its value — it is a gate, and widening it to publish state is how gates acquire second jobs.
+- The base branch comes from `${{ github.event.repository.default_branch }}`, the same expression the approval gate's step reads at line 463. That gate derives its own fallback from `origin/HEAD` and refuses without one; these steps warn and skip instead, because there is no decision here to fail closed on. Do not add an output to the gate step to share its value — it is a gate, and widening it to publish state is how gates acquire second jobs.
 - The clone is shallow and single-branch on purpose: the working tree is on the agent branch and must not be disturbed.
 - Every failure path here warns and continues. A status line that did not get written is a cosmetic disagreement between two records; failing the run over it would throw away a completed implementation.
 
