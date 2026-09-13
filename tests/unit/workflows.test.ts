@@ -1667,6 +1667,18 @@ describe('.github/workflows/', () => {
           }
         });
 
+        it('hands each step the issue and the state its stamp projects', () => {
+          // Codex, PR #165: the stamp is a projection of the issue's state, so
+          // each step reads that state live and names the state it expects.
+          const expected: Record<string, string> = { [IN_PROGRESS]: 'state:implementing', [REVIEW]: 'state:pr-review' };
+          for (const name of [IN_PROGRESS, REVIEW]) {
+            const block = stepBlock(name);
+            expect(block).toMatch(new RegExp(`^\\s*EXPECTED_STATE: ${expected[name]}$`, 'm'));
+            expect(block).toMatch(/^\s*ISSUE_NUMBER: \$\{\{ inputs\.issue_number \}\}$/m);
+            expect(block).toMatch(/^\s*GH_TOKEN: \$\{\{ github\.token \}\}$/m);
+          }
+        });
+
         it('runs the same script in both steps', () => {
           expect(runBody(stepBlock(REVIEW))).toBe(runBody(stepBlock(IN_PROGRESS)));
         });
@@ -1674,8 +1686,11 @@ describe('.github/workflows/', () => {
         it('puts no token in a URL or argument, and works through a removed worktree', () => {
           for (const name of [IN_PROGRESS, REVIEW]) {
             const block = stepBlock(name);
-            expect(block).not.toMatch(/x-access-token|GH_TOKEN|git clone/);
+            expect(block).not.toMatch(/x-access-token|git clone/);
             const script = runBody(block);
+            // `gh` reads GH_TOKEN from its environment; the script itself must
+            // never expand the token into a URL or an argument.
+            expect(script).not.toMatch(/\$\{?GH_TOKEN/);
             expect(script).toMatch(/git worktree add/);
             expect(script).toMatch(/trap /);
             expect(script).toMatch(/git -C "\$CONSUMER_DIR" worktree remove --force "\$STAMP_DIR"/);
@@ -1712,15 +1727,34 @@ describe('.github/workflows/', () => {
          */
         const stamp = (
           consumer: string,
-          env: Partial<Record<'BASE' | 'STORY_PATH' | 'STATUS' | 'ISSUE_LABELS', string>> = {},
-        ) =>
-          runBash(runBody(stepBlock(IN_PROGRESS)), consumer, {
+          env: Partial<
+            Record<
+              'BASE' | 'STORY_PATH' | 'STATUS' | 'ISSUE_LABELS' | 'EXPECTED_STATE' | 'FAKE_GH_LABELS' | 'FAKE_GH_FAIL',
+              string
+            >
+          > = {},
+        ) => {
+          // A stand-in `gh` that answers the step's live state read: it prints
+          // FAKE_GH_LABELS, or fails when FAKE_GH_FAIL is set.
+          const bin = join(consumer, '..', 'fake-gh-bin');
+          mkdirSync(bin, { recursive: true });
+          writeFileSync(
+            join(bin, 'gh'),
+            '#!/usr/bin/env bash\nif [ -n "${FAKE_GH_FAIL:-}" ]; then exit 1; fi\nprintf \'%s\\n\' "${FAKE_GH_LABELS:-}"\n',
+          );
+          chmodSync(join(bin, 'gh'), 0o755);
+          return runBash(runBody(stepBlock(IN_PROGRESS)), consumer, {
             GITHUB_WORKSPACE: consumer,
+            PATH: `${bin}:${process.env.PATH ?? ''}`,
             BASE: 'main',
             STORY_PATH: STORY_REL,
             STATUS: 'InProgress',
+            ISSUE_NUMBER: '7',
+            EXPECTED_STATE: 'state:implementing',
+            FAKE_GH_LABELS: 'state:implementing,kind:feature',
             ...env,
           });
+        };
 
         const worktreeCount = (consumer: string): number =>
           git(consumer, 'worktree', 'list', '--porcelain')
@@ -1795,6 +1829,43 @@ describe('.github/workflows/', () => {
           expect(git(origin, 'rev-parse', 'main')).toBe(head);
           expect(git(origin, 'show', `main:${STORY_REL}`)).toContain('**Status:** Approved');
           expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('does not stamp a story whose issue is not at the state the stamp projects', { timeout: 60000 }, () => {
+          // Codex, PR #165: an implement run can start from state:spec-ready —
+          // dispatched directly, or after the dashboard's own label flip
+          // failed. Stamping InProgress then contradicts the issue it projects.
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { FAKE_GH_LABELS: 'state:spec-ready,kind:feature' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::issue #7 is not at state:implementing; .* was not stamped to InProgress/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('does not stamp when the issue state cannot be read', { timeout: 60000 }, () => {
+          // Unknown is not a match. A read that fails skips the stamp rather
+          // than guessing the issue moved.
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { FAKE_GH_FAIL: '1' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::could not read issue #7's state/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('matches the expected state label whole, not as a substring', { timeout: 60000 }, () => {
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { FAKE_GH_LABELS: 'state:implementing-old,kind:feature' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::issue #7 is not at state:implementing/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
         });
 
         it('matches the override label whole, not as a substring', { timeout: 60000 }, () => {

@@ -563,6 +563,9 @@ jobs:
           STATUS: InProgress
           BASE: ${{ github.event.repository.default_branch }}
           ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_STATE: state:implementing
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # The override label lets the approval gate pass with no approval on
@@ -573,6 +576,24 @@ jobs:
           case ",${ISSUE_LABELS:-}," in
             *,spec-approval:override,*)
               echo "::warning::${STORY_PATH} was not stamped to ${STATUS}: work proceeded under spec-approval:override without an approval"
+              exit 0
+              ;;
+          esac
+          # A projection of the issue's state, so read that state now rather
+          # than trusting how this run began. An implement run can start from
+          # state:spec-ready — dispatched directly, or after the dashboard's
+          # own label flip failed — and a story must not read InProgress, or
+          # Review, while its issue says otherwise. Matched as a whole label.
+          # Unknown is not a match: a read that fails skips the stamp rather
+          # than guessing the issue moved.
+          if ! LIVE_LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
+            echo "::warning::could not read issue #${ISSUE_NUMBER}'s state; ${STORY_PATH} was not stamped to ${STATUS}"
+            exit 0
+          fi
+          case ",${LIVE_LABELS}," in
+            *,"${EXPECTED_STATE}",*) ;;
+            *)
+              echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS}"
               exit 0
               ;;
           esac
@@ -1180,6 +1201,9 @@ jobs:
           STATUS: Review
           BASE: ${{ github.event.repository.default_branch }}
           ISSUE_LABELS: ${{ steps.issue.outputs.labels }}
+          ISSUE_NUMBER: ${{ inputs.issue_number }}
+          EXPECTED_STATE: state:pr-review
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           # The override label lets the approval gate pass with no approval on
@@ -1190,6 +1214,24 @@ jobs:
           case ",${ISSUE_LABELS:-}," in
             *,spec-approval:override,*)
               echo "::warning::${STORY_PATH} was not stamped to ${STATUS}: work proceeded under spec-approval:override without an approval"
+              exit 0
+              ;;
+          esac
+          # A projection of the issue's state, so read that state now rather
+          # than trusting how this run began. An implement run can start from
+          # state:spec-ready — dispatched directly, or after the dashboard's
+          # own label flip failed — and a story must not read InProgress, or
+          # Review, while its issue says otherwise. Matched as a whole label.
+          # Unknown is not a match: a read that fails skips the stamp rather
+          # than guessing the issue moved.
+          if ! LIVE_LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
+            echo "::warning::could not read issue #${ISSUE_NUMBER}'s state; ${STORY_PATH} was not stamped to ${STATUS}"
+            exit 0
+          fi
+          case ",${LIVE_LABELS}," in
+            *,"${EXPECTED_STATE}",*) ;;
+            *)
+              echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS}"
               exit 0
               ;;
           esac
