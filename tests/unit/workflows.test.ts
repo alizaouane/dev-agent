@@ -1590,12 +1590,59 @@ describe('.github/workflows/', () => {
             /\n {6}- (name|uses):/,
           );
           // The telemetry step writes phase_outcome=blocked and exits early
-          // when the agent opened no pull request; without this gate the story
-          // would read Review with nothing to review.
+          // when the agent opened no pull request; without that gate the story
+          // would read Review with nothing to review. It also records whether
+          // the label flip itself landed (Codex, PR #165): the flip is
+          // non-fatal, so phase_outcome=success alone can leave the issue at
+          // state:implementing while the story claims Review.
           expect(ifOf(block)).toBe(
-            "steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'",
+            "steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success' && steps.telemetry.outputs.state_flipped == 'true'",
           );
           expect(block).toMatch(/^\s*STATUS: Review$/m);
+        });
+
+        describe('the telemetry step records whether the pr-review flip landed', () => {
+          // Run the step's real flip snippet against a stand-in `gh`, so the
+          // test tracks behaviour: the flip must stay non-fatal, exactly as
+          // its old `|| true` was, while reporting which way it went.
+          const flip = (): string => {
+            const block = stepBlock('Comment telemetry + flip state');
+            const m = block.match(/^([ \t]*)if gh issue edit "\$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review; then\n[\s\S]*?^\1fi$/m);
+            if (!m) throw new Error('could not find the pr-review flip in the telemetry step');
+            return m[0].split('\n').map((l) => l.slice(m[1].length)).join('\n');
+          };
+
+          const runFlip = (ghExit: number): { status: number | null; outputs: string } => {
+            const dir = mkdtempSync(join(tmpdir(), 'flip-'));
+            try {
+              const bin = join(dir, 'bin');
+              mkdirSync(bin);
+              writeFileSync(join(bin, 'gh'), `#!/usr/bin/env bash\nexit ${ghExit}\n`);
+              chmodSync(join(bin, 'gh'), 0o755);
+              const outputs = join(dir, 'output');
+              writeFileSync(outputs, '');
+              const res = spawnSync('bash', ['-c', `set -euo pipefail\n${flip()}\n`], {
+                env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, ISSUE_NUMBER: '7', GITHUB_OUTPUT: outputs },
+                encoding: 'utf8',
+              });
+              return { status: res.status, outputs: readFileSync(outputs, 'utf8') };
+            } finally {
+              rmSync(dir, { recursive: true, force: true });
+            }
+          };
+
+          it('records state_flipped=true when the label flip succeeds', () => {
+            const { status, outputs } = runFlip(0);
+            expect(status).toBe(0);
+            expect(outputs).toContain('state_flipped=true');
+          });
+
+          it('records state_flipped=false, and does not fail the step, when the flip is refused', () => {
+            const { status, outputs } = runFlip(1);
+            expect(status).toBe(0);
+            expect(outputs).toContain('state_flipped=false');
+            expect(outputs).not.toContain('state_flipped=true');
+          });
         });
 
         it('skips both steps when the run was overtaken, and when the issue is a spec', () => {

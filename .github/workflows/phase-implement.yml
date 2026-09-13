@@ -1154,7 +1154,16 @@ jobs:
           fi
           BODY=$(printf '🤖 Phase: implement\nModel: claude-sonnet-4-6\nMode: live\nStatus: success\nBranch: %s\nPR: #%s\n' "$BRANCH_NAME" "$PR_NUMBER")
           gh issue comment "$ISSUE_NUMBER" --body "$BODY"
-          gh issue edit "$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review || true
+          # Still non-fatal, as its `|| true` was: a refused flip must not fail a
+          # run whose pull request is open. But the story's Review stamp below
+          # is a projection of this label, so record which way it went — a
+          # stamp that reads Review on an issue still at state:implementing
+          # contradicts the record it projects.
+          if gh issue edit "$ISSUE_NUMBER" --remove-label state:implementing --add-label state:pr-review; then
+            echo "state_flipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "state_flipped=false" >> "$GITHUB_OUTPUT"
+          fi
           echo "phase_outcome=success" >> "$GITHUB_OUTPUT"
           echo "pr_url=https://github.com/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}" >> "$GITHUB_OUTPUT"
 
@@ -1165,7 +1174,7 @@ jobs:
       # script is identical to "Project the story status" above; only STATUS
       # differs, and a test holds the two bodies equal.
       - name: Project the story status (pull request open)
-        if: steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'
+        if: steps.slot.outputs.overtaken != 'true' && inputs.invocation_mode == 'live' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success' && steps.telemetry.outputs.state_flipped == 'true'
         env:
           STORY_PATH: ${{ steps.issue.outputs.story_path }}
           STATUS: Review
