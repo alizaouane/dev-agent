@@ -189,6 +189,26 @@ describe('buildStoryApproval — storyPath normalisation', () => {
     );
   });
 
+  it('refuses a story path containing whitespace, naming it', () => {
+    // Every reader downstream matches a story reference as one run of
+    // non-whitespace: the dashboard gate's parseStoryRef, the implement
+    // workflow's grep. A path with a space would be approved here, offered as
+    // startable, and then refused at dispatch as an issue with no `Spec:`
+    // line — a refusal that sends the operator looking in the wrong place.
+    // Refusing it at approval means no such record can exist.
+    const spaced = 'docs/stories/epic-9/9.1 thing.md';
+    expect(() => buildStoryApproval(input({ storyPath: spaced }))).toThrow(
+      /story paths may not contain whitespace/i,
+    );
+    expect(() => buildStoryApproval(input({ storyPath: spaced }))).toThrow(spaced);
+  });
+
+  it('refuses a story path containing a tab', () => {
+    expect(() =>
+      buildStoryApproval(input({ storyPath: 'docs/stories/epic-9/9.1' + String.fromCharCode(9) + 'thing.md' })),
+    ).toThrow(/whitespace/i);
+  });
+
   it('refuses a story path containing a .. segment', () => {
     expect(() =>
       buildStoryApproval(input({ storyPath: `docs/../${STORY_REL}` })),
