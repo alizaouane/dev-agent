@@ -1,6 +1,6 @@
 # Product architecture: one UI for agent-driven development
 
-**Status:** Draft (revision 2, after independent spec review)
+**Status:** Draft (revision 3, after two rounds of independent spec review)
 **Date:** 2026-09-13
 **Scope:** umbrella architecture for milestone 1. Each build part in section 10 gets its own spec, plan and PRs; this document fixes the boundaries and the rules those specs must follow.
 
@@ -56,10 +56,11 @@ Three layers, each behind an interface the layer above depends on.
 Today an approval is a commit carrying the approving human's git identity. When a human approves in the product, the commit is made by the GitHub App bot, so git alone no longer says who approved. The design keeps approvals verifiable from git:
 
 - The control plane records the approval (approver's GitHub user id and login, repository id, file path, blob SHA of the approved content, time) and writes the stamp commit through the App.
-- The stamp carries commit trailers with those fields and an Ed25519 signature over them, made with a signing key held only by the control plane. Its public key is published and pinned in the engine.
-- `verify-approval` accepts either a local stamp (today's flow) or a product stamp whose signature verifies and whose blob SHA matches the content being built. An App-authored stamp without a valid signature is rejected, so App write access alone cannot forge an approval.
+- The stamp carries commit trailers with those fields, a key id, and an Ed25519 signature over them. Each organisation has its own signing key, held only by the control plane, so a leaked key cannot forge approvals for another organisation.
+- The control plane publishes each organisation's current and previous public keys by key id. `verify-approval` fetches the key named by the stamp; if the key cannot be fetched or is not listed, it refuses (unknown is not absent). Rotation keeps the previous key listed until every stamp signed with it has been superseded or re-signed.
+- **Once a project is on the product, `verify-approval` accepts only product stamps** whose signature verifies and whose blob SHA matches the content being built. Today's local stamp is a file whose approver is free text and whose commit author is never checked, so anyone with write access could commit one naming anyone. Local stamps stay valid only for repositories not yet moved to the product, with that known limitation.
 - Only a human action in the UI creates an approval. No agent, run or automation can call the approval endpoint.
-- Part 1's spec defines the trailer format, key storage and rotation; part 2 updates `verify-approval`.
+- Part 1's spec defines the trailer format, key storage and rotation; part 2 updates `verify-approval` and the per-project switch.
 
 ### 4.3 Runner interface and backends
 
@@ -81,7 +82,7 @@ One contract, used by both backends, replacing `claude-code-action` inside the e
 
 - **Invocation:** the command, environment and working directory to run one agent turn for a task, agent and model, including resuming a prior agent session.
 - **Output:** turn the agent's output into ACP-named session updates: `agent_message_chunk`, `tool_call`, `tool_call_update`, `plan`, `usage_update`. A turn ends with an ACP-style `stopReason`, not a "done" event.
-- **Permissions are a two-way request, not an event.** Like ACP's `session/request_permission`, the adapter raises a request, the run parks in `waiting_for_you`, and the answer is sent back to the agent. For Claude Code in the sandbox, the bridge hosts the MCP tool named by `--permission-prompt-tool`. For batch runs, there is no human to ask: permissions come from a fixed allowlist, and anything outside it is denied.
+- **Permissions are a two-way request, not an event.** Like ACP's `session/request_permission`, the adapter raises a request, the run parks in `waiting_for_you`, and the answer is sent back to the agent. For Claude Code in the sandbox, the bridge hosts the MCP tool named by `--permission-prompt-tool`. For batch runs, there is no human to ask: permissions come from a fixed allowlist, and anything outside it is denied. Today's implement allowlist includes unrestricted `Bash`, which makes it nominal; part 2 narrows the Bash patterns per phase, and until then the allowlist is not counted as a security control.
 - **Adapters in milestone 1:**
   - Claude Code: `claude -p` with `--output-format stream-json`, `--resume` (which accepts a session `.jsonl` path) and `--permission-prompt-tool`.
   - Codex batch runs: `codex exec --json`, with `CODEX_API_KEY` rather than `OPENAI_API_KEY`.
@@ -102,16 +103,18 @@ One contract, used by both backends, replacing `claude-code-action` inside the e
 
 ### 5.2 Live output
 
-The backend posts events; the control plane writes them; the database broadcasts each new event on a private Supabase Realtime Broadcast channel per run, authorised by row-level security on `realtime.messages`. `postgres_changes` is not used for run output: it checks authorisation per subscriber per change on a single thread, and its row-level security does not apply to deletes. A page reload replays the run from the table. Screens uploaded by the chat bridge are stored in Supabase Storage under a per-organisation path with Storage row-level security.
+The backend posts events; the control plane writes them; the database broadcasts each new event on a Supabase Realtime Broadcast channel per run, marked private on both the sending and the subscribing side (a private broadcast reaches only private channels), and authorised by row-level security on `realtime.messages`. `postgres_changes` is not used for run output: it checks authorisation per subscriber per change on a single thread, and its row-level security does not apply to deletes. A page reload replays the run from the table. Screens uploaded by the chat bridge are stored in Supabase Storage under a per-organisation path with Storage row-level security.
 
 ### 5.3 Batch run flow
 
 1. A product action (for example, a human approving a story) creates a run in `queued`.
 2. The GitHub App dispatches the wrapper with the product run id and stores the returned workflow run id.
-3. The engine posts events authenticated with the job's GitHub Actions OIDC token. The control plane requires all of: a product-specific `aud`; `repository_id` equal to the project's repository id (not the name, which can change); `run_id` equal to the stored workflow run id; and `job_workflow_ref` equal to the pinned engine workflow for that project.
-4. **Status and gates never come from events.** Events are display only. A run's status comes from GitHub's workflow result, and gate outcomes (approval verified, ACM verdict, swarm verdict) are re-read from git and GitHub state before the product changes anything based on them. This matters because the agent's Bash runs in the same job and could read the OIDC request token; the worst a prompt-injected agent can do is add misleading timeline entries, which are labelled with their trust level.
-5. Part 2's spec moves `id-token: write` and the agent key out of the agent's job where the workflow allows it, and adds an egress allowlist for agent steps.
-6. GitHub App webhooks (`workflow_run`, `pull_request`, `issues`) are verified by HMAC, de-duplicated on `X-GitHub-Delivery`, and routed by installation id to exactly one organisation; a repository id belongs to exactly one project.
+3. The engine posts events authenticated with the job's GitHub Actions OIDC token. The control plane requires all of: a product-specific `aud`; `repository_id` equal to the project's repository id (not the name, which can change); `job_workflow_ref` equal to the pinned engine workflow for that project; and `run_id` equal to the stored workflow run id. For a run the product did not start, the first event with an otherwise valid token creates the adopted run bound to that `run_id`, so events that arrive before the `workflow_run` webhook are not rejected.
+4. **Status never comes from events.** Events are display only, and a run's status comes from GitHub's workflow result.
+5. **Gate verdicts come only from jobs the agent cannot reach.** Today ACM and swarm verdicts are labels and comments written with the token of the job the agent runs in, so re-reading them would trust data produced next to the agent. In the product design, each gate runs in its own job with no agent step and publishes its verdict as a check run. Agent jobs get no `checks: write` permission. The product accepts a verdict only from a check run that the Actions API ties to the gate job of the stored workflow run; approvals are verified from signed stamps (section 4.2).
+6. **Accepted risks inside an agent job.** The agent's Bash shares the job with the OIDC request token and the agent credential. A prompt-injected agent can add misleading timeline entries, labelled with their trust level, and can under-report usage to delay a budget cancel. The controls that do not depend on the agent are the per-run wall-clock cap and the vendor console limit.
+7. **Reducing that exposure is part 2's decision between two named options:** a credential proxy (the agent talks to a local proxy that holds the key; the key never enters the agent's environment, and the proxy's own usage counts become the trusted metering), or posting events from a sidecar process started before the agent, which removes the agent's need for `id-token` but not the key. Part 2 also adds an egress allowlist for agent steps.
+8. GitHub App webhooks (`workflow_run`, `pull_request`, `issues`) are verified by HMAC, de-duplicated on `X-GitHub-Delivery`, and routed by installation id to exactly one organisation; a repository id belongs to exactly one project.
 
 ### 5.4 Chat run flow
 
@@ -121,12 +124,13 @@ The backend posts events; the control plane writes them; the database broadcasts
 4. At the end of the turn the run returns to `waiting_for_you`. A permission request also parks the run in `waiting_for_you` until you answer.
 5. **Visual screens:** the agent writes HTML screens to a watched folder; the bridge uploads them to Storage and the product shows them in a side panel. Clicks come back as your next message.
 6. **Finish:** the bridge uploads the spec change as a patch; the control plane commits it to a branch and opens a PR through the App. **No GitHub write token ever enters the sandbox**, since the agent's Bash could read anything the bridge can.
-7. **Terminal escape hatch:** "Open terminal" attaches an in-browser terminal to the sandbox's PTY and the same agent session. Terminal turns bypass the adapter, so they produce no live events or permission requests: the terminal has a wall-clock cap, its usage is priced afterwards from the agent's session file, and the chat shows a summary marked as reconstructed.
-8. **Resume:** after every completed turn, the bridge saves two things, encrypted, to Storage: a copy of the agent's session file as of that turn, and a snapshot of the workspace (uncommitted changes included). Reopening a chat restores both into a new sandbox and resumes from that completed-turn copy. The copy never contains an interrupted turn, so a turn killed for budget or a crash is not continued on resume, which Claude Code would otherwise do after SIGTERM. Codex resume from a restored file is unverified and is a part 5 spike.
+7. **Terminal escape hatch:** "Open terminal" attaches an in-browser terminal to the sandbox's PTY and the same agent session. Terminal turns bypass the adapter, so they produce no live events or permission requests: the terminal has a wall-clock cap, its usage is priced afterwards from the agent's session file, and the chat shows a summary marked as reconstructed. Because there is no detected turn end in the terminal, the resume copy is taken when the terminal detaches or goes idle for a set time.
+8. **Resume:** after every completed turn, the bridge saves two things, encrypted, to Storage: a copy of the agent's session files as of that turn (the main transcript and any subagent transcripts), and a snapshot of the workspace (uncommitted changes included). Agent credential files, such as a subscription sign-in stored under the agent's home directory, are excluded from both copies and from anything else the product stores. Reopening a chat restores both into a new sandbox at the same workspace path, since transcripts record the working directory, and resumes from that completed-turn copy. The copy never contains an interrupted turn, so a turn killed for budget or a crash is not continued on resume, which Claude Code would otherwise do after SIGTERM. Codex resume from a restored file is unverified and is a part 5 spike.
 
 ### 5.5 What runs in the sandbox, and what it can reach
 
-- Claude Code runs in its normal mode, not `--bare`, because live chat needs `CLAUDE.md` and the repo's skills. That mode also runs the repo's `.claude/settings.json` hooks and `.mcp.json` servers. This is acceptable because the repository belongs to the customer running the chat, the sandbox holds no GitHub write token, and egress is restricted to an allowlist (the agent vendor's API, package registries, and hosts the organisation adds).
+- Claude Code runs in its normal mode, not `--bare`, because live chat needs `CLAUDE.md` and the repo's skills. That mode also runs the repo's `.claude/settings.json` hooks and `.mcp.json` servers from the branch being chatted on.
+- **This is an accepted risk, not a mitigated one.** Anyone who can push a branch to the repository can plant a hook. The sandbox holds no GitHub write token and egress is restricted to an allowlist (the agent vendor's API, package registries, and hosts the organisation adds), but allowed hosts can still carry data out, and a hook could leak the agent credential, including a user's subscription sign-in. Organisations are told this when they enable live chat, and part 4 evaluates running chats only on branches whose hook and MCP files match the default branch.
 - The only credentials in the sandbox are the agent credential (section 6.2) and a read-only GitHub installation token for that one repository, valid for at most one hour and refreshed by the control plane.
 
 ## 6. Tenancy, credentials and cost
@@ -145,7 +149,7 @@ The backend posts events; the control plane writes them; the database broadcasts
 |---|---|
 | Batch runs | An API key per organisation (Anthropic for Claude Code, OpenAI for Codex), with a per-project override. Batch runs are unattended, so they need a stored credential, and the product must not store claude.ai credentials or session tokens. |
 | Live chat | Either the organisation's API key, or the chatting user signing in inside the sandbox to the unmodified agent binary with their own subscription. The product must not collect, store or intermediate those subscription credentials, must not remove or restrict the binary's built-in sign-in methods, and must not pay for, resell or intermediate usage. A subscription sign-in lives only in that sandbox and is not restored on resume. |
-| Terms | Anthropic's Commercial Terms apply to the product. OpenAI's equivalent position is unverified. A legal review of both vendors' terms is a gate before part 3 ships. |
+| Terms | Anthropic's Commercial Terms apply to the product. OpenAI's equivalent position is unverified. A legal review of both vendors' terms is a gate before part 3 and part 4 ship, since part 4 carries subscription sign-in and drives the binary headless. |
 | Storage | API keys are stored once, encrypted with a per-organisation data key, which is itself encrypted by a master key in a managed KMS. Part 3 chooses between Supabase Vault and a cloud KMS, and defines data key rotation. Write-only in the UI: after saving, only the last 4 characters are shown. |
 | Use | Decrypted only to start a sandbox (as an environment variable) and to sync into the repository's Actions secrets through the GitHub App. |
 | GitHub | Installation tokens minted per use, restricted with `repositories` and `permissions` to one repository and the permissions needed, lasting at most one hour. Write tokens are only ever used by the control plane or inside the customer's own Actions job, never inside a sandbox. |
@@ -176,7 +180,8 @@ The backend posts events; the control plane writes them; the database broadcasts
 | Control plane unreachable during a batch run | The engine buffers events to a file uploaded as a workflow artifact. On recovery, the workflow notification or the reconciler closes the run from GitHub's result and backfills events from the artifact. Unreachable at start: the run refuses because the budget reservation cannot be made. | Run fills in, marked "events recovered" |
 | Dispatch returns no workflow run id | The run fails closed as `infrastructure`; nothing is left running untracked | Reason with a retry button |
 | Events lost, duplicated or out of order | Sequence numbers: duplicates ignored, order restored, gaps kept | "N events missing" |
-| Event with an invalid OIDC token or claim mismatch | Rejected and logged as a security event for the organisation | Admin security log entry |
+| Event with an invalid OIDC token or claim mismatch | Rejected and logged as a security event for the organisation. A valid token for a workflow run the product has not seen creates an adopted run instead. | Admin security log entry |
+| Gate verdict from a check run not tied to the gate job | Ignored for any state change; logged as a security event | Gate shown as unverified |
 | Webhook lost or duplicated | Duplicates dropped by delivery id. A reconciler checks unfinished runs against the GitHub API every few minutes; a run stuck in `starting` past its timeout fails as never started. | Reason plus a link to the Actions run |
 | Wrapper run started outside the product | Adopted from the `workflow_run` webhook as origin `github` | Run appears, marked "started from GitHub" |
 | Sandbox crash or provider outage | Bridge heartbeat; 60 seconds without one fails the turn as `infrastructure`. Resume restores the last completed turn and its workspace snapshot. | Partial turn labelled interrupted; "Reopen chat" |
@@ -186,18 +191,20 @@ The backend posts events; the control plane writes them; the database broadcasts
 | GitHub App removed, repo renamed or transferred, permission missing | Renames are harmless (bound by repository id); removal or a missing permission marks the project disconnected, and runs refuse naming what is missing | "Reconnect" |
 | Cap crossed but cancel fails | Retry cancel, alert admins; the vendor console limit is the backstop | "Cancel pending" |
 | Spec push rejected because the branch moved | The control plane replays the docs-only patch on the new head; a real conflict becomes a question in the chat | A chat question |
-| Approval stamp signature invalid | `verify-approval` refuses; the build does not start | Gate result naming the invalid stamp |
+| Approval stamp signature invalid, key not fetchable, or a local stamp on a project moved to the product | `verify-approval` refuses; the build does not start | Gate result naming the stamp and why |
 | User cancels | Always ends `cancelled`; late events stored but do not change status | Cancelled, who and when |
 
 ## 8. Security summary
 
 - Approvals are verifiable from git through signed product stamps (section 4.2).
-- Status and gate outcomes never come from events a run posts (section 5.3).
+- Status never comes from events a run posts, and gate verdicts come only from check runs tied to agent-free gate jobs (section 5.3).
+- Projects on the product accept only signed, per-organisation approval stamps (section 4.2).
 - OIDC ingest checks audience, repository id, run id and reusable workflow ref.
 - No GitHub write token in any sandbox; sandbox egress is allowlisted.
 - Secrets are redacted from every stored or broadcast payload and from session snapshots, and snapshots are encrypted.
 - Webhooks are verified, de-duplicated and routed to exactly one organisation.
-- Repository hooks and MCP servers run only inside the customer's own isolated sandbox or Actions job.
+- Repository hooks and MCP servers run only inside the customer's own isolated sandbox or Actions job; in live chat this remains an accepted risk (section 5.5).
+- Known exposure inside agent jobs is listed in section 5.3, with part 2 choosing between a credential proxy and a sidecar poster.
 
 ## 9. Testing
 
@@ -205,10 +212,11 @@ The backend posts events; the control plane writes them; the database broadcasts
 - **Stub adapter:** replays recorded streams so every phase runs end to end in CI with no model spend. This is new work: today's stub mode skips the agent step and emits nothing.
 - **Isolation tests on a real test database** (no mocked database): for every table, Realtime channel and Storage path, a member of one organisation cannot read or write another organisation's data.
 - **Ingest security tests:** wrong audience, wrong repository id, wrong run id, wrong workflow ref, replayed sequence number, expired session token, forged webhook signature, duplicate delivery; all refused or ignored.
-- **Approval tests:** an App-authored stamp without a valid signature, a signature over a different blob SHA, and a local stamp all behave as section 4.2 says.
+- **Approval tests:** an App-authored stamp without a valid signature, a signature over a different blob SHA, an unknown or unfetchable key id, another organisation's key, and a local stamp on a moved project are all refused; a valid product stamp passes.
+- **Gate provenance tests:** a verdict check run created from an agent job, or from another workflow run, is ignored.
 - **Failure tests:** every row of section 7.2 checks the final status and reason.
 - **Budget race test:** two runs reserving the last of a budget concurrently; exactly one starts.
-- **Resume test:** kill a turn mid-way, reopen the chat, and confirm the killed turn is not continued and the workspace matches the last completed turn.
+- **Resume test:** kill a turn mid-way, reopen the chat, and confirm the killed turn is not continued, the workspace and subagent transcripts match the last completed turn, and no credential file was stored.
 - **End to end:** Playwright drives the product against a dedicated test GitHub organisation using the stub adapter.
 - **Nightly live smoke:** one short real run per agent on a throwaway repository, under a small cap.
 
@@ -218,10 +226,10 @@ The backend posts events; the control plane writes them; the database broadcasts
 
 Each part has its own spec, plan and PRs, and ships usable on its own.
 
-1. **Control plane foundation:** organisations, login, GitHub App (webhook verification and routing), projects bound by repository id, isolation, runs and events with coalescing and Broadcast, the live run page, adopted runs from `workflow_run`, signed approvals of record.
-2. **Agent adapter in the engine:** replace `claude-code-action` with the adapter, Claude Code first; OIDC-authenticated events; engine pinned per project; `verify-approval` accepts signed product stamps; `id-token` and agent key moved out of agent jobs where possible; stub adapter.
-3. **Credentials and cost:** per-organisation keys and KMS, secret sync, reserve-then-cancel, price table, console limit confirmation; legal review of vendor terms before it ships.
-4. **Live chat:** sandbox provider choice, bridge, egress allowlist, Claude Code permission tool, rendered chat, visual screens, patch-based spec PRs, resume with workspace snapshots, terminal escape hatch, subscription sign-in in the sandbox.
+1. **Control plane foundation:** organisations, login, GitHub App (webhook verification and routing), projects bound by repository id, isolation, runs and events with coalescing and Broadcast, the live run page, adopted runs from `workflow_run`, signed per-organisation approvals of record and published keys.
+2. **Agent adapter in the engine:** replace `claude-code-action` with the adapter, Claude Code first; OIDC-authenticated events; engine pinned per project; `verify-approval` accepts only signed product stamps on moved projects; gate jobs separated from agent jobs and publishing check runs; credential proxy or sidecar poster; narrowed Bash allowlists; stub adapter.
+3. **Credentials and cost:** per-organisation keys and KMS, secret sync, reserve-then-cancel, price table, console limit confirmation; the legal review of vendor terms gates it.
+4. **Live chat:** sandbox provider choice, bridge, egress allowlist, Claude Code permission tool, rendered chat, visual screens, patch-based spec PRs, resume with workspace snapshots, terminal escape hatch, subscription sign-in in the sandbox; the legal review gates it.
 5. **Codex and migration:** Codex batch adapter, Codex live chat on the app server or `codex-acp` after a spike, `AGENTS.md`, moving the repositories, retiring the old dashboard.
 
 ### 10.2 Moving the repositories
@@ -254,7 +262,7 @@ Rollback for any repository is reverting its wrapper change; the engine undernea
 
 - Claude Code: `-p` with `--output-format stream-json`; `--resume` accepts a session `.jsonl` path; `--permission-prompt-tool`; a session resumed after SIGTERM continues the unfinished turn; non-`--bare` `-p` runs project hooks and MCP servers.
 - Codex: `codex exec --json` and `codex exec resume <SESSION_ID>`; `CODEX_API_KEY` recommended over `OPENAI_API_KEY` in CI.
-- ACP: `session/request_permission` is a request; `usage_update` is a session update; a turn ends with a `stopReason`; `codex-acp` is built on the Codex app server.
+- ACP: `session/request_permission` is a request; `usage_update` is a session update; a turn ends with a `stopReason`; `codex-acp` is described as built on the Codex app server (seen in search results, not yet confirmed from its repository).
 - GitHub: OIDC tokens carry `aud`, `repository_id`, `run_id`, `run_attempt`, `job_workflow_ref`; installation tokens last one hour and accept `repositories` and `permissions`; `workflow_dispatch` returns the workflow run id and accepts up to 25 inputs.
 - Supabase Realtime: `postgres_changes` authorises per subscriber per change on a single thread and does not apply row-level security to deletes; Broadcast with `realtime.messages` policies is the scalable path.
 - Anthropic: the terms quoted in section 6.2; the Spend Limits API is Enterprise-only.
@@ -264,7 +272,9 @@ Rollback for any repository is reverting its wrapper change; the engine undernea
 
 1. Codex live chat base (app server or `codex-acp`) and Codex resume from a restored session (part 5).
 2. Daytona and Modal PTY attach, snapshots and egress controls (part 4).
-3. OpenAI's terms for products serving others, and the legal review of both vendors (gate before part 3).
+3. OpenAI's terms for products serving others, and the legal review of both vendors (gate before parts 3 and 4).
 4. KMS choice and data key rotation (part 3).
 5. Approval stamp trailer format, signing key storage and rotation (part 1).
 6. Which wrapper event triggers each repository keeps (part 5).
+7. Credential proxy or sidecar event poster for agent jobs, and per-phase Bash allowlists (part 2).
+8. Restricting live chat to branches whose hook and MCP files match the default branch (part 4).
