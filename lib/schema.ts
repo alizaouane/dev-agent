@@ -43,7 +43,7 @@ export const devAgentConfigSchema = z.object({
    * `package.json`, and only when none declares one does the engine's Node
    * apply. A default here would override what the repo already declares. An
    * unquoted YAML integer such as `node: 22` is accepted and kept as `"22"`;
-   * a decimal must be quoted, since YAML reads `node: 22.10` as the number 22.1.
+   * quote any version with a dot, since YAML reads `node: 22.10` as 22.1 and `22.0` as 22.
    */
   runtime: z
     .object({

@@ -202,9 +202,14 @@ describe('resolveConsumerNode — declarations it cannot trust', () => {
     expect(() => resolveHere()).toThrow(/runtime/);
   });
 
-  it('refuses a version holding whitespace, which would corrupt GITHUB_OUTPUT', () => {
+  it('refuses a version holding a line break, which would corrupt GITHUB_OUTPUT', () => {
     put('package.json', JSON.stringify({ engines: { node: '20\nnode_version=18' } }));
     expect(() => resolveHere()).toThrow(/package\.json engines\.node/);
+  });
+
+  it('keeps a range with spaces, as npm and setup-node accept it', () => {
+    put('package.json', JSON.stringify({ engines: { node: '^20.19.0 || >=22.12.0' } }));
+    expect(resolveHere()).toEqual({ version: '^20.19.0 || >=22.12.0', source: 'package.json engines.node' });
   });
 
   it('refuses a non-string engines.node rather than defaulting past it', () => {

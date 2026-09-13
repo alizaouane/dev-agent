@@ -2137,7 +2137,7 @@ describe("consumer Node runs apart from the engine's", () => {
       });
 
       it('never launches engine code through PATH in any other form', () => {
-        expect(raw).not.toMatch(/npx tsx|(^|\s)node \.dev-agent-engine|npm (--prefix|-C) \.dev-agent-engine/m);
+        expect(raw).not.toMatch(/npx tsx|(^|\s)node (\.\/)?\.dev-agent-engine|(--prefix|-C)[= ](\.\/)?\.dev-agent-engine/m);
       });
 
       it('launches every engine CLI through the pinned engine Node', () => {

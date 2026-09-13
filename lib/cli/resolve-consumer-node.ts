@@ -64,18 +64,19 @@ function readIfPresent(path: string): string | null {
 }
 
 /**
- * Accept a declared version only when it is one non-blank token.
+ * Accept a declared version only when it is non-empty and on one line.
  *
- * Whitespace inside a value would split the `GITHUB_OUTPUT` line it is written
- * to, letting a declaration set outputs other than `node_version`.
+ * Spaces are fine (`^20.19.0 || >=22.12.0` is a valid range), but a line break
+ * or other control character would split the `GITHUB_OUTPUT` line it is
+ * written to, letting a declaration set outputs other than `node_version`.
  *
  * @param value - The trimmed declared value.
  * @param source - Where it came from, for the error message.
  * @returns The value unchanged.
- * @throws When the value is empty or holds whitespace.
+ * @throws When the value is empty or holds a control character.
  */
 function usableVersion(value: string, source: string): string {
-  if (!/^\S+$/.test(value)) {
+  if (value === '' || /[\u0000-\u001f\u007f]/.test(value)) {
     throw new Error(`${source} is not a usable Node version: ${JSON.stringify(value)}`);
   }
   return value;
@@ -88,7 +89,7 @@ function usableVersion(value: string, source: string): string {
  * @param configPath - The config file, relative to `repoRoot` unless absolute.
  * @returns The version, or null when the file or the key is absent.
  * @throws When the file is malformed YAML, `runtime` is not a mapping, or
- *   `runtime.node` is present but empty, not one token, or a non-integer number
+ *   `runtime.node` is present but empty, multi-line, or a non-integer number
  *   (YAML has already read `22.10` as 22.1, so the intended version is lost).
  */
 function fromDevAgentConfig(repoRoot: string, configPath: string): string | null {
@@ -129,7 +130,7 @@ function fromDevAgentConfig(repoRoot: string, configPath: string): string | null
  * @param repoRoot - The consumer checkout.
  * @param name - The file name.
  * @returns The version, or null when the file is absent.
- * @throws When the file exists but holds no version, or the version is not one token.
+ * @throws When the file exists but holds no version, or the version spans lines.
  */
 function fromVersionFile(repoRoot: string, name: string): string | null {
   const raw = readIfPresent(join(repoRoot, name));
@@ -169,7 +170,7 @@ function fromToolVersions(repoRoot: string): string | null {
  * @param repoRoot - The consumer checkout.
  * @returns The version and the field it came from, or null when the file or every field is absent.
  * @throws When the file is malformed JSON or not an object, or a Node field is
- *   present but not a one-token version string.
+ *   present but not a single-line version string.
  */
 function fromPackageJson(repoRoot: string): ConsumerNode | null {
   const raw = readIfPresent(join(repoRoot, 'package.json'));
@@ -206,7 +207,7 @@ function fromPackageJson(repoRoot: string): ConsumerNode | null {
  * @param value - The field's raw JSON value.
  * @param source - The field's name, used as the source and in errors.
  * @returns The resolution, or null when the field is absent.
- * @throws When the field is present but not a one-token version string.
+ * @throws When the field is present but not a single-line version string.
  */
 function declared(value: unknown, source: string): ConsumerNode | null {
   if (value === undefined || value === null) return null;
