@@ -59,15 +59,15 @@ jobs:
         with:
           egress-policy: audit
           disable-sudo: true
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
           path: .dev-agent-engine
       - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
+        with: { node-version: '24', cache: 'npm' }
       - run: npm ci
       - name: Install engine deps
         working-directory: .dev-agent-engine

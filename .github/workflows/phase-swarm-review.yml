@@ -109,7 +109,7 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.head_ref }}
           fetch-depth: 0
@@ -125,14 +125,14 @@ jobs:
           } >> .git/info/exclude
 
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
           path: .dev-agent-engine
 
       - uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
+        with: { node-version: '24', cache: 'npm' }
 
       - name: Install engine deps
         working-directory: .dev-agent-engine
@@ -190,7 +190,7 @@ jobs:
         if: inputs.invocation_mode == 'live'
         id: evidence-download
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: verification-bundle-pr-${{ inputs.pr_number }}
           path: /tmp/evidence-artifact

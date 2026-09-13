@@ -5,7 +5,11 @@ const mockCreate = vi.fn();
 
 vi.mock('@anthropic-ai/sdk', () => {
   return {
-    default: vi.fn(() => ({ messages: { create: mockCreate } })),
+    // `new Anthropic()` needs a constructible mock: vitest 5 rejects an arrow
+    // function here, since arrows cannot be called with `new`.
+    default: vi.fn(function () {
+      return { messages: { create: mockCreate } };
+    }),
   };
 });
 

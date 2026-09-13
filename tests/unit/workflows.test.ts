@@ -90,7 +90,7 @@ describe('.github/workflows/', () => {
         expect(raw).toMatch(/uses:\s+step-security\/harden-runner@v2/);
         // The harden-runner step must appear *before* the first checkout.
         const hardenIdx = raw.indexOf('step-security/harden-runner@v2');
-        const checkoutIdx = raw.indexOf('actions/checkout@v4');
+        const checkoutIdx = raw.search(/actions\/checkout@v\d+/);
         const otherUsesMatch = raw.match(/^\s+- (?:name:|uses:)/m);
         expect(hardenIdx).toBeGreaterThan(0);
         if (checkoutIdx > 0) {
@@ -357,7 +357,7 @@ describe('.github/workflows/', () => {
       // continue-on-error so a missing artifact doesn't crash the gate
       // (evidence-summarize.ts emits an absent-summary stub in that case).
       expect(raw).toMatch(/Live mode — download evidence-collector bundle/);
-      expect(raw).toMatch(/uses: actions\/download-artifact@v4/);
+      expect(raw).toMatch(/uses: actions\/download-artifact@v8/);
       expect(raw).toMatch(/name: verification-bundle-pr-\$\{\{ inputs\.pr_number \}\}/);
       expect(raw).toMatch(/continue-on-error: true/);
     });
@@ -683,7 +683,7 @@ describe('.github/workflows/', () => {
       // unwrapped, and the live agent has Bash. A checkout that persists the
       // token by default hands a prompt-injected title everything it needs to
       // push. The prompt's "do not push" instruction is not a boundary.
-      const checkouts = raw.match(/uses: actions\/checkout@v4[\s\S]{0,240}?(?=\n      - |\n      #)/g) ?? [];
+      const checkouts = raw.match(/uses: actions\/checkout@v7[\s\S]{0,240}?(?=\n      - |\n      #)/g) ?? [];
       expect(checkouts.length).toBeGreaterThanOrEqual(2);
       for (const c of checkouts) {
         expect(c, c.slice(0, 80)).toMatch(/persist-credentials: false/);
