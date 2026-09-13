@@ -56,8 +56,25 @@ describe('listStoryFiles', () => {
     expect(result.unreadable).toBe(true);
   });
 
-  it('treats an absent tree as empty and readable', async () => {
+  it('treats a 404 for the whole tree as unreadable, not as no stories', async () => {
+    // Codex, PR #165: this call resolves the entire repository tree at `ref`,
+    // not the story directory. A repo with no story tree answers 200 with no
+    // matching paths; a 404 here means the ref itself could not be read — a
+    // branch deleted between the repo lookup and this call, say. Reporting
+    // that as a complete, empty listing hides approved stories with no
+    // "may be short" notice.
     getTree.mockRejectedValue(Object.assign(new Error('no'), { status: 404 }));
+    expect(await listStoryFiles(octokit, 'o', 'r', 'main', 'docs/stories')).toEqual({
+      stories: [],
+      approvals: [],
+      blobShas: {},
+      unreadable: true,
+    });
+  });
+
+  it('reports a repo with no story tree as empty and readable', async () => {
+    // Absence is a successful tree with nothing under the story directory.
+    getTree.mockResolvedValue(tree(['README.md', 'docs/specs/a-design.md']));
     expect(await listStoryFiles(octokit, 'o', 'r', 'main', 'docs/stories')).toEqual({
       stories: [],
       approvals: [],

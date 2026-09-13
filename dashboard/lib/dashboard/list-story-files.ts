@@ -11,8 +11,9 @@ export interface StoryListing {
   /** Path to git blob SHA, so the verifier can skip unchanged files. */
   blobShas: Record<string, string>;
   /**
-   * True when this listing may be short — the read failed for a reason other
-   * than the tree being absent, or the tree came back truncated.
+   * True when this listing may be short — the tree could not be read at all,
+   * or it came back truncated. A repo with no story tree is not short: that
+   * is a successful read with nothing under the story directory.
    */
   unreadable: boolean;
 }
@@ -55,9 +56,14 @@ export async function listStoryFiles(
     });
     entries = data.tree ?? [];
     truncated = data.truncated === true;
-  } catch (err) {
-    const absent = (err as { status?: number }).status === 404;
-    return { stories: [], approvals: [], blobShas: {}, unreadable: !absent };
+  } catch {
+    // Every failure is unreadable, 404 included. This call resolves the whole
+    // repository tree at `ref`, not the story directory, so a 404 says the ref
+    // itself could not be read — a branch deleted since the repo lookup, say —
+    // and not that the repo has no stories. Absence is the success path below
+    // with no paths under the prefix. Reading a 404 as "no stories" would hide
+    // approved work behind a listing that looks complete.
+    return { stories: [], approvals: [], blobShas: {}, unreadable: true };
   }
 
   // The separator is load-bearing: without it `docs/stories-archive` matches
