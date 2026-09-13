@@ -94,9 +94,17 @@ export function sourceSpecOf(storyText: string): string | null {
  * a path dispatch names differently (`docs/stories/x.md`), producing a
  * `path-mismatch` refusal that looks unrelated to its actual cause.
  *
+ * Whitespace anywhere is refused too. Every reader downstream matches a story
+ * reference as one run of non-whitespace — the dashboard gate's
+ * `parseStoryRef`, the implement workflow's grep — so a path with a space
+ * would be approved here, offered as startable, and then refused at dispatch
+ * as an issue with no `Spec:` line. Stopping it at approval means no such
+ * record can exist, and nothing downstream has to recognise it.
+ *
  * @param rawPath - The `storyPath` as given to `buildStoryApproval`.
  * @returns The same path with a leading `./` stripped.
- * @throws If the path is absolute, or contains a `..` segment.
+ * @throws If the path is absolute, contains a `..` segment, or contains
+ *   whitespace.
  */
 function normalizeStoryPath(rawPath: string): string {
   if (isAbsolute(rawPath)) {
@@ -109,6 +117,13 @@ function normalizeStoryPath(rawPath: string): string {
   const normalized = canonicalStoryPath(rawPath);
   if (normalized.split('/').includes('..')) {
     throw new Error(`storyPath must not contain a '..' segment: ${rawPath}`);
+  }
+  if (/\s/.test(normalized)) {
+    throw new Error(
+      `story paths may not contain whitespace, got: ${JSON.stringify(rawPath)}. The dashboard ` +
+        'and the implement workflow read a story reference as one run of non-whitespace, so ' +
+        'this story could be approved but never dispatched. Rename the file without spaces.',
+    );
   }
   return normalized;
 }
