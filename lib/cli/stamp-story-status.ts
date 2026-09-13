@@ -41,11 +41,11 @@ function main(): void {
     process.exit(1);
   }
 
-  // Checked here rather than inferred from stampStatus returning the text
-  // unchanged, which a story already at the target status also produces. A
-  // story with no status line cannot carry the projection at all, and
-  // reporting success would claim work that did not happen.
-  STATUS_LINE_RE.lastIndex = 0;
+  // Checked here rather than left to stampStatus below: stampStatus THROWS
+  // when no status line matches, and an uncaught throw would escape to the
+  // entry guard's catch and exit 2 — a usage error. But a story with no
+  // status line is a stamping failure, not a bad invocation: it must exit 1,
+  // the same way an unreadable story does, so it is caught here first.
   if (!STATUS_LINE_RE.test(text)) {
     process.stderr.write(
       `${storyPath} has no **Status:** line, so its status cannot be projected. ` +

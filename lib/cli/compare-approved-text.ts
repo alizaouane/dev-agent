@@ -39,6 +39,13 @@ function main(): void {
     throw new Error(`KIND must be story or spec; got ${JSON.stringify(kind)}`);
   }
 
+  /**
+   * Read one file's full contents for comparison.
+   *
+   * @param path - Path to read.
+   * @returns The file's text, or null after writing the reason to stderr
+   *   when the file cannot be read.
+   */
   const read = (path: string): string | null => {
     try {
       return readFileSync(path, 'utf8');
@@ -52,6 +59,20 @@ function main(): void {
   const head = read(headPath);
   if (base === null || head === null) process.exit(1);
 
+  /**
+   * Reduce a document to the form the approval actually binds to.
+   *
+   * For `KIND=story`, strips the `**Status:**` line via
+   * `storyBodyForHashing` — the same rule `hashStory` applies — because
+   * dev-agent rewrites that line as the issue moves, so it was never part of
+   * what got approved. For `KIND=spec`, the text passes through unchanged:
+   * a spec carries no such line, and every consumer repo depends on the
+   * comparison staying byte-exact there.
+   *
+   * @param text - The document text to normalise.
+   * @returns The text with the story status line removed when `kind` is
+   *   `story`, otherwise `text` unchanged.
+   */
   const normalise = (text: string): string =>
     kind === 'story' ? storyBodyForHashing(text) : text;
 
