@@ -1,6 +1,6 @@
 # Product architecture: one UI for agent-driven development
 
-**Status:** Draft (revision 5; independent spec review verdict: approved with nits, nits applied)
+**Status:** Approved (revision 6: Codex review findings on #172 applied)
 **Date:** 2026-09-13
 **Scope:** umbrella architecture for milestone 1. Each build part in section 10 gets its own spec, plan and PRs; this document fixes the boundaries and the rules those specs must follow.
 
@@ -56,11 +56,11 @@ Three layers, each behind an interface the layer above depends on.
 Today an approval is a commit carrying the approving human's git identity. When a human approves in the product, the commit is made by the GitHub App bot, so git alone no longer says who approved. The design keeps approvals verifiable from git:
 
 - The control plane records the approval (approver's GitHub user id and login, repository id, file path, blob SHA of the approved content, time) and writes the stamp commit through the App.
-- The stamp carries commit trailers with those fields, a key id, and an Ed25519 signature over them. Each organisation has its own signing key, held only by the control plane, so a leaked key cannot forge approvals for another organisation.
+- Today's stamps are JSON files next to the spec or story (`lib/spec-approval.ts`, `lib/story-approval.ts`). A product stamp is the same file at a new schema version carrying those fields, a key id, and an Ed25519 signature over them, committed through the App. Each organisation has its own signing key, held only by the control plane, so a leaked key cannot forge approvals for another organisation.
 - The control plane publishes each organisation's current and previous public keys by key id. `verify-approval` fetches the key named by the stamp; if the key cannot be fetched or is not listed, it refuses (unknown is not absent). Approval verification therefore depends on the control plane being reachable: an outage stops builds on moved projects rather than letting them through. Rotation keeps the previous key listed until every stamp signed with it has been superseded or re-signed.
 - **Once a project is on the product, `verify-approval` accepts only product stamps** whose signature verifies and whose blob SHA matches the content being built. Today's local stamp is a file whose approver is free text and whose commit author is never checked, so anyone with write access could commit one naming anyone. Local stamps stay valid only for repositories not yet moved to the product, with that known limitation.
 - Only a human action in the UI creates an approval. No agent, run or automation can call the approval endpoint.
-- Part 1's spec defines the trailer format, key storage and rotation; part 2 updates `verify-approval` and the per-project switch.
+- Part 1's spec defines the stamp schema, key storage and rotation; part 2 updates `verify-approval` and the per-project switch.
 
 ### 4.3 Runner interface and backends
 
@@ -72,7 +72,8 @@ The control plane depends on one interface:
 
 Backends:
 
-- **GitHub Actions (batch runs).** The GitHub App calls `workflow_dispatch` on the consumer's wrapper with the product run id as an input. GitHub returns the created workflow run id; the control plane stores it before the run leaves `starting`, and fails the run closed if none is returned. Re-runs are tracked by `run_attempt`. The wrapper runs the engine at a version pinned per project (a tag or SHA, in both the wrapper `uses:` ref and the engine checkout), replacing today's `@main`.
+- **GitHub Actions (batch runs).** The GitHub App calls `workflow_dispatch` on the consumer's wrapper with the product run id as an input. GitHub returns the created workflow run id; the control plane stores it before the run leaves `starting`. **An ambiguous dispatch is not a failure:** if the dispatch call errors or times out, GitHub may still have started the workflow. The wrapper sets its `run-name` to the product run id, so the run stays `starting`, keeps its reservation and refuses a retry while the reconciler looks for a workflow run with that name created after the dispatch. A match binds the run; no match within the start timeout fails it as never started and releases the reservation. Only a definite rejection from GitHub (for example 404 or 422) fails the run at once.
+- **Re-runs are attempts of the same run.** GitHub keeps the workflow run id and increments `run_attempt` when a run is re-run. Each attempt is recorded separately under the product run, with its own status and events; a new, higher attempt moves the product run back to `running`, and the product run's status is always that of its latest attempt. A re-run started from GitHub needs a budget reservation like any run: the product reserves when it first sees the new attempt, and cancels that attempt if the reservation does not fit. The wrapper runs the engine at a version pinned per project (a tag or SHA, in both the wrapper `uses:` ref and the engine checkout), replacing today's `@main`.
 - **Runs the product did not start.** Wrappers keep their event triggers during migration. A `workflow_run` webhook for a wrapper run with no product run id creates an adopted run (origin `github`), so every run appears in the product. Part 5 decides per repository whether those triggers stay.
 - **Hosted sandbox (live chat).** One sandbox per chat session. The provider (E2B, Daytona or Modal) is chosen in part 4's spec behind the runner interface. Requirements: per-sandbox isolation, an egress allowlist, attachable PTY, and file persistence or snapshot for resume.
 
@@ -94,9 +95,10 @@ One contract, used by both backends, replacing `claude-code-action` inside the e
 
 ### 5.1 Data
 
-- **`runs`:** organisation, project, kind (`batch` | `chat`), origin (`product` | `github`), phase, backend (`actions` | `sandbox`), agent, model, status, failure reason, GitHub workflow run id and attempt, cost, timestamps.
-- **Status:** `queued -> starting -> running <-> waiting_for_you -> succeeded | failed | cancelled`. Terminal statuses never change.
-- **`run_events`:** run, sequence number, type, trust (`engine` | `agent` | `github` | `product`), payload, time. Append-only. The pair (run, sequence number) is unique; a repeated sequence number is ignored. Events arriving after a terminal status are stored but do not change the status.
+- **`runs`:** organisation, project, kind (`batch` | `chat`), origin (`product` | `github`), phase, backend (`actions` | `sandbox`), agent, model, status, failure reason, GitHub workflow run id, cost, timestamps.
+- **`run_attempts`:** run, attempt number, status, failure reason, cost, timestamps. Batch runs have one row per GitHub attempt; chat runs have one attempt.
+- **Status:** `queued -> starting -> running <-> waiting_for_you -> succeeded | failed | cancelled`. An attempt's terminal status never changes. A run's status mirrors its latest attempt, so only a new attempt can move a run out of a terminal status.
+- **`run_events`:** run, attempt, sequence number, type, trust (`engine` | `agent` | `github` | `product`), payload, time. Append-only. The triple (run, attempt, sequence number) is unique; a repeated sequence number is ignored. Events arriving after a terminal status are stored but do not change the status.
 - **Coalescing:** message chunks are merged per flush window (for example 250 ms) before they are stored, and each completed message is stored once as a whole. The run timeline is rebuilt from completed messages, not from every token.
 - **Growth:** `run_events` is partitioned by month with a retention policy set per plan; part 1 sets the milestone 1 value.
 - **Redaction:** every event payload is passed through secret redaction (known key formats plus the org's stored secrets) before it is stored or broadcast, not only error output.
@@ -131,7 +133,7 @@ The backend posts events; the control plane writes them; the database broadcasts
 4. At the end of the turn the run returns to `waiting_for_you`. A permission request also parks the run in `waiting_for_you` until you answer.
 5. **Visual screens:** the agent writes HTML screens to a watched folder; the bridge uploads them to Storage and the product shows them in a side panel. Clicks come back as your next message.
 6. **Finish:** the bridge uploads the spec change as a patch; the control plane commits it to a branch and opens a PR through the App. **No GitHub write token ever enters the sandbox**, since the agent's Bash could read anything the bridge can.
-7. **Terminal escape hatch:** "Open terminal" attaches an in-browser terminal to the sandbox's PTY and the same agent session. Terminal turns bypass the adapter, so they produce no live events or permission requests: the terminal has a wall-clock cap, its usage is priced afterwards from the agent's session file, and the chat shows a summary marked as reconstructed. Because there is no detected turn end in the terminal, the resume copy is taken when the terminal detaches or goes idle for a set time.
+7. **Terminal escape hatch:** "Open terminal" attaches an in-browser terminal to the sandbox's PTY and the same agent session. Terminal turns bypass the adapter, so they produce no live events or permission requests, and a wall-clock cap does not bound model cost. **The terminal is therefore available on an organisation API key only when the sandbox's agent traffic goes through the product's metering proxy**, which prices usage live and cuts the connection when the cap is crossed; without the proxy, the terminal is offered only for chats on the user's own subscription, whose spend is not the organisation's budget. Part 4 builds the proxy or ships the terminal as subscription-only. The chat shows a summary of terminal turns marked as reconstructed. Because there is no detected turn end in the terminal, the resume copy is taken when the terminal detaches or goes idle for a set time.
 8. **Resume:** after every completed turn, the bridge saves two things, encrypted, to Storage: a copy of the agent's session files as of that turn (the main transcript and any subagent transcripts), and a snapshot of the workspace (uncommitted changes included). Agent credential files, such as a subscription sign-in stored under the agent's home directory, are excluded from both copies and from anything else the product stores. Reopening a chat restores both into a new sandbox at the same workspace path, since transcripts record the working directory, and resumes from that completed-turn copy. The copy never contains an interrupted turn, so a turn killed for budget or a crash is not continued on resume, which Claude Code would otherwise do after SIGTERM. Codex resume from a restored file is unverified and is a part 5 spike.
 
 ### 5.5 What runs in the sandbox, and what it can reach
@@ -185,7 +187,9 @@ The backend posts events; the control plane writes them; the database broadcasts
 | Failure | Handling | Visible to the user |
 |---|---|---|
 | Control plane unreachable during a batch run | The engine buffers events to a file uploaded as a workflow artifact. On recovery, the workflow notification or the reconciler closes the run from GitHub's result and backfills events from the artifact. Unreachable at start: the run refuses because the budget reservation cannot be made. | Run fills in, marked "events recovered" |
-| Dispatch returns no workflow run id | The run fails closed as `infrastructure`; nothing is left running untracked | Reason with a retry button |
+| Dispatch errors or times out | The run stays `starting` with its reservation, retries are refused, and the reconciler matches a workflow run by `run-name`; no match within the start timeout fails it as never started | "Checking whether the run started", then either the bound run or a retry button |
+| Dispatch definitely rejected by GitHub | The run fails as `infrastructure` and the reservation is released | Reason with a retry button |
+| Run re-run from GitHub | A new attempt is recorded, reserved against the budget, and the run returns to `running` | Attempt selector on the run page |
 | Events lost, duplicated or out of order | Sequence numbers: duplicates ignored, order restored, gaps kept | "N events missing" |
 | Event with an invalid OIDC token or claim mismatch | Rejected and logged as a security event for the organisation. A valid token for a workflow run the product has not seen creates an adopted run instead. | Admin security log entry |
 | Gate job missing from the stored workflow run, renamed, or ended before its verdict step | No verdict is taken; the run fails as `infrastructure` | Gate shown as not evaluated, with the job link |
@@ -224,6 +228,8 @@ The backend posts events; the control plane writes them; the database broadcasts
 - **Gate provenance tests:** a verdict is taken only from the named gate job of the stored workflow run and attempt; a same-named job in another run, a label or comment claiming a verdict, and a gate job that failed before its verdict step all produce no gate pass.
 - **Failure tests:** every row of section 7.2 checks the final status and reason.
 - **Budget race test:** two runs reserving the last of a budget concurrently; exactly one starts.
+- **Dispatch and attempt tests:** a dispatch whose response is lost binds to the started run by `run-name` without a duplicate; a re-run's higher attempt moves a failed run back to `running` and its outcome becomes the run's status.
+- **Terminal metering test:** on an API-key chat, the terminal is unavailable without the metering proxy, and with it a turn is cut off when the cap is crossed.
 - **Resume test:** kill a turn mid-way, reopen the chat, and confirm the killed turn is not continued, the workspace and subagent transcripts match the last completed turn, and no credential file was stored.
 - **End to end:** Playwright drives the product against a dedicated test GitHub organisation using the stub adapter.
 - **Nightly live smoke:** one short real run per agent on a throwaway repository, under a small cap.
