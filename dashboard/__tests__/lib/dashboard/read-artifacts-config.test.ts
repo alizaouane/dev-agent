@@ -69,4 +69,43 @@ describe('readArtifactsConfig', () => {
     getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs/stories/\n'));
     expect((await readArtifactsConfig(octokit, 'o', 'r', 'main')).storiesDir).toBe('docs/stories');
   });
+
+  it('defaults, readably, when the file is empty', async () => {
+    // An empty file parses to `undefined`, not an error. It names no
+    // directory, which is the same fact as no config at all.
+    getContent.mockResolvedValue(file(''));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/stories',
+      unreadable: false,
+    });
+  });
+
+  it('marks itself unreadable when the top-level document is a scalar', async () => {
+    // Valid YAML, wrong shape: there is no way to read `.artifacts` off a
+    // bare string, so this is not the same fact as an absent config.
+    getContent.mockResolvedValue(file('just a string\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/stories',
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when the top-level document is an array', async () => {
+    getContent.mockResolvedValue(file('- foo\n- bar\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/stories',
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when artifacts is an array', async () => {
+    // Optional chaining plus a bare `typeof` check both read `undefined` off
+    // an array the same way they would off a missing key. That collapse is
+    // the same lie as the top-level-array case, one level deeper.
+    getContent.mockResolvedValue(file('artifacts:\n  - foo\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/stories',
+      unreadable: true,
+    });
+  });
 });
