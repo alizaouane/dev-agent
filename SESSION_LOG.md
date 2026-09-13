@@ -1,5 +1,23 @@
 # Session Log
 
+## 2026-09-13 12:45 UTC — interactive — Consumer Node split shipped; product architecture designed
+
+**Trigger:** "finish the workflow wiring" for consumer repos running on the engine's Node 24 after #168, and a brainstorm on having one UI for the whole development process across all apps.
+
+**What changed:**
+- PR #171 (merged): consumer repos' own install, tests, typecheck, build and agent shell run on the Node the repo declares; engine CLIs always run on Node 24. `lib/cli/resolve-consumer-node.ts` resolves the version (config `runtime.node`, `.nvmrc`, `.node-version`, `.tool-versions`, `package.json`, else 24) and refuses declarations it cannot trust. Each engine-installing job pins `ENGINE_NODE` and launches engine CLIs as `"$ENGINE_NODE" .../tsx/dist/cli.mjs`. Eleven workflows set up the consumer's Node; tier2-smoke and pr-autopilot are engine-only. The workflow test discovers every workflow that installs the engine. Also fixed: staging-deploy's session-log job installed with `--omit=dev`, so tsx (a devDependency) was never installed. Codex's P1 (phase-acm and five others left on Node 24) was fixed in the PR.
+- Brainstorm decisions, approved section by section: a product for others, own repos as customer one; a new multi-tenant control plane with today's engine as the GitHub Actions backend; a hosted sandbox for live chat; product-rendered chat with a terminal escape hatch; adapters named after Agent Client Protocol, with ACP as the target.
+- `docs/superpowers/specs/2026-09-13-product-architecture-design.md`: umbrella architecture spec, revision 2 after an independent review that asked for changes (signed product approval stamps, stricter OIDC binding, corrected vendor-terms premise, two-way permission requests, safe resume, no write token in sandboxes).
+
+**Deferred / Next:**
+- whatsapp-console resolves to Node 24 (no declaration) while its CI uses 22: add `runtime.node: "22"` to its `.dev-agent.yml`.
+- whatsapp-console runs `npm ci` in workflows but uses pnpm.
+- Part specs 1 to 5 of the product; legal review of Anthropic and OpenAI terms gates part 3.
+
+**Next session should start with:** the architecture spec's re-review verdict and the founder's review of the spec, then the part 1 (control plane foundation) spec.
+
+---
+
 ## 2026-09-13 05:57 UTC — interactive — Slice 4: approved stories in the picker, status projected
 
 **Trigger:** "execute slice 4" — the plan at docs/superpowers/plans/2026-09-12-story-level-approval-slice-4.md, run task by task with a review after each and a final whole-branch review.
