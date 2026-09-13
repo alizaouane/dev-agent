@@ -2105,8 +2105,10 @@ describe("consumer Node runs apart from the engine's", () => {
   type Step = {
     name?: string;
     id?: string;
+    if?: string;
     uses?: string;
     run?: string;
+    env?: Record<string, unknown>;
     with?: Record<string, unknown>;
     'working-directory'?: string;
   };
@@ -2134,6 +2136,10 @@ describe("consumer Node runs apart from the engine's", () => {
         expect(raw).not.toContain('node_modules/.bin/tsx');
       });
 
+      it('never launches engine code through PATH in any other form', () => {
+        expect(raw).not.toMatch(/npx tsx|(^|\s)node \.dev-agent-engine|npm (--prefix|-C) \.dev-agent-engine/m);
+      });
+
       it('launches every engine CLI through the pinned engine Node', () => {
         const lines = raw.split('\n').filter((line) => line.includes('tsx/dist/cli.mjs'));
         expect(lines.length).toBeGreaterThan(0);
@@ -2153,6 +2159,12 @@ describe("consumer Node runs apart from the engine's", () => {
             expect(String(steps[pin - 1].with?.['node-version'])).toBe('24');
             expect(pin).toBeLessThan(engineInstall);
             expect(steps[pin].run ?? '').toMatch(/ENGINE_NODE=\$\(command -v node\)/);
+            // A pin skipped while its setup-node runs would leave ENGINE_NODE unset.
+            expect(steps[pin].if).toBe(steps[pin - 1].if);
+          });
+
+          it('installs the engine with its dev dependencies, where tsx lives', () => {
+            expect(steps[engineInstall].run ?? '').not.toMatch(/--omit[= ]dev|--production/);
           });
 
           const agent = steps.findIndex((step) => /claude-code-action@/.test(step.uses ?? ''));
@@ -2165,12 +2177,25 @@ describe("consumer Node runs apart from the engine's", () => {
             const resolveStep = steps.findIndex((step) => step.id === 'consumer-node');
             expect(resolveStep).toBeGreaterThan(engineInstall);
             expect(steps[resolveStep].run ?? '').toMatch(/"\$ENGINE_NODE" .*resolve-consumer-node\.ts/);
+            // The resolver reads the consumer checkout at the workspace root.
+            expect(steps[resolveStep].env?.REPO_ROOT).toBe('${{ github.workspace }}');
+            expect(String(steps[resolveStep].env?.CONFIG_PATH)).toContain('inputs.config_path');
+            const checkout = steps.findIndex(
+              (step) => /^actions\/checkout@/.test(step.uses ?? '') && !(step.with && 'path' in step.with),
+            );
+            expect(checkout).toBeGreaterThanOrEqual(0);
+            expect(checkout).toBeLessThan(resolveStep);
             const consumerSetup = steps.findIndex(
               (step) =>
                 /^actions\/setup-node@/.test(step.uses ?? '') &&
                 String(step.with?.['node-version']).includes('steps.consumer-node.outputs.node_version'),
             );
             expect(consumerSetup).toBeGreaterThan(resolveStep);
+            // Both run exactly when the engine's own setup does, so a skipped
+            // resolve can never feed an empty version to a setup-node that runs.
+            const engineSetup = steps.findIndex((step) => /^actions\/setup-node@/.test(step.uses ?? ''));
+            expect(steps[resolveStep].if).toBe(steps[engineSetup].if);
+            expect(steps[consumerSetup].if).toBe(steps[engineSetup].if);
             if (agent >= 0) expect(consumerSetup).toBeLessThan(agent);
             if (consumerInstall >= 0) expect(consumerSetup).toBeLessThan(consumerInstall);
           });

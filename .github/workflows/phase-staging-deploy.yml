@@ -395,15 +395,14 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '24' }
 
-      # Record this Node's absolute path before anything else can change PATH.
-      # The consumer's own Node is set up below; engine CLIs keep running on
-      # this one through "$ENGINE_NODE", whatever `node` resolves to later.
+      # Record this Node's absolute path. This job runs engine code only, but
+      # every phase job launches engine CLIs the same way, through "$ENGINE_NODE".
       - name: Pin the engine's Node
         run: echo "ENGINE_NODE=$(command -v node)" >> "$GITHUB_ENV"
 
       - name: Install engine deps
         working-directory: .dev-agent-engine
-        run: npm ci --omit=dev --ignore-scripts
+        run: npm ci --ignore-scripts
 
       # No GH_TOKEN here, deliberately. This step runs engine code; the step
       # below holds the credential and runs none. The pin bounds what code can

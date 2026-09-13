@@ -42,12 +42,13 @@ export const devAgentConfigSchema = z.object({
    * read from the repo's own `.nvmrc`, `.node-version`, `.tool-versions` or
    * `package.json`, and only when none declares one does the engine's Node
    * apply. A default here would override what the repo already declares. An
-   * unquoted YAML number such as `node: 22` is accepted and kept as `"22"`.
+   * unquoted YAML integer such as `node: 22` is accepted and kept as `"22"`;
+   * a decimal must be quoted, since YAML reads `node: 22.10` as the number 22.1.
    */
   runtime: z
     .object({
       node: z
-        .union([z.string().min(1), z.number()])
+        .union([z.string().min(1), z.number().int()])
         .transform((value) => String(value))
         .optional(),
     })

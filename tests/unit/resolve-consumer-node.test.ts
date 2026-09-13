@@ -189,3 +189,44 @@ describe('resolve-consumer-node CLI', () => {
     expect(readFileSync(output, 'utf8')).toBe('');
   });
 });
+
+describe('resolveConsumerNode — declarations it cannot trust', () => {
+  it('refuses a decimal YAML number, which YAML has already truncated', () => {
+    // `node: 22.10` loads as the number 22.1; resolving it would install 22.1.0.
+    put('.dev-agent.yml', 'schema_version: 1\nruntime:\n  node: 22.10\n');
+    expect(() => resolveHere()).toThrow(/quote/);
+  });
+
+  it('refuses a runtime block that is not a mapping', () => {
+    put('.dev-agent.yml', 'schema_version: 1\nruntime: "22"\n');
+    expect(() => resolveHere()).toThrow(/runtime/);
+  });
+
+  it('refuses a version holding whitespace, which would corrupt GITHUB_OUTPUT', () => {
+    put('package.json', JSON.stringify({ engines: { node: '20\nnode_version=18' } }));
+    expect(() => resolveHere()).toThrow(/package\.json engines\.node/);
+  });
+
+  it('refuses a non-string engines.node rather than defaulting past it', () => {
+    put('package.json', JSON.stringify({ engines: { node: 18 } }));
+    expect(() => resolveHere()).toThrow(/package\.json engines\.node/);
+  });
+
+  it('refuses a package.json that is not an object, naming the file', () => {
+    put('package.json', 'null');
+    expect(() => resolveHere()).toThrow(/package\.json/);
+  });
+
+  it('drops a trailing comment from a version file line', () => {
+    put('.nvmrc', '22 # LTS\n');
+    expect(resolveHere()).toEqual({ version: '22', source: '.nvmrc' });
+  });
+
+  it('names the config file it read in the source', () => {
+    put('custom.yml', 'schema_version: 1\nruntime:\n  node: "20"\n');
+    expect(resolveConsumerNode({ repoRoot: repo, defaultVersion: '24', configPath: 'custom.yml' })).toEqual({
+      version: '20',
+      source: 'custom.yml runtime.node',
+    });
+  });
+});

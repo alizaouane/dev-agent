@@ -40,7 +40,7 @@ properties:
     properties:
       # Node for the repo's own install, tests and typecheck. Unset: read from
       # .nvmrc, .node-version, .tool-versions or package.json, else the engine's Node.
-      node: { type: [string, number] }
+      node: { type: [string, integer] }
 
   branches:
     type: object

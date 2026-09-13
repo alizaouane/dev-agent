@@ -64,12 +64,32 @@ function readIfPresent(path: string): string | null {
 }
 
 /**
+ * Accept a declared version only when it is one non-blank token.
+ *
+ * Whitespace inside a value would split the `GITHUB_OUTPUT` line it is written
+ * to, letting a declaration set outputs other than `node_version`.
+ *
+ * @param value - The trimmed declared value.
+ * @param source - Where it came from, for the error message.
+ * @returns The value unchanged.
+ * @throws When the value is empty or holds whitespace.
+ */
+function usableVersion(value: string, source: string): string {
+  if (!/^\S+$/.test(value)) {
+    throw new Error(`${source} is not a usable Node version: ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/**
  * Read `runtime.node` from the dev-agent config.
  *
  * @param repoRoot - The consumer checkout.
  * @param configPath - The config file, relative to `repoRoot` unless absolute.
  * @returns The version, or null when the file or the key is absent.
- * @throws When the file is malformed YAML, or `runtime.node` is present but empty.
+ * @throws When the file is malformed YAML, `runtime` is not a mapping, or
+ *   `runtime.node` is present but empty, not one token, or a non-integer number
+ *   (YAML has already read `22.10` as 22.1, so the intended version is lost).
  */
 function fromDevAgentConfig(repoRoot: string, configPath: string): string | null {
   const raw = readIfPresent(resolve(repoRoot, configPath));
@@ -80,37 +100,48 @@ function fromDevAgentConfig(repoRoot: string, configPath: string): string | null
   } catch (err) {
     throw new Error(`${configPath} could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
   }
-  const node = (parsed as { runtime?: { node?: unknown } } | null)?.runtime?.node;
+  const runtime = (parsed as { runtime?: unknown } | null)?.runtime;
+  if (runtime === undefined || runtime === null) return null;
+  if (typeof runtime !== 'object' || Array.isArray(runtime)) {
+    throw new Error(`${configPath} sets runtime but it is not a mapping`);
+  }
+  const node = (runtime as { node?: unknown }).node;
   if (node === undefined || node === null) return null;
+  if (typeof node === 'number' && !Number.isInteger(node)) {
+    throw new Error(
+      `${configPath} sets runtime.node to the number ${node}; quote the version (for example "22.10"), since YAML drops trailing zeros`,
+    );
+  }
   const version = typeof node === 'number' ? String(node) : typeof node === 'string' ? node.trim() : '';
   if (version === '') {
     throw new Error(`${configPath} sets runtime.node but it is empty or not a version`);
   }
-  return version;
+  return usableVersion(version, `${configPath} runtime.node`);
 }
 
 /**
  * Read a single-version file such as `.nvmrc` or `.node-version`.
  *
- * The first line that is neither blank nor a `#` comment is the version. A
- * leading `v` before a digit is dropped, since setup-node wants `22.11.0`.
+ * The first line that is neither blank nor a `#` comment is the version; a
+ * trailing `# comment` on that line is dropped. A leading `v` before a digit is
+ * dropped too, since setup-node wants `22.11.0`.
  *
  * @param repoRoot - The consumer checkout.
  * @param name - The file name.
  * @returns The version, or null when the file is absent.
- * @throws When the file exists but holds no version.
+ * @throws When the file exists but holds no version, or the version is not one token.
  */
 function fromVersionFile(repoRoot: string, name: string): string | null {
   const raw = readIfPresent(join(repoRoot, name));
   if (raw === null) return null;
   const line = raw
     .split(/\r?\n/)
-    .map((l) => l.trim())
-    .find((l) => l !== '' && !l.startsWith('#'));
+    .map((l) => l.replace(/(^|\s)#.*$/, '').trim())
+    .find((l) => l !== '');
   if (line === undefined) {
     throw new Error(`${name} exists but names no Node version`);
   }
-  return line.replace(/^v(?=\d)/, '');
+  return usableVersion(line.replace(/^v(?=\d)/, ''), name);
 }
 
 /**
@@ -137,35 +168,52 @@ function fromToolVersions(repoRoot: string): string | null {
  *
  * @param repoRoot - The consumer checkout.
  * @returns The version and the field it came from, or null when the file or every field is absent.
- * @throws When the file is malformed JSON.
+ * @throws When the file is malformed JSON or not an object, or a Node field is
+ *   present but not a one-token version string.
  */
 function fromPackageJson(repoRoot: string): ConsumerNode | null {
   const raw = readIfPresent(join(repoRoot, 'package.json'));
   if (raw === null) return null;
-  let manifest: {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    throw new Error(`package.json could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('package.json is not a JSON object');
+  }
+  const manifest = parsed as {
     volta?: { node?: unknown };
     devEngines?: { runtime?: unknown };
     engines?: { node?: unknown };
   };
-  try {
-    manifest = JSON.parse(raw) as typeof manifest;
-  } catch (err) {
-    throw new Error(`package.json could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (typeof manifest.volta?.node === 'string' && manifest.volta.node.trim() !== '') {
-    return { version: manifest.volta.node.trim(), source: 'package.json volta.node' };
-  }
+  const volta = declared(manifest.volta?.node, 'package.json volta.node');
+  if (volta !== null) return volta;
   const runtimes = manifest.devEngines?.runtime;
   const entries = Array.isArray(runtimes) ? runtimes : runtimes ? [runtimes] : [];
   for (const entry of entries as { name?: unknown; version?: unknown }[]) {
-    if (entry?.name === 'node' && typeof entry.version === 'string' && entry.version.trim() !== '') {
-      return { version: entry.version.trim(), source: 'package.json devEngines.runtime' };
-    }
+    if (entry?.name !== 'node') continue;
+    const runtime = declared(entry.version, 'package.json devEngines.runtime');
+    if (runtime !== null) return runtime;
   }
-  if (typeof manifest.engines?.node === 'string' && manifest.engines.node.trim() !== '') {
-    return { version: manifest.engines.node.trim(), source: 'package.json engines.node' };
+  return declared(manifest.engines?.node, 'package.json engines.node');
+}
+
+/**
+ * Turn one optional `package.json` Node field into a resolution.
+ *
+ * @param value - The field's raw JSON value.
+ * @param source - The field's name, used as the source and in errors.
+ * @returns The resolution, or null when the field is absent.
+ * @throws When the field is present but not a one-token version string.
+ */
+function declared(value: unknown, source: string): ConsumerNode | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== 'string') {
+    throw new Error(`${source} is not a version string: ${JSON.stringify(value)}`);
   }
-  return null;
+  return { version: usableVersion(value.trim(), source), source };
 }
 
 /**
@@ -178,7 +226,7 @@ function fromPackageJson(repoRoot: string): ConsumerNode | null {
 export function resolveConsumerNode(input: ResolveConsumerNodeInput): ConsumerNode {
   const { repoRoot, defaultVersion, configPath = '.dev-agent.yml' } = input;
   const override = fromDevAgentConfig(repoRoot, configPath);
-  if (override !== null) return { version: override, source: '.dev-agent.yml runtime.node' };
+  if (override !== null) return { version: override, source: `${configPath} runtime.node` };
   for (const name of ['.nvmrc', '.node-version']) {
     const version = fromVersionFile(repoRoot, name);
     if (version !== null) return { version, source: name };

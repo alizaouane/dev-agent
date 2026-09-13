@@ -122,4 +122,8 @@ describe('runtime.node', () => {
   it('rejects an empty version rather than treating it as unset', () => {
     expect(() => devAgentConfigSchema.parse({ ...validSample, runtime: { node: '' } })).toThrow();
   });
+
+  it('rejects a decimal number, which YAML has already truncated (22.10 loads as 22.1)', () => {
+    expect(() => devAgentConfigSchema.parse({ ...validSample, runtime: { node: 22.1 } })).toThrow();
+  });
 });
