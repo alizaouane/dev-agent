@@ -296,6 +296,13 @@ describe('dispatchFromStory', () => {
         labels: expect.arrayContaining(['kind:feature', 'state:spec-ready', 'epic:8']),
       }),
     );
+    // The label flip that follows creation must not wipe epic:8 the moment
+    // after it was applied — the flip's fallback (when there is no existing
+    // issue to read labels off) has to be the labels just created, not a
+    // hardcoded ['kind:feature'].
+    expect(mockOctokit.issues.setLabels).toHaveBeenCalledWith(
+      expect.objectContaining({ labels: expect.arrayContaining(['epic:8']) }),
+    );
   });
 
   it('omits the epic label when the story is not in an epic directory', async () => {
@@ -310,6 +317,8 @@ describe('dispatchFromStory', () => {
     await expect(dispatchFromStory(fd)).rejects.toThrow(/__redirect__:/);
     const created = mockOctokit.issues.create.mock.calls.at(-1)![0] as { labels: string[] };
     expect(created.labels).not.toEqual(expect.arrayContaining([expect.stringMatching(/^epic:/)]));
+    const flipped = mockOctokit.issues.setLabels.mock.calls.at(-1)![0] as { labels: string[] };
+    expect(flipped.labels).not.toEqual(expect.arrayContaining([expect.stringMatching(/^epic:/)]));
   });
 
   it('dispatches dev-agent.yml with phase=implement and the issue number', async () => {
@@ -354,15 +363,27 @@ describe('dispatchFromStory', () => {
 
   it('does not throw when the label flip fails after a successful dispatch', async () => {
     mockOctokit.issues.setLabels.mockRejectedValueOnce(new Error('boom'));
-    const fd = new FormData();
-    fd.append('repo', 'x/y');
-    fd.append('story_path', STORY_PATH);
-    fd.append('title', 'Foo feature');
-    const { dispatchFromStory } = await import('@/lib/actions');
-    // The redirect still fires — the label-flip failure is swallowed, not
-    // reported as a failure of a dispatch that already succeeded.
-    await expect(dispatchFromStory(fd)).rejects.toThrow(/__redirect__:\/features\/77/);
-    expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+    // Spied so the expected failure doesn't print into the test run, and so
+    // the swallow is asserted rather than merely not-thrown — a silently
+    // dropped failure is a different bug from a reported one.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const fd = new FormData();
+      fd.append('repo', 'x/y');
+      fd.append('story_path', STORY_PATH);
+      fd.append('title', 'Foo feature');
+      const { dispatchFromStory } = await import('@/lib/actions');
+      // The redirect still fires — the label-flip failure is swallowed, not
+      // reported as a failure of a dispatch that already succeeded.
+      await expect(dispatchFromStory(fd)).rejects.toThrow(/__redirect__:\/features\/77/);
+      expect(mockOctokit.actions.createWorkflowDispatch).toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('state:implementing label flip failed'),
+        expect.any(Error),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('accepts a ./-prefixed story_path and files the issue with the canonical spelling', async () => {

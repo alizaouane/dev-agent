@@ -1277,6 +1277,13 @@ export async function dispatchFromStory(
     }
 
     let issue_number: number;
+    // Fallback for the label flip below when there is no `existing` issue to
+    // read labels off. Starts as the create branch's default and is
+    // overwritten with the labels actually applied, epic included — a flip
+    // that fell back to a hardcoded `['kind:feature']` here would replace the
+    // whole label set moments after `epic:N` was applied, wiping it before
+    // anyone saw it.
+    let createdLabels: string[] = ['kind:feature'];
     if (existing) {
       issue_number = existing.number;
       issueUrl = existing.html_url;
@@ -1291,17 +1298,18 @@ export async function dispatchFromStory(
       // is not in an epic directory: a wrong epic groups work incorrectly,
       // which is worse than not grouping it.
       const epic = epicOf(story_path);
+      createdLabels = [
+        'kind:feature',
+        'state:spec-ready',
+        ...(epic === null ? [] : [`epic:${epic}`]),
+      ];
       const created = await wrapStep('creating spec-ready issue', () =>
         octokit.issues.create({
           owner,
           repo,
           title,
           body,
-          labels: [
-            'kind:feature',
-            'state:spec-ready',
-            ...(epic === null ? [] : [`epic:${epic}`]),
-          ],
+          labels: createdLabels,
         }),
       );
       issue_number = created.data.number;
@@ -1322,7 +1330,7 @@ export async function dispatchFromStory(
       }),
     );
 
-    const keptLabels = (existing?.labels ?? ['kind:feature']).filter(
+    const keptLabels = (existing?.labels ?? createdLabels).filter(
       (l) => !l.startsWith('state:'),
     );
     const nextLabels = [...keptLabels, 'state:implementing'];
