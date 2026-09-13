@@ -104,15 +104,19 @@ export async function readArtifactsConfig(
   if (raw === undefined) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: false };
   if (typeof raw !== 'string') return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
 
-  // Tree paths are repo-relative and never start with `./` or `/`, and the
-  // lister matches them by prefix. A leading `./` is just a spelling and is
-  // removed. An absolute path or a `..` segment names something outside the
-  // tree's own vocabulary: listing with it would match nothing and read as an
-  // empty directory, so it is unusable rather than silently absent.
+  // Tree paths are repo-relative and canonical — no leading `/`, no `.`
+  // segments, no empty segments — and the lister matches them by literal
+  // prefix. So the configured value is normalised segment by segment: `.` and
+  // empty segments are only spellings and are dropped, wherever they appear
+  // (`./docs`, `docs/./stories`, `docs//stories`, a trailing `/`). An absolute
+  // path, a `..` segment, or a value with nothing left names no directory the
+  // tree can match: listing with it would read as an empty directory, so it is
+  // unusable rather than silently absent.
   const trimmed = raw.trim();
   if (trimmed.startsWith('/')) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
-  const cleaned = trimmed.replace(/^(?:\.\/+)+/, '').replace(/\/+$/, '');
-  if (cleaned === '') return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
-  if (cleaned.split('/').includes('..')) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
-  return { storiesDir: cleaned, unreadable: false };
+  const segments = trimmed.split('/').filter((segment) => segment !== '' && segment !== '.');
+  if (segments.length === 0 || segments.includes('..')) {
+    return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
+  }
+  return { storiesDir: segments.join('/'), unreadable: false };
 }

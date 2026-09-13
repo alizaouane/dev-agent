@@ -151,4 +151,41 @@ describe('readArtifactsConfig', () => {
       unreadable: true,
     });
   });
+
+  it('drops an internal ./ segment, which git-tree paths never contain', async () => {
+    // Codex, PR #165: `docs/./stories` names the same directory as
+    // `docs/stories`, but the lister matches tree paths by literal prefix,
+    // so keeping the dot segment lists nothing and reports it as complete.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs/./stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/stories',
+      unreadable: false,
+    });
+  });
+
+  it('collapses a doubled slash for the same reason', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs//stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/stories',
+      unreadable: false,
+    });
+  });
+
+  it('marks itself unreadable when stories_dir is a bare .', async () => {
+    // Nothing is left once the dot segments go: it names no directory the
+    // lister can match, which is unusable, not absent.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: "."\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when stories_dir is ./.', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: ./.\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
 });
