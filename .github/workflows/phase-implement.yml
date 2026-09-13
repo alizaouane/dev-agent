@@ -1256,6 +1256,7 @@ jobs:
           OUTCOME: ${{ steps.telemetry.outputs.phase_outcome || 'aborted' }}
           PR_URL: ${{ steps.telemetry.outputs.pr_url }}
           NEXT_SESSION_HINT: ${{ steps.telemetry.outputs.phase_outcome == 'success' && 'review the PR against the agreed scope and merge to default branch (= staging) when ready.' || 'inspect the implement-phase logs and decide whether to retry, abandon, or hand-edit the scope.' }}
+          BASE: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/append-session-log.ts
@@ -1267,4 +1268,14 @@ jobs:
           git config user.email 'dev-agent@users.noreply.github.com'
           git add SESSION_LOG.md
           git commit -m "chore(dev-agent): session log — implement issue #${ISSUE_NUMBER}"
-          git push origin HEAD || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"
+          # A first push that lands is the whole story, as before. Only when it
+          # is refused — on a story run still sitting on the base branch, the
+          # "Project the story status" step has already moved origin's base —
+          # rebase onto the base once and retry. A rebase that fails is aborted
+          # so the checkout is not left mid-rebase for later steps. With no
+          # base branch known there is nothing to rebase onto, so no retry.
+          git push origin HEAD || {
+            [ -n "${BASE:-}" ] \
+              && { git pull --rebase origin "$BASE" || { git rebase --abort || true; false; }; } \
+              && git push origin HEAD
+          } || echo "push failed (likely a protected branch — entry is committed locally; consumer can rebase)"

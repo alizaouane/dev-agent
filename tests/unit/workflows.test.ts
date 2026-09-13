@@ -1786,6 +1786,146 @@ describe('.github/workflows/', () => {
           expect(worktreeCount(consumer)).toBe(1);
         });
       });
+
+      describe('the session log push', () => {
+        const LOG_STEP = 'Append SESSION_LOG.md entry';
+        const PUSH_FAILED =
+          'push failed (likely a protected branch — entry is committed locally; consumer can rebase)';
+        const LOG_SUBJECT = 'chore(dev-agent): session log — implement issue #7';
+        const REAL_GIT = execFileSync('bash', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
+
+        /**
+         * A bare origin whose default branch already tracks SESSION_LOG.md, and
+         * a consumer clone left on that branch — a story run in which the agent
+         * created no branch of its own.
+         *
+         * @returns The scratch root, the bare origin, a seed clone that can
+         *   move origin's base, the consumer clone, and the file a git shim
+         *   records every git invocation in.
+         */
+        const makeRepos = () => {
+          const root = scratch();
+          const origin = join(root, 'origin.git');
+          const seed = join(root, 'seed');
+          const consumer = join(root, 'consumer');
+          const calls = join(root, 'git-calls.log');
+          execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env: cleanEnv({}) });
+          execFileSync('git', ['init', '-q', '-b', 'main', seed], { env: cleanEnv({}) });
+          writeFileSync(join(seed, 'SESSION_LOG.md'), '# Session Log\n\n');
+          mkdirSync(dirname(join(seed, STORY_REL)), { recursive: true });
+          writeFileSync(join(seed, STORY_REL), '# Story 1.1\n\n**Status:** Approved\n\nBuild the thing.\n');
+          git(seed, 'add', '-A');
+          git(seed, 'commit', '-qm', 'seed');
+          git(seed, 'remote', 'add', 'origin', origin);
+          git(seed, 'push', '-q', 'origin', 'main');
+          execFileSync('git', ['clone', '-q', origin, consumer], { env: cleanEnv({}) });
+          writeFileSync(join(consumer, '.git/info/exclude'), '.dev-agent-engine/\n', { flag: 'a' });
+          makeEngine(consumer);
+          const shimDir = join(root, 'shim');
+          mkdirSync(shimDir);
+          writeFileSync(
+            join(shimDir, 'git'),
+            `#!/usr/bin/env bash\nprintf '%s\\n' "$*" >> '${calls}'\nexec '${REAL_GIT}' "$@"\n`,
+          );
+          chmodSync(join(shimDir, 'git'), 0o755);
+          return { root, origin, seed, consumer, calls, shimDir };
+        };
+
+        /**
+         * Run the step's real script in the consumer clone, with every git
+         * call recorded.
+         *
+         * @param repos - Fixture from `makeRepos`.
+         * @param env - Overrides for the step's environment.
+         * @returns The exit status and captured output.
+         */
+        const appendLog = (repos: ReturnType<typeof makeRepos>, env: Record<string, string> = {}) =>
+          runBash(runBody(stepBlock(LOG_STEP)), repos.consumer, {
+            PHASE: 'implement',
+            ISSUE_NUMBER: '7',
+            OUTCOME: 'success',
+            PR_URL: '',
+            NEXT_SESSION_HINT: 'review the PR against the agreed scope.',
+            BASE: 'main',
+            PATH: `${repos.shimDir}:${process.env.PATH ?? ''}`,
+            ...env,
+          });
+
+        /**
+         * The recorded git invocations whose subcommand is `name`.
+         *
+         * @param repos - Fixture from `makeRepos`.
+         * @param name - A git subcommand, such as `push`.
+         * @returns Each matching invocation's argument line.
+         */
+        const callsOf = (repos: ReturnType<typeof makeRepos>, name: string): string[] =>
+          readFileSync(repos.calls, 'utf8')
+            .split('\n')
+            .filter((line) => line.split(' ')[0] === name);
+
+        it('reads the base branch from the repository payload', () => {
+          expect(stepBlock(LOG_STEP)).toMatch(
+            /^\s*BASE: \$\{\{ github\.event\.repository\.default_branch \}\}$/m,
+          );
+        });
+
+        it('rebases onto a base the story stamp moved, and lands the entry', { timeout: 60000 }, () => {
+          // The InProgress stamp pushes to origin's base earlier in the same
+          // run. A consumer still on that base then pushes a stale HEAD.
+          const repos = makeRepos();
+          writeFileSync(
+            join(repos.seed, STORY_REL),
+            '# Story 1.1\n\n**Status:** InProgress\n\nBuild the thing.\n',
+          );
+          git(repos.seed, 'commit', '-qam', 'docs(story): stamp');
+          git(repos.seed, 'push', '-q', 'origin', 'main');
+
+          const result = appendLog(repos);
+          expect(result.status).toBe(0);
+          expect(result.stdout).not.toContain(PUSH_FAILED);
+          expect(git(repos.origin, 'log', '--format=%s', '-2', 'main').trim().split('\n')).toEqual([
+            LOG_SUBJECT,
+            'docs(story): stamp',
+          ]);
+          expect(git(repos.origin, 'show', 'main:SESSION_LOG.md')).toContain('implement');
+        });
+
+        it('makes no pull and no second push when the first push lands', { timeout: 60000 }, () => {
+          const repos = makeRepos();
+          const result = appendLog(repos);
+          expect(result.status).toBe(0);
+          expect(result.stdout).not.toContain(PUSH_FAILED);
+          expect(callsOf(repos, 'push')).toEqual(['push origin HEAD']);
+          expect(callsOf(repos, 'pull')).toEqual([]);
+          expect(git(repos.origin, 'log', '--format=%s', '-1', 'main').trim()).toBe(LOG_SUBJECT);
+        });
+
+        it('echoes the existing message and exits 0 when the push is refused for good', { timeout: 60000 }, () => {
+          const repos = makeRepos();
+          const hook = join(repos.origin, 'hooks/pre-receive');
+          writeFileSync(hook, '#!/usr/bin/env bash\nexit 1\n');
+          chmodSync(hook, 0o755);
+          const head = git(repos.origin, 'rev-parse', 'main');
+
+          const result = appendLog(repos);
+          expect(result.status).toBe(0);
+          expect(result.stdout).toContain(PUSH_FAILED);
+          expect(git(repos.origin, 'rev-parse', 'main')).toBe(head);
+        });
+
+        it('skips the retry when the base branch is unknown', { timeout: 60000 }, () => {
+          const repos = makeRepos();
+          const hook = join(repos.origin, 'hooks/pre-receive');
+          writeFileSync(hook, '#!/usr/bin/env bash\nexit 1\n');
+          chmodSync(hook, 0o755);
+
+          const result = appendLog(repos, { BASE: '' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toContain(PUSH_FAILED);
+          expect(callsOf(repos, 'pull')).toEqual([]);
+          expect(callsOf(repos, 'push')).toEqual(['push origin HEAD']);
+        });
+      });
     });
   });
 });
