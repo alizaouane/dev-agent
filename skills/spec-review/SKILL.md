@@ -18,13 +18,77 @@ Invoked from `dev-agent:start-feature` Phase 3.5 (between plan-written and issue
 - Trivial work (Phase 1 PM eval marked the work as a one-liner / typo / copy fix). For trivial work the spec is a few paragraphs and adversarial review is overkill.
 - Specs that have already been reviewed and passed in a prior Phase 3.5 run within the same `start-feature` session (idempotency — don't re-review what just passed).
 
-## Inputs
+## Inputs (spec mode)
 
 The invoking skill must provide:
 
 - `spec_path` — absolute path to the spec file (must exist; format per `templates/spec.template.md` in the dev-agent plugin)
 - `plan_path` — absolute path to the plan file (must exist; format per `templates/plan.template.md`)
 - `consumer_root` — the consumer repo root (used to resolve relative paths in "Files to Touch")
+
+## Derivation-review mode
+
+Invoked from `dev-agent:start-feature` Phase S.1, against a story that was
+sharded out of an already-approved spec. A different question from the spec
+mode above, and a deliberately lighter one: the spec's design was settled and
+paid for at its own approval, so this asks only whether the story faithfully
+carries its slice of it.
+
+### Inputs
+
+- `story_path` — repo-relative path to the story file
+- `source_spec_path` — repo-relative path to the spec it was sharded from,
+  taken from the story's own `Source spec:` line
+- `consumer_root` — the consumer repo root
+
+There is no plan. A story is the unit of work; the plan was written at the
+spec, and asking a story for one would emit a blocker on every story. Skip
+Step 4 below entirely — there are no plan tasks to cross-check against.
+
+### Process
+
+1. Read the story and the source spec in full, in that order, with fresh
+   context.
+2. Load `{skill-root}/derivation-checklist.md` and run every check in it.
+3. Cross-check the story's Files to Touch against the default branch, using
+   Step 3's git tree lookups. The same fail-closed rule applies: if the default
+   ref cannot be resolved, emit `blocker` rather than downgrading unexecuted
+   validation to a concern.
+4. Emit a verdict by the same rule the spec mode uses: any `fail` is a
+   `blocker`, any `concern` with no `fail` is `concerns`, otherwise `ok`.
+
+**Design content in the story that is absent from the source spec is a
+blocker.** Not a note, not a `concern`. The user approves a verdict rather than
+reading the document, so a finding that only appears in prose is not a gate at
+all. `buildStoryApproval` refuses any verdict that is not `ok`, which makes the
+verdict word the entire mechanism. The remedy is to amend the spec, re-approve
+it, and approve the story against the amended spec.
+
+### Output
+
+Write `.dev-agent/derivation-review.json` in the consumer repo — the same shape
+the spec mode writes, minus the plan and the acceptance-criteria-to-task
+cross-check:
+
+```json
+{
+  "verdict": "ok",
+  "story_path": "<path>",
+  "source_spec_path": "<path>",
+  "checks": [
+    { "id": "D1.1", "verdict": "pass", "note": "<one sentence>" }
+  ],
+  "files_to_touch": {
+    "modify_missing": [],
+    "test_dirs_missing": []
+  },
+  "summary": "<markdown — 3-10 lines>"
+}
+```
+
+Mirror `summary` into `.dev-agent/derivation-review-summary.md`, as the spec
+mode does. Print the verdict word on the final line of stdout; Phase S.1 reads
+that line and loops until it is `ok`.
 
 ## Process
 

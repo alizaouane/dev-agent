@@ -18,6 +18,11 @@ Activate when the user is in a dev-agent-wired consumer repo (has `.dev-agent.ym
 - Report a bug ("X is broken", "Y crashes", "this doesn't work when…")
 - Ask for direction ("what should I work on", "what's next")
 - Describe scope work ("this needs refactoring", "we should clean up Z")
+- Name an already-sharded story they want to move into implementation (a path
+  under `docs/stories/`, or "start work on story 4.2") — see
+  [The story door](#the-story-door-an-already-sharded-story) below; this is a
+  narrower entry than the rest of this list and skips straight past PM
+  evaluation
 
 **Do NOT activate** for:
 
@@ -140,6 +145,287 @@ Quick-dev fills the `templates/quick-spec.template.md`, commits it, files the `s
 When quick-dev returns, mark Phase 1.5 todo `completed` and surface the issue URL to the user. **The workflow is done.** Phases 2, 3, 3.5, 3.6, and 4 are not run on this path.
 
 If quick-dev bails (e.g. `forced_quick=true` but the user declines its "looks substantial" warning), return to the full flow: replace the 2-item TodoWrite list with the 5-phase list, and proceed to Phase 2 normally.
+
+## The story door (an already-sharded story)
+
+Everything from Phase 1 through Phase 4 assumes the work starts from a pitch
+or a bug report with no document yet. That's most invocations — but not the
+one where the user names a story that `/shard` (the PO persona, upstream)
+already wrote from an approved program spec. For that shape of work, this
+door skips Phase 2's brainstorm entirely, and skips Phase 3's plan-writing too
+— the story is already the plan, and re-deriving one from it would be busywork
+against a document that exists and was already reviewed once, upstream. What's
+left to check is narrower: does this story faithfully carry the slice of the
+spec it claims to, not whether the spec itself is sound.
+
+**Trigger.** The user names an already-sharded story directly: a path under
+`docs/stories/`, "start work on story 4.2", or `--story <path>` passed to
+`/develop`. If no such story exists yet, this isn't the story door — that's a
+normal Phase 1 pitch, and running `/shard` is a separate upstream step this
+skill does not perform.
+
+When triggered, run Phase 0 pre-flight exactly as above (a story issue still
+needs `.dev-agent.yml`, `gh` auth, and write access), then **replace** the
+Phase 0.1 checklist with:
+
+```
+- [ ] Phase S.1: Read the story, confirm its source spec's approval, run the derivation review → clean verdict
+- [ ] Phase S.2: User approval recorded (approve-story)
+- [ ] Phase S.3: GitHub issue filed at state:spec-ready
+```
+
+### Phase S.1 — Read the story, confirm the spec beneath it, review the derivation
+
+**First, check whether this story is already approved.** A session that
+recorded the approval and committed it but died before filing the issue, and a
+story a human approved in an earlier session, both land here. `approve-story`
+refuses to re-record an approval whose hash already matches, so running Phase
+S.2 blind on either of those is a dead end with no way forward.
+
+```bash
+STORY_PATH=docs/stories/epic-N-name/N.M-slug.md \
+"${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/verify-approval.ts"
+```
+
+Exit 0 means the story carries a valid approval that still matches its current
+text — the same decision the dashboard will make when it dispatches. Tell the
+user the story is already approved and go **straight to Phase S.3**; do not
+review it again and do not ask for an approval that already exists. Exit 1
+means there is no usable approval yet, which is the normal case — continue
+below. Exit 2 is a usage error; fix the invocation rather than proceeding.
+
+Read the story file. Pull its `Source spec:` line — the same line
+`sourceSpecOf` in `lib/cli/approve-story.ts` reads. A story derived from an
+unapproved spec is not approvable, so check this **before** spending a review
+round on it.
+
+Checking that a `.approval.json` sits next to the spec is **not** that check. A
+record can exist and still be unusable: malformed, carrying a `concerns` or
+`blocker` verdict, naming a different spec, naming a plan that has since moved,
+or gone stale because the spec was edited after it was approved.
+`buildStoryApproval` runs the real dispatch gate against all of it and refuses
+on any of those — after the derivation review has run and after the user has
+been asked to approve. Run the same decision here instead:
+
+```bash
+SOURCE_SPEC=<the path from the story's `Source spec:` line>
+SPEC_APPROVAL="${SOURCE_SPEC%.md}.approval.json"
+
+if [ ! -f "$SPEC_APPROVAL" ]; then
+  echo "ERROR: no approval recorded for $SOURCE_SPEC. The spec this story was sharded from must be approved first."
+  exit 1
+fi
+
+# The plan the spec was approved WITH, read off the record rather than guessed
+# from the filename convention — the gate hashes exactly the pair that was
+# approved, and a plan that has moved must refuse rather than be treated as
+# "no plan".
+PLAN_PATH=$(jq -r '.plan_path // empty' "$SPEC_APPROVAL")
+
+SPEC_PATH="$SOURCE_SPEC" PLAN_PATH="$PLAN_PATH" \
+  "${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/verify-approval.ts"
+```
+
+Exit 0 and continue. On a non-zero exit, **stop** and tell the user which gate
+is open, quoting the message the command printed — it names the specific
+failure. Either the spec this story was sharded from was never approved, its
+approval no longer covers its current text, or the story cites the wrong spec.
+Reviewing a derivation that has nothing underneath it to derive from wastes a
+round and ends in a refusal the user cannot act on.
+
+With that confirmed, invoke `dev-agent:spec-review`'s derivation-review mode
+against the story — **not** the full adversarial spec-review Phase 3.5 runs.
+The question here is deliberately lighter: does this story faithfully carry
+its slice of the already-approved spec, not whether the spec's design is
+sound (that question was already settled and paid for at the spec's own
+approval). Loop review → correct → re-review exactly as Phase 3.5 does,
+tracking the round count, until the verdict is `ok`. The same round cap and
+the same "a `concerns` verdict is not a pass" rule from Phase 3.5 apply here.
+
+Mark Phase S.1 complete only on `ok`.
+
+### Phase S.2 — User approval (the one decision that is the user's)
+
+Same discipline as Phase 3.6, aimed at the story instead of the spec+plan
+pair. Show the user, in the chat: the story's title and path, its
+`Source spec:` line, and how many derivation-review rounds it took. Then ask,
+plainly: **"Approve this story so the dashboard can start work on it?"**
+
+**Wait for an explicit answer.** There is no default. Silence is not
+approval. If the user asks for changes, make them, return to Phase S.1, and
+run the derivation review again from round one.
+
+When the user approves, record it from the consumer repo root. (Phase S.1's
+first check has already established there is no valid approval at the story's
+current hash, so this cannot collide with one.)
+
+```bash
+STORY_PATH=docs/stories/epic-N-name/N.M-slug.md \
+REVIEW_VERDICT=ok \
+REVIEW_ROUNDS=<rounds it took> \
+"${PLUGIN_DIR}/node_modules/.bin/tsx" "${PLUGIN_DIR}/lib/cli/approve-story.ts"
+```
+
+`approve-story` re-reads the story's `Source spec:` line itself and refuses
+if that spec's own approval is missing, stale, or names a plan that moved —
+the check in Phase S.1 saves a wasted review round, it is not the only guard.
+On success it stamps the story's `Status:` header to `Approved` and writes
+`<story path with .md swapped for .approval.json>` in the same invocation.
+Commit and push both:
+
+```bash
+git add docs/stories/epic-N-name/N.M-slug.md docs/stories/epic-N-name/N.M-slug.approval.json
+git commit -m "docs(story): record approval for <story title>"
+git push
+```
+
+**Never run `approve-story` on the user's behalf.** Not to unblock yourself,
+not because the derivation review was clean and approval looks like a
+formality, not because the user approved a different story earlier in the
+session. `approved_by` records a human's identity against work they
+authorized — the same reason Phase 3.6 carries this rule for `approve-spec`;
+writing it without them would make every gate downstream meaningless.
+
+Mark Phase S.2 complete. Move to Phase S.3.
+
+### Phase S.3 — Handoff (file the issue)
+
+```bash
+# Canonicalised first, the same way `canonicalStoryPath` does for every reader
+# of a story reference. `approve-story` records the path without a leading
+# `./`, so filing one with it produces an issue the gate refuses for ever on a
+# path mismatch — and makes the duplicate lookup below miss an existing issue
+# written the other way.
+STORY_PATH=$(printf '%s' "docs/stories/epic-N-name/N.M-slug.md" | sed -E 's#^(\./)+##')
+SOURCE_SPEC=docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md
+TITLE="<story title, from its # Story N.M — Name heading>"
+KIND="feature"  # or "bug" or "improvement" — whatever kind the story itself is
+EPIC="$(basename "$(dirname "$STORY_PATH")" | sed -E 's/^epic-([0-9]+)-.*/\1/')"
+
+# Guard: EPIC must be numeric. The sed pattern leaves non-matching input
+# unchanged, so docs/stories/misc-fixes/ silently produces EPIC=misc-fixes
+# instead of failing. That malformed label is invisible until something
+# (slice 4's grouping by epic) depends on it. Stop and ask.
+if [[ ! "$EPIC" =~ ^[0-9]+$ ]]; then
+  echo "ERROR: Could not derive epic number from story directory. The story must be in docs/stories/epic-N-<name>/ (e.g., epic-8-agent-reliability/). Enter the epic number manually and try again."
+  exit 1
+fi
+
+# Guard: has this story already been filed? The spec door's open-pipeline
+# lookup lives in Phase 1, which this door skips, so re-entering it would
+# file a second issue for the same story — and implement concurrency and
+# branch names are keyed by issue number, so both could dispatch independent
+# agents against one approved story.
+#
+# Matched by exact line after trimming, which is what both readers of a
+# `Story:` reference accept. Listed and filtered locally rather than handed
+# to GitHub's search index, which is eventually consistent and would report a
+# just-filed issue as absent.
+LIMIT=500
+ISSUES=$(gh issue list --state all --limit "$LIMIT" --json number,url,state,body)
+
+# A listing that hit the limit is a short listing, not an empty one. Filing a
+# duplicate off the back of one is a search that could not see something
+# reporting the something is not there. Stop instead.
+if [ "$(jq 'length' <<<"$ISSUES")" -ge "$LIMIT" ]; then
+  echo "ERROR: the issue list was truncated at $LIMIT, so an existing issue for this story may not be visible. Check by hand before filing: gh issue list --search \"Story: ${STORY_PATH}\" --state all"
+  exit 1
+fi
+
+# Quoted regions come out first, the same two halves `stripQuotedRegions`
+# strips: fenced blocks that actually close, then inline backtick spans
+# across the joined body. This lookup is a FOURTH reader of a `Story:` line
+# after the dashboard parser, the workflow grep and the gate, and all three
+# of those strip. Without it an issue that merely quotes the target line in
+# an example matches as that story's own issue, and the real one is never
+# filed. An unpaired fence opener is left alone, as it is there.
+#
+# The path is then pulled OUT of each candidate line and canonicalised
+# before comparison, rather than the line being matched verbatim: an issue
+# filed as `Story: ./docs/...` names the same story as one filed without the
+# prefix, and a comparison that cannot see that files the duplicate this
+# guard exists to prevent.
+#
+# Only the FIRST reference counts, which is what the dashboard's `.match()`
+# and the workflow's `head -1` both do. Testing membership across every
+# reference instead would report a story as already filed on the strength of
+# an issue that will dispatch a different one.
+EXISTING=$(jq -c --arg want "$STORY_PATH" '
+  def strip_quoted:
+    (split("\n") | map(sub("\r$"; ""))) as $lines
+    | [range(0; $lines | length) | select($lines[.] | test("^ {0,3}(```|~~~)"))] as $f
+    | (($f | length) - (($f | length) % 2)) as $paired
+    | ([range(0; $paired; 2) as $i | range($f[$i]; $f[$i + 1] + 1)] | map(tostring)) as $drop
+    | [range(0; $lines | length) | select(([tostring] | inside($drop)) | not) | $lines[.]]
+    | join("\n")
+    | gsub("`[^`]*`"; "");
+  map(select((((.body // "") | strip_quoted | split("\n"))
+       | map(sub("^[ \t]+"; "") | sub("[ \t]+$"; ""))
+       | map(select(test("^Story:[ \t]*[^ \t]+\\.md$")))
+       | map(capture("^Story:[ \t]*(?<p>[^ \t]+\\.md)$").p | sub("^(\\./)+"; ""))
+     ) | .[0] == $want))
+  | .[0] // empty' <<<"$ISSUES")
+
+if [ -n "$EXISTING" ]; then
+  echo "This story is already filed as $(jq -r '.url' <<<"$EXISTING") ($(jq -r '.state' <<<"$EXISTING"))."
+  echo "Open: go to the dashboard and tap Start work on it. Closed: the story has already been through the pipeline — ask the user before filing anything new."
+  exit 0
+fi
+
+TLDR="<a few lines summarizing what the story ships>"
+APPROVAL_PATH="${STORY_PATH%.md}.approval.json"
+
+BODY=$(cat <<EOF
+Story: ${STORY_PATH}
+
+## TL;DR
+
+${TLDR}
+
+---
+
+Sharded from \`${SOURCE_SPEC}\` and approved via the \`start-feature\` skill in Claude Code. Tap **Start work** in the dashboard to dispatch the implement workflow. The dashboard verifies the approval at \`${APPROVAL_PATH}\` still matches the story before it dispatches anything.
+EOF
+)
+
+gh issue create \
+  --title "$TITLE" \
+  --body "$BODY" \
+  --label "state:spec-ready,kind:${KIND},epic:${EPIC}"
+```
+
+Note: no `Plan:` line — a story is its own plan, so there is nothing separate
+to point at.
+
+Note also that the `Story:` line is deliberately **not** backticked, for the
+same reason `Spec:` isn't in Phase 4's body: the dashboard's parser
+(`/^\s*Story:\s*(\S+\.md)\s*$/m`) and the workflow's grep are both
+end-anchored, and both strip or reject quoted regions. A backticked path is
+invisible to either — the issue would file cleanly and then refuse at the
+dispatch gate with "no Story: line", which reads like a bug in the gate
+rather than in the issue body it actually is. Every other path in this body
+may be backticked; this one may not.
+
+**If `gh issue create` fails** because labels don't exist:
+
+```bash
+gh label create "state:spec-ready" --color 0e8a16 --description "Spec written; awaiting approval to implement" --force 2>/dev/null
+gh label create "kind:${KIND}" --color 1d76db --description "<kind> work" --force 2>/dev/null
+gh label create "epic:${EPIC}" --color 5319e7 --description "Epic ${EPIC}" --force 2>/dev/null
+```
+
+…then retry the `gh issue create`.
+
+**Print the issue URL**, same shape as Phase 4:
+
+```
+Filed: https://github.com/<owner>/<repo>/issues/<number>
+
+Next: approve in the dashboard. The engine will implement and open a PR.
+```
+
+Mark Phase S.3 complete. **Now the skill is done.** No further work. The user
+goes to the dashboard.
 
 ## Phase 2 — Spec writing (inline brainstorming)
 

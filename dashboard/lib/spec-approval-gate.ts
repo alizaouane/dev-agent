@@ -10,6 +10,12 @@ import {
   resolveRefusal,
   type DispatchGateDecision,
 } from '@/lib/spec-approval';
+import {
+  approvalPathForStory,
+  canonicalStoryPath,
+  hashStory,
+  storyDispatchGateDecision,
+} from '@/lib/story-approval';
 
 /**
  * Server-side half of the spec-approval gate: fetch the three documents the
@@ -20,6 +26,33 @@ import {
  * separately testable — the policy has no Octokit in it, and this file has no
  * branching logic in it beyond fail-closed error handling.
  */
+
+/**
+ * Strip fenced blocks and inline backtick spans from an issue body.
+ *
+ * Both reference parsers run against this, so a path quoted inside an example
+ * cannot outrank the canonical link — and, more importantly, cannot differ
+ * between the two parsers.
+ *
+ * Only fences that actually close are stripped. A stray opener with no
+ * partner would otherwise swallow the rest of the body, including the real
+ * reference.
+ *
+ * @param body - The issue body.
+ * @returns The body with quoted regions removed.
+ */
+function stripQuotedRegions(body: string): string {
+  const lines = body.split(/\r?\n/);
+  const fences = lines.flatMap((line, i) => (/^ {0,3}(```|~~~)/.test(line) ? [i] : []));
+  const stripped = new Set<number>();
+  for (let i = 0; i + 1 < fences.length; i += 2) {
+    for (let n = fences[i]; n <= fences[i + 1]; n++) stripped.add(n);
+  }
+  return lines
+    .filter((_line, i) => !stripped.has(i))
+    .join('\n')
+    .replace(/`[^`]*`/g, '');
+}
 
 /** Spec and plan paths as declared in an issue body. */
 export interface SpecRefs {
@@ -44,24 +77,51 @@ export interface SpecRefs {
  */
 export function parseSpecRefs(body: string | null | undefined): SpecRefs | null {
   if (!body) return null;
-  const lines = body.split(/\r?\n/);
-  const fences = lines.flatMap((line, i) => (/^ {0,3}(```|~~~)/.test(line) ? [i] : []));
-  // Only strip fences that actually close. A stray or pasted-in opener with no
-  // partner would otherwise swallow the rest of the body — including the real
-  // `Spec:` line — and refuse a properly approved issue.
-  const stripped = new Set<number>();
-  for (let i = 0; i + 1 < fences.length; i += 2) {
-    for (let n = fences[i]; n <= fences[i + 1]; n++) stripped.add(n);
-  }
-  const cleaned = lines
-    .filter((_line, i) => !stripped.has(i))
-    .join('\n')
-    .replace(/`[^`]*`/g, '');
+  const cleaned = stripQuotedRegions(body);
 
   const spec = cleaned.match(/^\s*Spec:\s*(\S+\.md)\s*$/m)?.[1];
   if (!spec) return null;
   const plan = cleaned.match(/^\s*Plan:\s*(\S+\.md)\s*$/m)?.[1];
   return { spec_path: spec, plan_path: plan ?? null };
+}
+
+/** The story a handoff issue declares. */
+export interface StoryRef {
+  /** Repo-relative path to the story. */
+  story_path: string;
+}
+
+/**
+ * Pull the `Story:` path out of a handoff issue body.
+ *
+ * A story-based issue carries `Story:` where a spec-based issue carries
+ * `Spec:` and `Plan:`. The gate branches on which is present, so this
+ * returning null is how a spec issue is recognised, not an error.
+ *
+ * The label and the path must sit on one line, matching what the implement
+ * workflow's line-oriented grep can see. Both readers accept exactly the same
+ * issue bodies, which is the property that keeps one of them from approving
+ * work the other resolves differently.
+ *
+ * @param body - The issue body, or null for an empty issue.
+ * @returns The declared story with any leading `./` removed, or null when
+ *   there is no `Story:` line.
+ */
+export function parseStoryRef(body: string | null | undefined): StoryRef | null {
+  if (!body) return null;
+  // Horizontal whitespace only. JavaScript's `\s` matches a newline, so
+  // `\s*Story:\s*(\S+\.md)` accepted a label and a path on separate lines —
+  // which the workflow's line-oriented grep cannot see. That issue was
+  // approved here, dispatched, and then resolved by the workflow's spec
+  // fallback as though the story were the spec, refusing the story's record
+  // as a malformed spec approval after the issue had already moved on.
+  // `\r?` keeps the CRLF tolerance the shell's `[[:space:]]*$` has.
+  const story = stripQuotedRegions(body).match(/^[ \t]*Story:[ \t]*(\S+\.md)[ \t]*\r?$/m)?.[1];
+  // Canonicalised here, at the point the path enters the system as data, so
+  // the gate compares the same spelling `approve-story` recorded. Without it
+  // a `./docs/…` line is approved, filed, and then refused for ever on a
+  // path mismatch the operator can neither see nor fix from the dashboard.
+  return story ? { story_path: canonicalStoryPath(story) } : null;
 }
 
 /**
@@ -114,6 +174,48 @@ export async function evaluateSpecApproval(input: {
 }): Promise<DispatchGateDecision> {
   const { octokit, owner, repo, ref, issueBody, labels } = input;
   const overrideRequested = labels.includes(OVERRIDE_LABEL);
+
+  // A story-based issue is checked against the story alone. Its source spec
+  // was a precondition when the story was approved and is lineage afterwards,
+  // so re-reading it here would let one late amendment to a program spec
+  // invalidate every story derived from it.
+  //
+  // Precedence: a `Story:` line wins over a `Spec:` line. An issue carrying
+  // both is malformed, but this branch is the safe place to route it: the
+  // story gate fails closed — it refuses unless the story and its approval both
+  // exist and match — so a stale spec approval cannot authorise it.
+  const storyRef = parseStoryRef(issueBody);
+  if (storyRef) {
+    const storyText = await fetchText(octokit, owner, repo, storyRef.story_path, ref);
+    if (storyText === null) {
+      // Not overridable, and the only refusal on this path that is not. The
+      // override authorises dispatch despite a problem with the RECORD — a
+      // stale hash, a missing artifact, a verdict nobody re-ran. It cannot
+      // conjure the document the agent has to read. Allowing it here strands
+      // the issue: this gate flips it to state:implementing, and the implement
+      // workflow's story resolution then exits before the workflow-side
+      // verifier runs, leaving an issue that reads as in flight with no run
+      // behind it. `verifyStoryApproval` refuses the same case for the same
+      // reason, so the two readers agree.
+      return {
+        allow: false,
+        reason: 'missing',
+        message:
+          `the issue names ${storyRef.story_path}, which is not on ${ref}. Check the story ` +
+          'was committed before the issue was filed. The override label does not apply: it ' +
+          'authorises dispatch past an approval problem, not past a story that is not there.',
+      };
+    }
+    const approvalRaw = await fetchText(
+      octokit, owner, repo, approvalPathForStory(storyRef.story_path), ref,
+    );
+    return storyDispatchGateDecision({
+      approvalRaw,
+      currentStoryHash: hashStory(storyText),
+      storyPath: storyRef.story_path,
+      overrideRequested,
+    });
+  }
 
   const refs = parseSpecRefs(issueBody);
   if (!refs) {

@@ -1,5 +1,41 @@
 # Session Log
 
+## 2026-09-12 18:15 UTC — interactive — Slice 3: a story issue dispatches end to end
+
+**Trigger:** slice 3 of the story-level-approval plan — AC-16 and AC-17, plus
+the gate and workflow plumbing a story issue needs to dispatch at all.
+
+**What changed:** twelve commits on `feat/story-level-approval-slice-3`. The
+status regex is now derived from `STORY_STATUS_VALUES` rather than restated
+beside it. The dashboard gate parses a `Story:` reference and routes a story
+issue to the story gate, which never reads the spec; the story branch runs
+before the spec branch and a test pins that precedence. `verify-approval`
+accepts `STORY_PATH`, mutually exclusive with `SPEC_PATH`. The implement
+workflow resolves a story before it greps for a spec, and carries whichever
+document the issue names through materialisation, prompt render and prompt
+build. The intake grew a second door that skips brainstorming and plan-writing
+when the story already exists.
+
+Six tasks, each reviewed, six fix rounds. The whole-branch review found one
+blocker: the dashboard strips fenced blocks and backtick spans before it looks
+for `Story:` and the workflow's grep did not, so a spec issue showing a
+`Story:` line inside an example was a spec issue to one reader and a story
+issue to the other. Closed with an awk prefilter that reproduces
+`stripQuotedRegions`, and the tests now run the real shell block rather than
+the grep alone.
+
+**Deferred / Next:** the spec and plan greps still read the raw body while
+`parseSpecRefs` strips — pre-existing, fail-closed in the common case, and
+left alone rather than changed under a story-routing fix. Slice 4 is the
+dashboard panel's second list; note that the working-tree `cmp` on the
+resolved document is byte-exact and will fail the moment AC-15's status
+projection stamps `InProgress` on the agent branch.
+
+**Next session should start with:** the slice 3 pull request — CI and the
+review loop — then the slice 4 plan.
+
+---
+
 ## 2026-09-12 08:00 UTC — interactive — Story-level approval: one decision, two records
 
 **Trigger:** "now let's make the approval one act instead of two" — a story's

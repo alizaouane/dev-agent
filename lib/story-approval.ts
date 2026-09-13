@@ -19,6 +19,22 @@ import { resolveRefusal, type DispatchGateDecision, type GateReason, type Review
 const KIND = 'story';
 
 /**
+ * Escape regex metacharacters in a string for safe interpolation into a RegExp.
+ *
+ * The status values declared in STORY_STATUS_VALUES are data: a value should not
+ * change the compiled pattern's grammar by accident. Future values may contain
+ * metacharacters like `.` or `?` which would silently WIDEN or break the match if
+ * unescaped. Escape first, then apply any intentional pattern (like the space
+ * alternation in InProgress).
+ *
+ * @param value - String to escape.
+ * @returns The value with all regex metacharacters escaped.
+ */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()\[\]\\|]/g, '\\$&');
+}
+
+/**
  * Separator between the domain tag and the document.
  *
  * Written as an escape sequence, never as a literal control character in
@@ -28,39 +44,15 @@ const KIND = 'story';
 const SEPARATOR = '\u0000';
 
 /**
- * Matches the story's status header in the spellings the kit's conformance
- * check accepts (`.standard/check.sh:91`, the authority this regex must track):
- * bare, bold-label, and bold-with-colon forms, any number of surrounding
- * asterisks (`check.sh` uses `\**`, unbounded — not capped at two), optionally
- * followed by a trailing annotation after whitespace, and an optional trailing
- * `\r` so a CRLF story's line still ends the match (`check.sh`'s
- * `[[:space:]]` class already treats `\r` as an acceptable trailing
- * character; `[ \t]` alone does not).
+ * The lifecycle values a story's status header may carry.
  *
- * Exported because the module that stamps the status line must strip and write
- * the same grammar — if the two drift, stamping produces a line hashing no
- * longer removes, and every approval breaks silently at the next status change.
+ * This list is the single source of truth: `STATUS_LINE_RE` is built from it,
+ * so a value added here is recognised by both the stamper and the hasher
+ * without a second edit. They were two hand-written literals until this was
+ * derived, and drift between them broke stamping silently.
  *
- * The single capture group wraps the prefix on either side of the status word.
- * Later task stamps a new status by writing $1<status>, which deliberately DROPS
- * any trailing annotation — an annotation describing the previous state is
- * misleading once the state has moved on. Hashing strips the whole matched line
- * either way, so both uses stay consistent.
- */
-export const STATUS_LINE_RE =
-  /^([ \t>-]*\**Status\**:?\**:?[ \t]*)(?:Draft|Approved|In ?Progress|Review|Done|Blocked)\**(?:[ \t].*)?\r?$/im;
-
-/**
- * The six legal values a story's `Status` line may hold.
- *
- * This is the write-side counterpart of `STATUS_LINE_RE`'s alternation and of
- * the equivalent list `.standard/check.sh`'s story-schema check enforces on
- * read: three encodings of the same lifecycle grammar. They must stay in
- * step. If a value is added or renamed here without updating the other two,
- * a status this array calls legal can be written but never recognised on the
- * next read — `storyBodyForHashing` stops stripping it, it enters the
- * digest, and the following status change breaks the story's approval
- * silently, on text nobody touched.
+ * Must stay in step with the kit's conformance check (`.standard/check.sh`),
+ * which is the other authority on what a legal status line is.
  */
 export const STORY_STATUS_VALUES = [
   'Draft',
@@ -70,6 +62,29 @@ export const STORY_STATUS_VALUES = [
   'Done',
   'Blocked',
 ] as const;
+
+/**
+ * One alternation covering every declared value, plus the spaced spelling of
+ * `InProgress` that `.standard/check.sh` also accepts.
+ */
+const STATUS_ALTERNATION = STORY_STATUS_VALUES.map((v) => {
+  const escaped = escapeRegExp(v);
+  return v === 'InProgress' ? escaped.replace('InProgress', 'In ?Progress') : escaped;
+}).join('|');
+
+/**
+ * Matches the story's status header in the spellings the kit's conformance
+ * check accepts: bare, bold-label, and bold-with-colon forms, any number of
+ * asterisks, an optional trailing annotation, and an optional carriage return.
+ *
+ * One capture group — the prefix. `stampStatus` writes `$1<status>`, which
+ * deliberately drops any trailing annotation, because an annotation describing
+ * the previous state is misleading once the state has moved on.
+ */
+export const STATUS_LINE_RE = new RegExp(
+  `^([ \\t>-]*\\**Status\\**:?\\**:?[ \\t]*)(?:${STATUS_ALTERNATION})\\**(?:[ \\t].*)?\\r?$`,
+  'im',
+);
 
 /**
  * Strip the status header from a story before hashing it.
@@ -136,6 +151,30 @@ export type StoryParseResult =
 
 const VERDICTS: readonly string[] = ['ok', 'concerns', 'blocker'];
 const DIGEST_RE = /^[0-9a-f]{64}$/;
+
+/**
+ * Reduce a story path to the one spelling the approval record uses.
+ *
+ * `approve-story` strips a leading `./` before it writes `story_path`, so a
+ * reader that preserves the issue's spelling compares `./docs/…` against the
+ * recorded `docs/…` and refuses with `path-mismatch` for ever — on a story that
+ * was correctly approved and correctly filed. Every reader of a story reference
+ * runs this, so all of them arrive at the gate with the same string.
+ *
+ * Total on purpose: it never throws. An issue body is untrusted input, and a
+ * parser that threw on an odd spelling would take the dashboard down instead of
+ * refusing one issue. The approval command keeps its own stricter validation,
+ * which rejects absolute paths and `..` segments.
+ *
+ * @param storyPath - A story path as written in an issue, a record, or an env
+ *   variable.
+ * @returns The same path with any leading `./` segments removed.
+ */
+export function canonicalStoryPath(storyPath: string): string {
+  let normalized = storyPath;
+  while (normalized.startsWith('./')) normalized = normalized.slice(2);
+  return normalized;
+}
 
 /**
  * Name the approval artifact that sits beside a story.
