@@ -1858,6 +1858,31 @@ describe('.github/workflows/', () => {
           expect(worktreeCount(consumer)).toBe(1);
         });
 
+        it('does not stamp when the expected state sits beside a conflicting one', { timeout: 60000 }, () => {
+          // Codex, PR #165: both dispatch gates require exactly one state:*
+          // label, because a half-applied flip or a retry can leave two. An
+          // issue at state:implementing AND state:blocked is not in progress,
+          // and a membership check alone would stamp it InProgress.
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { FAKE_GH_LABELS: 'state:implementing,state:blocked,kind:feature' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::issue #7 is not at state:implementing; .* \(its state labels: state:implementing, state:blocked\)/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('does not stamp an issue carrying no state label at all', { timeout: 60000 }, () => {
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { FAKE_GH_LABELS: 'kind:feature' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::issue #7 is not at state:implementing/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+        });
+
         it('matches the expected state label whole, not as a substring', { timeout: 60000 }, () => {
           const { origin, consumer } = makeRepos();
           makeEngine(consumer);

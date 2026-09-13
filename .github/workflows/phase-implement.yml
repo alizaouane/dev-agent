@@ -583,20 +583,21 @@ jobs:
           # than trusting how this run began. An implement run can start from
           # state:spec-ready — dispatched directly, or after the dashboard's
           # own label flip failed — and a story must not read InProgress, or
-          # Review, while its issue says otherwise. Matched as a whole label.
-          # Unknown is not a match: a read that fails skips the stamp rather
-          # than guessing the issue moved.
+          # Review, while its issue says otherwise. The expected state must be
+          # the issue's ONLY state label, whole: both dispatch gates require
+          # exactly one, because a half-applied flip or a retry can leave two,
+          # and an issue at state:implementing and state:blocked is not in
+          # progress. Unknown is not a match: a read that fails skips the stamp
+          # rather than guessing the issue moved.
           if ! LIVE_LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
             echo "::warning::could not read issue #${ISSUE_NUMBER}'s state; ${STORY_PATH} was not stamped to ${STATUS}"
             exit 0
           fi
-          case ",${LIVE_LABELS}," in
-            *,"${EXPECTED_STATE}",*) ;;
-            *)
-              echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS}"
-              exit 0
-              ;;
-          esac
+          STATES=$(printf '%s\n' "$LIVE_LABELS" | tr ',' '\n' | grep '^state:' || true)
+          if [ "$STATES" != "$EXPECTED_STATE" ]; then
+            echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS} (its state labels: ${STATES//$'\n'/, })"
+            exit 0
+          fi
           # Empty on trigger shapes that carry no repository payload. The
           # approval gate derives its own fallback and refuses without one;
           # here there is nothing to refuse, so warn and skip.
@@ -1221,20 +1222,21 @@ jobs:
           # than trusting how this run began. An implement run can start from
           # state:spec-ready — dispatched directly, or after the dashboard's
           # own label flip failed — and a story must not read InProgress, or
-          # Review, while its issue says otherwise. Matched as a whole label.
-          # Unknown is not a match: a read that fails skips the stamp rather
-          # than guessing the issue moved.
+          # Review, while its issue says otherwise. The expected state must be
+          # the issue's ONLY state label, whole: both dispatch gates require
+          # exactly one, because a half-applied flip or a retry can leave two,
+          # and an issue at state:implementing and state:blocked is not in
+          # progress. Unknown is not a match: a read that fails skips the stamp
+          # rather than guessing the issue moved.
           if ! LIVE_LABELS=$(gh issue view "$ISSUE_NUMBER" --json labels --jq '[.labels[].name] | join(",")'); then
             echo "::warning::could not read issue #${ISSUE_NUMBER}'s state; ${STORY_PATH} was not stamped to ${STATUS}"
             exit 0
           fi
-          case ",${LIVE_LABELS}," in
-            *,"${EXPECTED_STATE}",*) ;;
-            *)
-              echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS}"
-              exit 0
-              ;;
-          esac
+          STATES=$(printf '%s\n' "$LIVE_LABELS" | tr ',' '\n' | grep '^state:' || true)
+          if [ "$STATES" != "$EXPECTED_STATE" ]; then
+            echo "::warning::issue #${ISSUE_NUMBER} is not at ${EXPECTED_STATE}; ${STORY_PATH} was not stamped to ${STATUS} (its state labels: ${STATES//$'\n'/, })"
+            exit 0
+          fi
           # Empty on trigger shapes that carry no repository payload. The
           # approval gate derives its own fallback and refuses without one;
           # here there is nothing to refuse, so warn and skip.
