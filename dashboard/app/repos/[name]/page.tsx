@@ -150,6 +150,11 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
       )
     : { stories: [], approvals: [], blobShas: {}, unreadable: false };
 
+  // Set only inside the catch below: a rejection here (a rate limit, an
+  // expired token) is a read that failed, not a repo with no stories. Without
+  // this flag the panel would see an empty list and `unreadable: false` and
+  // render "this repo has no stories" over what is actually an outage.
+  let storyVerifyFailed = false;
   const storyItems = await verifyStoryItems(
     octokit,
     repo.owner,
@@ -157,7 +162,10 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     repo.default_branch,
     toStoryItems(storyFiles.stories, storyFiles.approvals),
     storyFiles.blobShas,
-  ).catch(() => []);
+  ).catch(() => {
+    storyVerifyFailed = true;
+    return [];
+  });
 
   // Probed, not inferred. The previous checklist ticked boxes from earlier
   // steps having run, which reports what should be true rather than what is —
@@ -218,7 +226,9 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             pairs={specPairs}
             listingIncomplete={specPlanFiles.unreadable}
             stories={storyItems}
-            storyListingIncomplete={artifactsConfig.unreadable || storyFiles.unreadable}
+            storyListingIncomplete={
+              artifactsConfig.unreadable || storyFiles.unreadable || storyVerifyFailed
+            }
           />
         </section>
       ) : null}

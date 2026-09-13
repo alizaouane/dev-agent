@@ -54,6 +54,14 @@ describe('<StartFromSpecPanel> — story section', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('shows the may-be-short notice when the list is empty but the listing failed', () => {
+    // A rejected verification (rate limit, expired token) can leave `stories`
+    // empty even though the repo has stories nobody could be told about. The
+    // section still has to say something rather than reading as "no stories".
+    render(<StartFromSpecPanel repo="q/r" pairs={[]} stories={[]} storyListingIncomplete />);
+    expect(screen.getByText(/may be short/)).toBeInTheDocument();
+  });
+
   it('says the story list may be short when storyListingIncomplete is true', () => {
     const unapproved: StoryItem = { ...approvedStory, approved: false };
     render(
@@ -101,16 +109,44 @@ describe('<StartFromSpecPanel> — story section', () => {
   });
 
   it('keeps the spec section behaviour unchanged when only specs are passed', async () => {
-    render(<StartFromSpecPanel repo="q/r" pairs={[approvedSpec]} />);
+    const { container } = render(<StartFromSpecPanel repo="q/r" pairs={[approvedSpec]} />);
     expect(screen.getByText('Start work on an approved spec')).toBeInTheDocument();
     expect(
       screen.queryByText('Start work on an approved story'),
     ).not.toBeInTheDocument();
+
+    // The spec section is a shipped surface: it must render as the root
+    // element with its own original classes, not nested inside a wrapper
+    // `<div>` that a later change to accommodate the story section might
+    // reintroduce. A Fragment produces no such wrapper — the spec card
+    // itself must be `container`'s first (and only) child.
+    expect(container.childElementCount).toBe(1);
+    const specCard = container.firstElementChild as HTMLElement;
+    expect(specCard.tagName).toBe('DIV');
+    expect(specCard.className).toBe('rounded-md border border-border bg-card p-5');
+    expect(specCard).toHaveTextContent('Start work on an approved spec');
 
     await userEvent.click(screen.getByRole('button', { name: /start work/i }));
     expect(dispatchFromSpec).toHaveBeenCalledTimes(1);
     const formData = dispatchFromSpec.mock.calls[0][0] as FormData;
     expect(formData.get('spec_path')).toBe(approvedSpec.specPath);
     expect(dispatchFromStory).not.toHaveBeenCalled();
+  });
+
+  it('gives the story section its own accessible names, distinct from the spec section', () => {
+    // With both sections rendered, a screen-reader user relying on the
+    // accessible name alone must be able to tell which input and which
+    // button belong to the story section rather than the spec section.
+    render(
+      <StartFromSpecPanel repo="q/r" pairs={[approvedSpec]} stories={[approvedStory]} />,
+    );
+
+    expect(screen.getByRole('textbox', { name: 'Issue title' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Story issue title' })).toBeInTheDocument();
+
+    expect(screen.getByRole('button', { name: 'Start work' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /start work on this story/i }),
+    ).toBeInTheDocument();
   });
 });

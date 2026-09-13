@@ -100,35 +100,180 @@ export function StartFromSpecPanel({
   const [storyTitle, setStoryTitle] = useState('');
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="rounded-md border border-border bg-card p-5">
-        <h3 className="mb-1 text-base font-semibold">Start work on an approved spec</h3>
+    <>
+    <div className="rounded-md border border-border bg-card p-5">
+      <h3 className="mb-1 text-base font-semibold">Start work on an approved spec</h3>
 
-        {approved.length === 0 ? (
-          <p className="max-w-2xl text-sm text-muted-foreground">
-            Nothing here yet. A spec becomes startable once it has been reviewed
-            and you have approved it, which happens in your Claude Code session —
-            pitch the work there, and the approval is recorded next to the spec.
-            {unapproved > 0 ? (
-              <>
-                {' '}
-                This repo has {unapproved} spec{unapproved === 1 ? '' : 's'} on the
-                default branch without an approval.
-              </>
-            ) : null}
-            {unverified > 0 ? (
-              <>
-                {' '}
-                Another {unverified} carr{unverified === 1 ? 'ies' : 'y'} an
-                approval that could not be read just now.
-              </>
-            ) : null}
+      {approved.length === 0 ? (
+        <p className="max-w-2xl text-sm text-muted-foreground">
+          Nothing here yet. A spec becomes startable once it has been reviewed
+          and you have approved it, which happens in your Claude Code session —
+          pitch the work there, and the approval is recorded next to the spec.
+          {unapproved > 0 ? (
+            <>
+              {' '}
+              This repo has {unapproved} spec{unapproved === 1 ? '' : 's'} on the
+              default branch without an approval.
+            </>
+          ) : null}
+          {unverified > 0 ? (
+            <>
+              {' '}
+              Another {unverified} carr{unverified === 1 ? 'ies' : 'y'} an
+              approval that could not be read just now.
+            </>
+          ) : null}
+          {incomplete ? (
+            <>
+              {' '}
+              <span className="text-destructive">
+                Some of this repo could not be read just now, so what is listed
+                here may be short. Reload in a moment.
+              </span>
+            </>
+          ) : null}
+        </p>
+      ) : (
+        <>
+          <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
+            Starts the implement workflow on the issue your Claude Code session
+            filed for this spec, or files one if there isn&apos;t one yet. The
+            spec and its plan are paired for you.
             {incomplete ? (
               <>
                 {' '}
                 <span className="text-destructive">
-                  Some of this repo could not be read just now, so what is listed
-                  here may be short. Reload in a moment.
+                  Some of this repo could not be read just now, so approved specs
+                  may be missing from this list. Reload in a moment.
+                </span>
+              </>
+            ) : null}
+          </p>
+          <form
+            action={(formData) => {
+              setError(null);
+              startTransition(async () => {
+                try {
+                  const result = await dispatchFromSpec(formData);
+                  if (result && 'error' in result) setError(result.error);
+                } catch (e) {
+                  const msg = e instanceof Error ? e.message : String(e);
+                  if (msg.includes('NEXT_REDIRECT')) throw e;
+                  setError(msg);
+                }
+              });
+            }}
+            className="flex flex-col gap-3"
+          >
+            <input type="hidden" name="repo" value={repo} />
+            <input type="hidden" name="spec_path" value={selected?.specPath ?? ''} />
+            <input type="hidden" name="plan_path" value={selected?.planPath ?? ''} />
+
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">Approved spec</span>
+              <select
+                value={selected?.key ?? ''}
+                onChange={(e) => setKey(e.target.value)}
+                className="rounded border border-border bg-background px-2 py-1"
+              >
+                {approved.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.title}
+                    {p.planPath ? '' : ' (no plan)'}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {selected ? (
+              <p className="text-xs text-muted-foreground">
+                <code>{selected.specPath}</code>
+                {selected.planPath ? (
+                  <>
+                    {' · '}
+                    <code>{selected.planPath}</code>
+                  </>
+                ) : (
+                  ' · no matching plan; the agent derives its own task list'
+                )}
+              </p>
+            ) : null}
+
+            {/*
+              Two fields, because the two paths want different things. `title`
+              names a new issue and falls back to the spec's own name, so
+              leaving the box untouched is a valid answer rather than a
+              validation error. `custom_title` carries only what was actually
+              typed, so reusing an issue renames it when the user asked for a
+              different title and leaves it alone when they did not.
+            */}
+            <input type="hidden" name="title" value={title.trim() || selected?.title || ''} />
+            <input type="hidden" name="custom_title" value={title.trim()} />
+            <label className="flex flex-col gap-1 text-sm">
+              <span className="font-medium">Issue title</span>
+              <input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                placeholder={selected?.title ?? ''}
+                aria-label="Issue title"
+                className="rounded border border-border bg-background px-2 py-1"
+              />
+              <span className="text-xs text-muted-foreground">
+                Leave blank to keep the spec&apos;s own name, or the title of the
+                issue your session already filed.
+              </span>
+            </label>
+
+            <div>
+              <Button type="submit" disabled={pending || !selected}>
+                {pending ? 'Starting…' : 'Start work'}
+              </Button>
+            </div>
+            {error ? <p className="text-xs text-destructive">{error}</p> : null}
+          </form>
+        </>
+      )}
+    </div>
+
+    {/*
+      Rendered when there is anything to say: either a story exists, or a
+      failed read means one might. The second half of that condition is what
+      keeps a rate-limited verification from reading as "no stories" — a
+      listing that is merely absent (a 404, no story tree at all) reports
+      `unreadable: false` and renders nothing here, same as before.
+    */}
+    {stories.length > 0 || storyListingIncomplete ? (
+      <div className="mt-6 rounded-md border border-border bg-card p-5">
+        <h3 className="mb-1 text-base font-semibold">Start work on an approved story</h3>
+
+        {approvedStories.length === 0 ? (
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Nothing here yet. A story becomes startable once it has been
+            reviewed and you have approved it, which happens in your Claude
+            Code session — pitch the work there, and the approval is recorded
+            next to the story.
+            {unapprovedStories > 0 ? (
+              <>
+                {' '}
+                This repo has {unapprovedStories} stor
+                {unapprovedStories === 1 ? 'y' : 'ies'} on the default branch
+                without an approval.
+              </>
+            ) : null}
+            {unverifiedStories > 0 ? (
+              <>
+                {' '}
+                Another {unverifiedStories} carr
+                {unverifiedStories === 1 ? 'ies' : 'y'} an approval that could
+                not be read just now.
+              </>
+            ) : null}
+            {storyIncomplete ? (
+              <>
+                {' '}
+                <span className="text-destructive">
+                  Some of this repo could not be read just now, so what is
+                  listed here may be short. Reload in a moment.
                 </span>
               </>
             ) : null}
@@ -136,241 +281,115 @@ export function StartFromSpecPanel({
         ) : (
           <>
             <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
-              Starts the implement workflow on the issue your Claude Code session
-              filed for this spec, or files one if there isn&apos;t one yet. The
-              spec and its plan are paired for you.
-              {incomplete ? (
+              Starts the implement workflow on the issue your Claude Code
+              session filed for this story, or files one if there isn&apos;t
+              one yet.
+              {storyIncomplete ? (
                 <>
                   {' '}
                   <span className="text-destructive">
-                    Some of this repo could not be read just now, so approved specs
-                    may be missing from this list. Reload in a moment.
+                    Some of this repo could not be read just now, so approved
+                    stories may be missing from this list. Reload in a moment.
                   </span>
                 </>
               ) : null}
             </p>
             <form
               action={(formData) => {
-                setError(null);
-                startTransition(async () => {
+                setStoryError(null);
+                startStoryTransition(async () => {
                   try {
-                    const result = await dispatchFromSpec(formData);
-                    if (result && 'error' in result) setError(result.error);
+                    const result = await dispatchFromStory(formData);
+                    if (result && 'error' in result) setStoryError(result.error);
                   } catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
                     if (msg.includes('NEXT_REDIRECT')) throw e;
-                    setError(msg);
+                    setStoryError(msg);
                   }
                 });
               }}
               className="flex flex-col gap-3"
             >
               <input type="hidden" name="repo" value={repo} />
-              <input type="hidden" name="spec_path" value={selected?.specPath ?? ''} />
-              <input type="hidden" name="plan_path" value={selected?.planPath ?? ''} />
+              <input type="hidden" name="story_path" value={selectedStory?.storyPath ?? ''} />
 
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium">Approved spec</span>
+                <span className="font-medium">Approved story</span>
                 <select
-                  value={selected?.key ?? ''}
-                  onChange={(e) => setKey(e.target.value)}
+                  value={selectedStory?.key ?? ''}
+                  onChange={(e) => setStoryKey(e.target.value)}
                   className="rounded border border-border bg-background px-2 py-1"
                 >
-                  {approved.map((p) => (
-                    <option key={p.key} value={p.key}>
-                      {p.title}
-                      {p.planPath ? '' : ' (no plan)'}
+                  {approvedStories.map((s) => (
+                    <option key={s.key} value={s.key}>
+                      {s.title}
                     </option>
                   ))}
                 </select>
               </label>
 
-              {selected ? (
+              {selectedStory ? (
                 <p className="text-xs text-muted-foreground">
-                  <code>{selected.specPath}</code>
-                  {selected.planPath ? (
-                    <>
-                      {' · '}
-                      <code>{selected.planPath}</code>
-                    </>
-                  ) : (
-                    ' · no matching plan; the agent derives its own task list'
-                  )}
+                  <code>{selectedStory.storyPath}</code>
                 </p>
               ) : null}
 
               {/*
-                Two fields, because the two paths want different things. `title`
-                names a new issue and falls back to the spec's own name, so
-                leaving the box untouched is a valid answer rather than a
-                validation error. `custom_title` carries only what was actually
-                typed, so reusing an issue renames it when the user asked for a
+                Same two-field split as the spec form, verbatim: `title` names
+                a new issue and falls back to the story's own name, so leaving
+                the box untouched is a valid answer rather than a validation
+                error. `custom_title` carries only what was actually typed, so
+                reusing an issue renames it when the user asked for a
                 different title and leaves it alone when they did not.
               */}
-              <input type="hidden" name="title" value={title.trim() || selected?.title || ''} />
-              <input type="hidden" name="custom_title" value={title.trim()} />
+              <input
+                type="hidden"
+                name="title"
+                value={storyTitle.trim() || selectedStory?.title || ''}
+              />
+              <input type="hidden" name="custom_title" value={storyTitle.trim()} />
               <label className="flex flex-col gap-1 text-sm">
-                <span className="font-medium">Issue title</span>
+                {/*
+                  "Story issue title", not "Issue title": with both sections
+                  on the page, two inputs sharing one accessible name leave a
+                  screen-reader user unable to tell which is which. The spec
+                  section's own label and `aria-label` are untouched.
+                */}
+                <span className="font-medium">Story issue title</span>
                 <input
-                  value={title}
-                  onChange={(e) => setTitle(e.target.value)}
-                  placeholder={selected?.title ?? ''}
-                  aria-label="Issue title"
+                  value={storyTitle}
+                  onChange={(e) => setStoryTitle(e.target.value)}
+                  placeholder={selectedStory?.title ?? ''}
+                  aria-label="Story issue title"
                   className="rounded border border-border bg-background px-2 py-1"
                 />
                 <span className="text-xs text-muted-foreground">
-                  Leave blank to keep the spec&apos;s own name, or the title of the
-                  issue your session already filed.
+                  Leave blank to keep the story&apos;s own name, or the title
+                  of the issue your session already filed.
                 </span>
               </label>
 
               <div>
-                <Button type="submit" disabled={pending || !selected}>
-                  {pending ? 'Starting…' : 'Start work'}
+                {/*
+                  "Start work on this story", not the spec section's plain
+                  "Start work" — the same reasoning as the title field above:
+                  two same-named buttons on one page are indistinguishable by
+                  accessible name alone.
+                */}
+                <Button type="submit" disabled={storyPending || !selectedStory}>
+                  {storyPending ? 'Starting…' : 'Start work on this story'}
                 </Button>
               </div>
-              {error ? <p className="text-xs text-destructive">{error}</p> : null}
+              {storyError ? (
+                <p role="alert" className="text-xs text-destructive">
+                  {storyError}
+                </p>
+              ) : null}
             </form>
           </>
         )}
       </div>
-
-      {stories.length > 0 ? (
-        <div className="rounded-md border border-border bg-card p-5">
-          <h3 className="mb-1 text-base font-semibold">Start work on an approved story</h3>
-
-          {approvedStories.length === 0 ? (
-            <p className="max-w-2xl text-sm text-muted-foreground">
-              Nothing here yet. A story becomes startable once it has been
-              reviewed and you have approved it, which happens in your Claude
-              Code session — pitch the work there, and the approval is recorded
-              next to the story.
-              {unapprovedStories > 0 ? (
-                <>
-                  {' '}
-                  This repo has {unapprovedStories} stor
-                  {unapprovedStories === 1 ? 'y' : 'ies'} on the default branch
-                  without an approval.
-                </>
-              ) : null}
-              {unverifiedStories > 0 ? (
-                <>
-                  {' '}
-                  Another {unverifiedStories} carr
-                  {unverifiedStories === 1 ? 'ies' : 'y'} an approval that could
-                  not be read just now.
-                </>
-              ) : null}
-              {storyIncomplete ? (
-                <>
-                  {' '}
-                  <span className="text-destructive">
-                    Some of this repo could not be read just now, so what is
-                    listed here may be short. Reload in a moment.
-                  </span>
-                </>
-              ) : null}
-            </p>
-          ) : (
-            <>
-              <p className="mb-4 max-w-2xl text-sm text-muted-foreground">
-                Starts the implement workflow on the issue your Claude Code
-                session filed for this story, or files one if there isn&apos;t
-                one yet.
-                {storyIncomplete ? (
-                  <>
-                    {' '}
-                    <span className="text-destructive">
-                      Some of this repo could not be read just now, so approved
-                      stories may be missing from this list. Reload in a moment.
-                    </span>
-                  </>
-                ) : null}
-              </p>
-              <form
-                action={(formData) => {
-                  setStoryError(null);
-                  startStoryTransition(async () => {
-                    try {
-                      const result = await dispatchFromStory(formData);
-                      if (result && 'error' in result) setStoryError(result.error);
-                    } catch (e) {
-                      const msg = e instanceof Error ? e.message : String(e);
-                      if (msg.includes('NEXT_REDIRECT')) throw e;
-                      setStoryError(msg);
-                    }
-                  });
-                }}
-                className="flex flex-col gap-3"
-              >
-                <input type="hidden" name="repo" value={repo} />
-                <input type="hidden" name="story_path" value={selectedStory?.storyPath ?? ''} />
-
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="font-medium">Approved story</span>
-                  <select
-                    value={selectedStory?.key ?? ''}
-                    onChange={(e) => setStoryKey(e.target.value)}
-                    className="rounded border border-border bg-background px-2 py-1"
-                  >
-                    {approvedStories.map((s) => (
-                      <option key={s.key} value={s.key}>
-                        {s.title}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                {selectedStory ? (
-                  <p className="text-xs text-muted-foreground">
-                    <code>{selectedStory.storyPath}</code>
-                  </p>
-                ) : null}
-
-                {/*
-                  Same two-field split as the spec form, verbatim: `title` names
-                  a new issue and falls back to the story's own name, so leaving
-                  the box untouched is a valid answer rather than a validation
-                  error. `custom_title` carries only what was actually typed, so
-                  reusing an issue renames it when the user asked for a
-                  different title and leaves it alone when they did not.
-                */}
-                <input
-                  type="hidden"
-                  name="title"
-                  value={storyTitle.trim() || selectedStory?.title || ''}
-                />
-                <input type="hidden" name="custom_title" value={storyTitle.trim()} />
-                <label className="flex flex-col gap-1 text-sm">
-                  <span className="font-medium">Issue title</span>
-                  <input
-                    value={storyTitle}
-                    onChange={(e) => setStoryTitle(e.target.value)}
-                    placeholder={selectedStory?.title ?? ''}
-                    aria-label="Issue title"
-                    className="rounded border border-border bg-background px-2 py-1"
-                  />
-                  <span className="text-xs text-muted-foreground">
-                    Leave blank to keep the story&apos;s own name, or the title
-                    of the issue your session already filed.
-                  </span>
-                </label>
-
-                <div>
-                  <Button type="submit" disabled={storyPending || !selectedStory}>
-                    {storyPending ? 'Starting…' : 'Start work'}
-                  </Button>
-                </div>
-                {storyError ? (
-                  <p role="alert" className="text-xs text-destructive">
-                    {storyError}
-                  </p>
-                ) : null}
-              </form>
-            </>
-          )}
-        </div>
-      ) : null}
-    </div>
+    ) : null}
+    </>
   );
 }
