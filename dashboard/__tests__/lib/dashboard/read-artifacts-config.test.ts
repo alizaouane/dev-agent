@@ -188,4 +188,43 @@ describe('readArtifactsConfig', () => {
       unreadable: true,
     });
   });
+
+  it('marks itself unreadable when a segment has surrounding whitespace', async () => {
+    // `docs / stories` is not the directory `docs/stories`: git-tree paths
+    // keep every character, so a padded segment matches nothing and would
+    // read as an empty directory.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs / stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when a segment is only whitespace', async () => {
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: "docs/   /stories"\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('marks itself unreadable when stories_dir uses a backslash', async () => {
+    // A Windows-style path is one segment to the lister and matches no tree
+    // path, which uses forward slashes only.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: \'docs\\stories\'\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: DEFAULT_STORIES_DIR,
+      unreadable: true,
+    });
+  });
+
+  it('keeps a directory whose name has an inner space', async () => {
+    // Git allows spaces inside a path segment, so this is a real directory
+    // the tree can match, not a spelling to refuse.
+    getContent.mockResolvedValue(file('artifacts:\n  stories_dir: docs/my stories\n'));
+    expect(await readArtifactsConfig(octokit, 'o', 'r', 'main')).toEqual({
+      storiesDir: 'docs/my stories',
+      unreadable: false,
+    });
+  });
 });

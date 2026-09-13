@@ -38,10 +38,13 @@ export interface ArtifactsConfig {
  * would be silently listing a different directory instead. All three
  * unreadable-shaped cases return the default with `unreadable: true`.
  *
- * A usable `stories_dir` is returned repo-relative: surrounding whitespace,
- * any leading `./` segments and trailing slashes are removed. A value that is
- * absolute, contains a `..` segment, or is empty after that cleanup cannot
- * be matched against git-tree paths and is treated as unusable.
+ * A usable `stories_dir` is returned in the canonical form git-tree paths
+ * use: surrounding whitespace is trimmed, and `.` and empty segments are
+ * dropped wherever they appear, so `./docs`, `docs/./stories`, `docs//stories`
+ * and a trailing `/` all resolve. An absolute path, a `..` segment, a segment
+ * with surrounding whitespace or made only of whitespace, a backslash, or a
+ * value with nothing left names no directory the tree can match, and is
+ * reported as unreadable.
  *
  * @param octokit - Authenticated client for the consumer repo.
  * @param owner - Repo owner.
@@ -113,9 +116,20 @@ export async function readArtifactsConfig(
   // tree can match: listing with it would read as an empty directory, so it is
   // unusable rather than silently absent.
   const trimmed = raw.trim();
-  if (trimmed.startsWith('/')) return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
+  // A backslash is a Windows spelling the tree never uses: the whole value
+  // would be one segment matching nothing.
+  if (trimmed.startsWith('/') || trimmed.includes('\\')) {
+    return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
+  }
   const segments = trimmed.split('/').filter((segment) => segment !== '' && segment !== '.');
-  if (segments.length === 0 || segments.includes('..')) {
+  // A segment padded with whitespace, or made only of it, is not the
+  // directory it looks like: tree paths keep every character. An inner space
+  // is different — git allows it — so only surrounding whitespace is refused.
+  if (
+    segments.length === 0 ||
+    segments.includes('..') ||
+    segments.some((segment) => segment !== segment.trim())
+  ) {
     return { storiesDir: DEFAULT_STORIES_DIR, unreadable: true };
   }
   return { storiesDir: segments.join('/'), unreadable: false };
