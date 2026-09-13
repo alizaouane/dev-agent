@@ -300,7 +300,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         if: steps.slot.outputs.overtaken != 'true'
-        with: { node-version: '20', cache: 'npm' }
+        with: { node-version: '24', cache: 'npm' }
 
       # Consumer deps so the agent can run lint/test/build against the
       # consumer's package.json.

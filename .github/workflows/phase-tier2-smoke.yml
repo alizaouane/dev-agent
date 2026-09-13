@@ -170,7 +170,7 @@ jobs:
       - name: Live mode — set up Node
         if: inputs.invocation_mode == 'live'
         uses: actions/setup-node@v4
-        with: { node-version: '20', cache: 'npm' }
+        with: { node-version: '24', cache: 'npm' }
 
       - name: Live mode — install engine deps
         if: inputs.invocation_mode == 'live'

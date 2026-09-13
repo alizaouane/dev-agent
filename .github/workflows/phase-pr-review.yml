@@ -124,7 +124,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         if: steps.pr.outputs.skip != 'true'
-        with: { node-version: '20' }
+        with: { node-version: '24' }
 
       - name: Install engine deps
         if: steps.pr.outputs.skip != 'true'
