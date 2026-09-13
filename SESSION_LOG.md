@@ -1,5 +1,23 @@
 # Session Log
 
+## 2026-09-13 05:57 UTC — interactive — Slice 4: approved stories in the picker, status projected
+
+**Trigger:** "execute slice 4" — the plan at docs/superpowers/plans/2026-09-12-story-level-approval-slice-4.md, run task by task with a review after each and a final whole-branch review.
+
+**What changed:** an approved story now appears in the repo page's start-work panel as its own list, beside approved specs. Stories are found from the consumer's `artifacts.stories_dir` in one recursive git-tree call, verified through the real story gate, and started by a new `dispatchFromStory` action that reuses an issue the intake already filed. The implement workflow compares a story's approved copy by what its approval binds rather than byte for byte, and writes the story's status line to `InProgress` when implement starts and `Review` when the pull request opens. Every failed or truncated read along that path reports the list as possibly short instead of empty.
+
+Reviews changed the plan in several places, all recorded as rulings: the config reader and the panel each had a path where a failed or unusable read looked like "no stories"; the create path wiped the `epic:N` label it had just applied; the stamp steps would have marked a story that ran under `spec-approval:override`, or a stub run, and would have put the token in a clone URL; and the new stamp caused the session-log push to be rejected on runs where the agent made no branch.
+
+**Deferred / Next:**
+- `Done` is not stamped: nothing sets `state:done` while promotion is unimplemented.
+- Stamps only land where the implement job's token may push to the default branch; elsewhere they warn and skip.
+- Pre-existing on the spec path: `verifySpecPairs(...).catch(() => [])` reports a failed verification as no approved specs.
+- A story path containing whitespace, or a `stories_dir` of `.`, still fails quietly.
+
+**Next session should start with:** the slice 4 pull request — CI and the review loop.
+
+---
+
 ## 2026-09-12 18:15 UTC — interactive — Slice 3: a story issue dispatches end to end
 
 **Trigger:** slice 3 of the story-level-approval plan — AC-16 and AC-17, plus
