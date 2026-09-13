@@ -150,3 +150,21 @@ describe('<StartFromSpecPanel> — story section', () => {
     ).toBeInTheDocument();
   });
 });
+
+describe('<StartFromSpecPanel> — spec section when verification could not run', () => {
+  it('says the list may be short when there are no pairs and the listing is incomplete', () => {
+    // The page passes no pairs and listingIncomplete when spec verification
+    // could not run at all — a rate limit, an expired token. Rendering only
+    // "Nothing here yet" then would report an outage as specs nobody
+    // approved.
+    render(<StartFromSpecPanel repo="q/r" pairs={[]} listingIncomplete />);
+    expect(screen.getByText(/Nothing here yet/)).toBeInTheDocument();
+    expect(screen.getByText(/could not be read just now, so what is listed/)).toBeInTheDocument();
+  });
+
+  it('does not claim the list may be short when the listing is complete', () => {
+    render(<StartFromSpecPanel repo="q/r" pairs={[]} />);
+    expect(screen.getByText(/Nothing here yet/)).toBeInTheDocument();
+    expect(screen.queryByText(/could not be read just now/)).not.toBeInTheDocument();
+  });
+});
