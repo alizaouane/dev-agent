@@ -134,9 +134,31 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '24', cache: 'npm' }
 
+      # Record this Node's absolute path before anything else can change PATH.
+      # The consumer's own Node is set up below; engine CLIs keep running on
+      # this one through "$ENGINE_NODE", whatever `node` resolves to later.
+      - name: Pin the engine's Node
+        run: echo "ENGINE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
+
+      # The consumer's install, tests, typecheck, build and the agent's shell
+      # run on the Node the consumer declares (.dev-agent.yml runtime.node,
+      # .nvmrc, .node-version, .tool-versions, package.json), not the engine's.
+      - name: Resolve the consumer's Node
+        id: consumer-node
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/resolve-consumer-node.ts
+
+      - name: Set up the consumer's Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.consumer-node.outputs.node_version }}
 
       # §22.1 — pre-flight budget gate. The nightly watchdog reports spend
       # AFTER it happens, which is monitoring; this refuses to start the phase
@@ -150,7 +172,8 @@ jobs:
           CONFIG_PATH: ${{ inputs.config_path }}
           PHASE: swarm_review
           BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Stub-mode — generate fake reviewer JSONs
         if: inputs.invocation_mode == 'stub'
@@ -160,7 +183,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/swarm-inputs
-          .dev-agent-engine/node_modules/.bin/tsx \
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs \
             .dev-agent-engine/lib/cli/swarm-stub.ts \
             --output-dir /tmp/swarm-inputs \
             --mode "$STUB_MODE" \
@@ -218,7 +241,7 @@ jobs:
             # zero findings).
             echo "::warning::verification-bundle artifact not found — reviewers will see diff-only with explicit missing-evidence marker"
           fi
-          .dev-agent-engine/node_modules/.bin/tsx \
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs \
             .dev-agent-engine/lib/cli/evidence-summarize.ts \
             --bundle-dir /tmp/evidence-bundle \
             --output /tmp/evidence-summary.json
@@ -374,7 +397,8 @@ jobs:
           AGENT_STATUS: ${{ steps.agent.outcome == 'success' && 'success' || 'blocked' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Live mode — run regression-guard reviewer
         if: inputs.invocation_mode == 'live'
@@ -455,7 +479,7 @@ jobs:
             exit 1
           fi
           set +e
-          .dev-agent-engine/node_modules/.bin/tsx \
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs \
             .dev-agent-engine/lib/cli/swarm-aggregate.ts \
             --inputs-dir /tmp/swarm-inputs \
             --output-json /tmp/swarm-aggregate.json \

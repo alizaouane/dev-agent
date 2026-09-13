@@ -120,11 +120,33 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '24', cache: 'npm' }
 
-      - run: npm ci
+      # Record this Node's absolute path before anything else can change PATH.
+      # The consumer's own Node is set up below; engine CLIs keep running on
+      # this one through "$ENGINE_NODE", whatever `node` resolves to later.
+      - name: Pin the engine's Node
+        run: echo "ENGINE_NODE=$(command -v node)" >> "$GITHUB_ENV"
 
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
+
+      # The consumer's install, tests, typecheck, build and the agent's shell
+      # run on the Node the consumer declares (.dev-agent.yml runtime.node,
+      # .nvmrc, .node-version, .tool-versions, package.json), not the engine's.
+      - name: Resolve the consumer's Node
+        id: consumer-node
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/resolve-consumer-node.ts
+
+      - name: Set up the consumer's Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.consumer-node.outputs.node_version }}
+
+      - run: npm ci
 
       # §22.1 — pre-flight budget gate. Scouts are cron-triggered and unattended,
       # which is precisely how the June and July 2026 spend incidents happened:
@@ -136,14 +158,15 @@ jobs:
           CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
           PHASE: scout_digest
           BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Convert .dev-agent.yml to JSON for jq
         env:
           CONFIG_PATH: ${{ inputs.config_path }}
         run: |
           set -euo pipefail
-          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/config-to-json.ts "$CONFIG_PATH" > /tmp/config.json
           jq -e . /tmp/config.json > /dev/null
 
       - name: Render system prompt
@@ -172,7 +195,7 @@ jobs:
             echo "::error::PROMPT_VARS_JSON is empty — jq filter produced no output" >&2
             exit 1
           fi
-          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-prompt.ts unfinished-work-scout > /tmp/system-prompt.md
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/render-prompt.ts unfinished-work-scout > /tmp/system-prompt.md
 
       - name: Build agent prompt
         id: build
@@ -221,7 +244,8 @@ jobs:
           AGENT_STATUS: ${{ steps.claude.outcome == 'success' && 'success' || 'blocked' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Parse findings + file issues
         if: inputs.invocation_mode == 'live'

@@ -142,6 +142,11 @@ jobs:
           cache: npm
           cache-dependency-path: .dev-agent-engine/package-lock.json
 
+      # Record this Node's absolute path. This job runs engine code only, but
+      # every phase job launches engine CLIs the same way, through "$ENGINE_NODE".
+      - name: Pin the engine's Node
+        run: echo "ENGINE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
@@ -158,7 +163,7 @@ jobs:
           MAX_REPEATS: ${{ inputs.max_repeats }}
         run: |
           set -euo pipefail
-          .dev-agent-engine/node_modules/.bin/tsx \
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs \
             .dev-agent-engine/lib/cli/pr-triage.ts > /tmp/triage.json
           cat /tmp/triage.json
 

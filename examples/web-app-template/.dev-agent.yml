@@ -10,6 +10,13 @@ commands:
   typecheck: npm run typecheck
   lint: npm run lint
 
+# Node version dev-agent's gates use for this repo's own install, tests and
+# typecheck. Leave unset to use the repo's .nvmrc, .node-version,
+# .tool-versions or package.json engines; with none of those, the engine's
+# Node applies.
+# runtime:
+#   node: "22"
+
 branches:
   default: main
   # Set staging if you have a long-lived staging branch (e.g. develop).

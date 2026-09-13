@@ -97,3 +97,33 @@ describe('artifacts.stories_dir', () => {
     ).toThrow();
   });
 });
+
+describe('runtime.node', () => {
+  it('is optional: a config written before the key parses with no Node pinned', () => {
+    // Unset means "use the repo's own declaration" (.nvmrc, .node-version,
+    // .tool-versions, package.json), and only then the engine's Node. A
+    // default here would silently override what the repo already declares.
+    const parsed = devAgentConfigSchema.parse(validSample);
+    expect(parsed.runtime?.node).toBeUndefined();
+  });
+
+  it('keeps an explicit version string', () => {
+    const parsed = devAgentConfigSchema.parse({ ...validSample, runtime: { node: '22' } });
+    expect(parsed.runtime?.node).toBe('22');
+  });
+
+  it('accepts an unquoted YAML number and keeps it as a version string', () => {
+    // `node: 22` in YAML parses as the number 22. Rejecting the most natural
+    // way to write it would be hostile; setup-node wants a string either way.
+    const parsed = devAgentConfigSchema.parse({ ...validSample, runtime: { node: 22 } });
+    expect(parsed.runtime?.node).toBe('22');
+  });
+
+  it('rejects an empty version rather than treating it as unset', () => {
+    expect(() => devAgentConfigSchema.parse({ ...validSample, runtime: { node: '' } })).toThrow();
+  });
+
+  it('rejects a decimal number, which YAML has already truncated (22.10 loads as 22.1)', () => {
+    expect(() => devAgentConfigSchema.parse({ ...validSample, runtime: { node: 22.1 } })).toThrow();
+  });
+});

@@ -35,6 +35,13 @@ properties:
       typecheck: { type: string }
       lint: { type: string }
 
+  runtime:
+    type: object
+    properties:
+      # Node for the repo's own install, tests and typecheck. Unset: read from
+      # .nvmrc, .node-version, .tool-versions or package.json, else the engine's Node.
+      node: { type: [string, integer] }
+
   branches:
     type: object
     required: [default, staging, release_target, release_pr_required]

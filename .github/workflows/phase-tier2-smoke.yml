@@ -172,6 +172,12 @@ jobs:
         uses: actions/setup-node@v4
         with: { node-version: '24', cache: 'npm' }
 
+      # Record this Node's absolute path. This job runs engine code only, but
+      # every phase job launches engine CLIs the same way, through "$ENGINE_NODE".
+      - name: Pin the engine's Node
+        if: inputs.invocation_mode == 'live'
+        run: echo "ENGINE_NODE=$(command -v node)" >> "$GITHUB_ENV"
+
       - name: Live mode — install engine deps
         if: inputs.invocation_mode == 'live'
         working-directory: .dev-agent-engine
@@ -275,7 +281,8 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
           PHASE: tier2_smoke
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Live mode — install Claude Code CLI
         if: inputs.invocation_mode == 'live'
@@ -313,7 +320,8 @@ jobs:
           AGENT_STATUS: ${{ steps.author.outcome == 'success' && 'success' || 'blocked' }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/emit-telemetry.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/emit-telemetry.ts
 
       - name: Live mode — run Playwright probe + emit verdict
         if: inputs.invocation_mode == 'live'
@@ -323,7 +331,7 @@ jobs:
         run: |
           set -euo pipefail
           set +e
-          .dev-agent-engine/node_modules/.bin/tsx \
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs \
             .dev-agent-engine/lib/cli/playwright-probe.ts \
             --probe-dir /tmp/tier2-probe \
             --staging-url "$STAGING_URL" \
