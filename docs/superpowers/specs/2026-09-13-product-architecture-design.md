@@ -1,6 +1,6 @@
 # Product architecture: one UI for agent-driven development
 
-**Status:** Draft (revision 3, after two rounds of independent spec review)
+**Status:** Draft (revision 4, after three rounds of independent spec review)
 **Date:** 2026-09-13
 **Scope:** umbrella architecture for milestone 1. Each build part in section 10 gets its own spec, plan and PRs; this document fixes the boundaries and the rules those specs must follow.
 
@@ -57,7 +57,7 @@ Today an approval is a commit carrying the approving human's git identity. When 
 
 - The control plane records the approval (approver's GitHub user id and login, repository id, file path, blob SHA of the approved content, time) and writes the stamp commit through the App.
 - The stamp carries commit trailers with those fields, a key id, and an Ed25519 signature over them. Each organisation has its own signing key, held only by the control plane, so a leaked key cannot forge approvals for another organisation.
-- The control plane publishes each organisation's current and previous public keys by key id. `verify-approval` fetches the key named by the stamp; if the key cannot be fetched or is not listed, it refuses (unknown is not absent). Rotation keeps the previous key listed until every stamp signed with it has been superseded or re-signed.
+- The control plane publishes each organisation's current and previous public keys by key id. `verify-approval` fetches the key named by the stamp; if the key cannot be fetched or is not listed, it refuses (unknown is not absent). Approval verification therefore depends on the control plane being reachable: an outage stops builds on moved projects rather than letting them through. Rotation keeps the previous key listed until every stamp signed with it has been superseded or re-signed.
 - **Once a project is on the product, `verify-approval` accepts only product stamps** whose signature verifies and whose blob SHA matches the content being built. Today's local stamp is a file whose approver is free text and whose commit author is never checked, so anyone with write access could commit one naming anyone. Local stamps stay valid only for repositories not yet moved to the product, with that known limitation.
 - Only a human action in the UI creates an approval. No agent, run or automation can call the approval endpoint.
 - Part 1's spec defines the trailer format, key storage and rotation; part 2 updates `verify-approval` and the per-project switch.
@@ -111,7 +111,7 @@ The backend posts events; the control plane writes them; the database broadcasts
 2. The GitHub App dispatches the wrapper with the product run id and stores the returned workflow run id.
 3. The engine posts events authenticated with the job's GitHub Actions OIDC token. The control plane requires all of: a product-specific `aud`; `repository_id` equal to the project's repository id (not the name, which can change); `job_workflow_ref` equal to the pinned engine workflow for that project; and `run_id` equal to the stored workflow run id. For a run the product did not start, the first event with an otherwise valid token creates the adopted run bound to that `run_id`, so events that arrive before the `workflow_run` webhook are not rejected.
 4. **Status never comes from events.** Events are display only, and a run's status comes from GitHub's workflow result.
-5. **Gate verdicts come only from jobs the agent cannot reach.** Today ACM and swarm verdicts are labels and comments written with the token of the job the agent runs in, so re-reading them would trust data produced next to the agent. In the product design, each gate runs in its own job with no agent step and publishes its verdict as a check run. Agent jobs get no `checks: write` permission. The product accepts a verdict only from a check run that the Actions API ties to the gate job of the stored workflow run; approvals are verified from signed stamps (section 4.2).
+5. **Gate verdicts come only from the gate job's own result.** Today ACM and swarm verdicts are labels and comments written with the token of the job the agent runs in, so re-reading them would trust data produced next to the agent. Check runs cannot fix this: every check run created in Actions is credited to the same app, and nothing in the API ties one to the job that created it. In the product design, each gate runs in its own job with no agent step, and that job's final verdict step fails exactly when the gate says no. The product reads the verdict from `GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs` for the stored workflow run id and attempt, matching the gate job by its name in the pinned engine workflow. The verdict step's conclusion decides pass or fail; a failure in any earlier step of that job counts as `infrastructure`, not a gate result. Verdict details travel as an artifact and are display only. Approvals are verified from signed stamps (section 4.2).
 6. **Accepted risks inside an agent job.** The agent's Bash shares the job with the OIDC request token and the agent credential. A prompt-injected agent can add misleading timeline entries, labelled with their trust level, and can under-report usage to delay a budget cancel. The controls that do not depend on the agent are the per-run wall-clock cap and the vendor console limit.
 7. **Reducing that exposure is part 2's decision between two named options:** a credential proxy (the agent talks to a local proxy that holds the key; the key never enters the agent's environment, and the proxy's own usage counts become the trusted metering), or posting events from a sidecar process started before the agent, which removes the agent's need for `id-token` but not the key. Part 2 also adds an egress allowlist for agent steps.
 8. GitHub App webhooks (`workflow_run`, `pull_request`, `issues`) are verified by HMAC, de-duplicated on `X-GitHub-Delivery`, and routed by installation id to exactly one organisation; a repository id belongs to exactly one project.
@@ -181,7 +181,8 @@ The backend posts events; the control plane writes them; the database broadcasts
 | Dispatch returns no workflow run id | The run fails closed as `infrastructure`; nothing is left running untracked | Reason with a retry button |
 | Events lost, duplicated or out of order | Sequence numbers: duplicates ignored, order restored, gaps kept | "N events missing" |
 | Event with an invalid OIDC token or claim mismatch | Rejected and logged as a security event for the organisation. A valid token for a workflow run the product has not seen creates an adopted run instead. | Admin security log entry |
-| Gate verdict from a check run not tied to the gate job | Ignored for any state change; logged as a security event | Gate shown as unverified |
+| Gate job missing from the stored workflow run, renamed, or ended before its verdict step | No verdict is taken; the run fails as `infrastructure` | Gate shown as not evaluated, with the job link |
+| A second run of the pinned engine workflow in the same repository with a valid token | Adopted as its own run: the token proves engine code in that repository, not that a wrapper started it. Accepted, since only engine code can produce it. | Run marked "started from GitHub" |
 | Webhook lost or duplicated | Duplicates dropped by delivery id. A reconciler checks unfinished runs against the GitHub API every few minutes; a run stuck in `starting` past its timeout fails as never started. | Reason plus a link to the Actions run |
 | Wrapper run started outside the product | Adopted from the `workflow_run` webhook as origin `github` | Run appears, marked "started from GitHub" |
 | Sandbox crash or provider outage | Bridge heartbeat; 60 seconds without one fails the turn as `infrastructure`. Resume restores the last completed turn and its workspace snapshot. | Partial turn labelled interrupted; "Reopen chat" |
@@ -197,7 +198,7 @@ The backend posts events; the control plane writes them; the database broadcasts
 ## 8. Security summary
 
 - Approvals are verifiable from git through signed product stamps (section 4.2).
-- Status never comes from events a run posts, and gate verdicts come only from check runs tied to agent-free gate jobs (section 5.3).
+- Status never comes from events a run posts, and gate verdicts come only from the conclusion of agent-free gate jobs in the stored workflow run, read from the Actions jobs API (section 5.3).
 - Projects on the product accept only signed, per-organisation approval stamps (section 4.2).
 - OIDC ingest checks audience, repository id, run id and reusable workflow ref.
 - No GitHub write token in any sandbox; sandbox egress is allowlisted.
@@ -213,7 +214,7 @@ The backend posts events; the control plane writes them; the database broadcasts
 - **Isolation tests on a real test database** (no mocked database): for every table, Realtime channel and Storage path, a member of one organisation cannot read or write another organisation's data.
 - **Ingest security tests:** wrong audience, wrong repository id, wrong run id, wrong workflow ref, replayed sequence number, expired session token, forged webhook signature, duplicate delivery; all refused or ignored.
 - **Approval tests:** an App-authored stamp without a valid signature, a signature over a different blob SHA, an unknown or unfetchable key id, another organisation's key, and a local stamp on a moved project are all refused; a valid product stamp passes.
-- **Gate provenance tests:** a verdict check run created from an agent job, or from another workflow run, is ignored.
+- **Gate provenance tests:** a verdict is taken only from the named gate job of the stored workflow run and attempt; a same-named job in another run, a label or comment claiming a verdict, and a gate job that failed before its verdict step all produce no gate pass.
 - **Failure tests:** every row of section 7.2 checks the final status and reason.
 - **Budget race test:** two runs reserving the last of a budget concurrently; exactly one starts.
 - **Resume test:** kill a turn mid-way, reopen the chat, and confirm the killed turn is not continued, the workspace and subagent transcripts match the last completed turn, and no credential file was stored.
@@ -227,7 +228,7 @@ The backend posts events; the control plane writes them; the database broadcasts
 Each part has its own spec, plan and PRs, and ships usable on its own.
 
 1. **Control plane foundation:** organisations, login, GitHub App (webhook verification and routing), projects bound by repository id, isolation, runs and events with coalescing and Broadcast, the live run page, adopted runs from `workflow_run`, signed per-organisation approvals of record and published keys.
-2. **Agent adapter in the engine:** replace `claude-code-action` with the adapter, Claude Code first; OIDC-authenticated events; engine pinned per project; `verify-approval` accepts only signed product stamps on moved projects; gate jobs separated from agent jobs and publishing check runs; credential proxy or sidecar poster; narrowed Bash allowlists; stub adapter.
+2. **Agent adapter in the engine:** replace `claude-code-action` with the adapter, Claude Code first; OIDC-authenticated events; engine pinned per project; `verify-approval` accepts only signed product stamps on moved projects; gate jobs separated from agent jobs, with verdicts read from job conclusions; credential proxy or sidecar poster; narrowed Bash allowlists; stub adapter.
 3. **Credentials and cost:** per-organisation keys and KMS, secret sync, reserve-then-cancel, price table, console limit confirmation; the legal review of vendor terms gates it.
 4. **Live chat:** sandbox provider choice, bridge, egress allowlist, Claude Code permission tool, rendered chat, visual screens, patch-based spec PRs, resume with workspace snapshots, terminal escape hatch, subscription sign-in in the sandbox; the legal review gates it.
 5. **Codex and migration:** Codex batch adapter, Codex live chat on the app server or `codex-acp` after a spike, `AGENTS.md`, moving the repositories, retiring the old dashboard.
