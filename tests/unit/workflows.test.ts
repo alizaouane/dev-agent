@@ -1416,6 +1416,17 @@ describe('.github/workflows/', () => {
         ].join('\n');
         writeFileSync(join(bin, 'tsx'), wrapper);
         chmodSync(join(bin, 'tsx'), 0o755);
+        // The workflows launch the engine as `"$ENGINE_NODE" <tsx cli.mjs> <script>`.
+        // A stand-in ENGINE_NODE drops the cli.mjs argument and runs the same
+        // real CLI the `.bin/tsx` wrapper does, so a step body resolves either way.
+        const cli = join(dir, '.dev-agent-engine/node_modules/tsx/dist');
+        mkdirSync(cli, { recursive: true });
+        writeFileSync(join(cli, 'cli.mjs'), '');
+        writeFileSync(
+          join(dir, '.dev-agent-engine', 'engine-node'),
+          ['#!/usr/bin/env bash', 'shift', `exec '${join(bin, 'tsx')}' "$@"`, ''].join('\n'),
+        );
+        chmodSync(join(dir, '.dev-agent-engine', 'engine-node'), 0o755);
       };
 
       /**
@@ -1507,6 +1518,7 @@ describe('.github/workflows/', () => {
             SPEC_PATH: opts.story ? '' : doc,
             PLAN_PATH: opts.planBase !== undefined ? plan : '',
             OVERRIDE: opts.override ? 'true' : 'false',
+            ENGINE_NODE: join(work, '.dev-agent-engine', 'engine-node'),
           });
         };
 
@@ -1745,6 +1757,7 @@ describe('.github/workflows/', () => {
           chmodSync(join(bin, 'gh'), 0o755);
           return runBash(runBody(stepBlock(IN_PROGRESS)), consumer, {
             GITHUB_WORKSPACE: consumer,
+            ENGINE_NODE: join(consumer, '.dev-agent-engine', 'engine-node'),
             PATH: `${bin}:${process.env.PATH ?? ''}`,
             BASE: 'main',
             STORY_PATH: STORY_REL,
@@ -1991,6 +2004,7 @@ describe('.github/workflows/', () => {
             NEXT_SESSION_HINT: 'review the PR against the agreed scope.',
             BASE: 'main',
             PATH: `${repos.shimDir}:${process.env.PATH ?? ''}`,
+            ENGINE_NODE: join(repos.consumer, '.dev-agent-engine', 'engine-node'),
             ...env,
           });
 
@@ -2070,5 +2084,118 @@ describe('.github/workflows/', () => {
         });
       });
     });
+  });
+});
+
+describe("consumer Node runs apart from the engine's", () => {
+  // The phase workflows run two kinds of code in one job: engine CLIs, which
+  // need the Node the engine declares, and the consumer's own install, tests,
+  // typecheck and build, which should run on the Node the consumer's CI uses.
+  // Both used to find `node` on PATH, so whichever setup-node ran last decided
+  // for both.
+  const CONSUMER_WORKFLOWS = [
+    'phase-implement.yml',
+    'phase-staging-deploy.yml',
+    'phase-smoke-verify.yml',
+    'phase-pr-review.yml',
+    'phase-swarm-review.yml',
+  ];
+
+  /** The parts of a workflow step these assertions read. */
+  type Step = {
+    name?: string;
+    id?: string;
+    uses?: string;
+    run?: string;
+    with?: Record<string, unknown>;
+    'working-directory'?: string;
+  };
+
+  /**
+   * Parse a workflow's jobs.
+   *
+   * @param wf - Workflow file name.
+   * @returns Jobs keyed by id.
+   */
+  const jobsOf = (wf: string): Record<string, { steps?: Step[] }> =>
+    (yaml.load(readFileSync(resolve(workflowsDir, wf), 'utf8')) as { jobs: Record<string, { steps?: Step[] }> }).jobs;
+
+  /** True for the step that installs the engine's own dependencies. */
+  const isEngineInstall = (step: Step): boolean =>
+    step['working-directory'] === '.dev-agent-engine' && /npm ci/.test(step.run ?? '');
+
+  for (const wf of CONSUMER_WORKFLOWS) {
+    describe(wf, () => {
+      const raw = readFileSync(resolve(workflowsDir, wf), 'utf8');
+
+      it('never launches the engine through the PATH-resolved tsx shim', () => {
+        // `.bin/tsx` starts with `#!/usr/bin/env node`, so it runs on whichever
+        // Node is first on PATH — the consumer's, once that is set up.
+        expect(raw).not.toContain('node_modules/.bin/tsx');
+      });
+
+      it('launches every engine CLI through the pinned engine Node', () => {
+        const lines = raw.split('\n').filter((line) => line.includes('tsx/dist/cli.mjs'));
+        expect(lines.length).toBeGreaterThan(0);
+        for (const line of lines) expect(line).toMatch(/"\$ENGINE_NODE" /);
+      });
+
+      for (const [jobName, job] of Object.entries(jobsOf(wf))) {
+        const steps = job.steps ?? [];
+        const engineInstall = steps.findIndex(isEngineInstall);
+        if (engineInstall < 0) continue;
+
+        describe(`job ${jobName}`, () => {
+          it('pins the engine Node right after its setup-node, before installing engine deps', () => {
+            const pin = steps.findIndex((step) => step.name === "Pin the engine's Node");
+            expect(pin).toBeGreaterThan(0);
+            expect(steps[pin - 1].uses ?? '').toMatch(/^actions\/setup-node@/);
+            expect(String(steps[pin - 1].with?.['node-version'])).toBe('24');
+            expect(pin).toBeLessThan(engineInstall);
+            expect(steps[pin].run ?? '').toMatch(/ENGINE_NODE=\$\(command -v node\)/);
+          });
+
+          const agent = steps.findIndex((step) => /claude-code-action@/.test(step.uses ?? ''));
+          const consumerInstall = steps.findIndex(
+            (step) => /^\s*npm ci\s*$/.test(step.run ?? '') && !step['working-directory'],
+          );
+          if (agent < 0 && consumerInstall < 0) return;
+
+          it("resolves the consumer's Node and sets it up before any consumer code runs", () => {
+            const resolveStep = steps.findIndex((step) => step.id === 'consumer-node');
+            expect(resolveStep).toBeGreaterThan(engineInstall);
+            expect(steps[resolveStep].run ?? '').toMatch(/"\$ENGINE_NODE" .*resolve-consumer-node\.ts/);
+            const consumerSetup = steps.findIndex(
+              (step) =>
+                /^actions\/setup-node@/.test(step.uses ?? '') &&
+                String(step.with?.['node-version']).includes('steps.consumer-node.outputs.node_version'),
+            );
+            expect(consumerSetup).toBeGreaterThan(resolveStep);
+            if (agent >= 0) expect(consumerSetup).toBeLessThan(agent);
+            if (consumerInstall >= 0) expect(consumerSetup).toBeLessThan(consumerInstall);
+          });
+        });
+      }
+    });
+  }
+
+  it("records the engine Node's absolute path for later steps", () => {
+    const pin = Object.values(jobsOf('phase-implement.yml'))
+      .flatMap((job) => job.steps ?? [])
+      .find((step) => step.name === "Pin the engine's Node");
+    expect(pin?.run).toBeTruthy();
+    const dir = mkdtempSync(join(tmpdir(), 'pin-engine-node-'));
+    try {
+      const env = join(dir, 'github-env');
+      writeFileSync(env, '');
+      const result = spawnSync('bash', ['-c', pin!.run!], {
+        env: { ...process.env, GITHUB_ENV: env },
+        encoding: 'utf8',
+      });
+      expect(result.status).toBe(0);
+      expect(readFileSync(env, 'utf8').trim()).toMatch(/^ENGINE_NODE=\/\S*node$/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

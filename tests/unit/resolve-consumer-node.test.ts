@@ -159,6 +159,22 @@ describe('resolve-consumer-node CLI', () => {
     expect(readFileSync(output, 'utf8')).toContain(`node_version=${process.versions.node.split('.')[0]}\n`);
   });
 
+  it('reads runtime.node from the config at CONFIG_PATH, relative to REPO_ROOT', () => {
+    // The phase workflows accept a custom config location; the override has to
+    // be read from the same file they parse.
+    writeFileSync(join(repo, 'custom.yml'), 'schema_version: 1\nruntime:\n  node: "20"\n');
+    put('.nvmrc', '22\n');
+    const output = join(repo, 'github-output');
+    writeFileSync(output, '');
+    const result = spawnSync(tsxBinPath, [scriptPath], {
+      cwd: repo,
+      env: { ...process.env, REPO_ROOT: repo, CONFIG_PATH: 'custom.yml', GITHUB_OUTPUT: output },
+      encoding: 'utf8',
+    });
+    expect(result.status).toBe(0);
+    expect(readFileSync(output, 'utf8')).toContain('node_version=20\n');
+  });
+
   it('exits 1 on an unreadable declaration and writes nothing to GITHUB_OUTPUT', () => {
     put('package.json', '{ not json');
     const output = join(repo, 'github-output');

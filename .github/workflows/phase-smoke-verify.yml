@@ -103,11 +103,34 @@ jobs:
 
       - uses: actions/setup-node@v4
         with: { node-version: '24', cache: 'npm' }
-      - run: npm ci
+
+      # Record this Node's absolute path before anything else can change PATH.
+      # The consumer's own Node is set up below; engine CLIs keep running on
+      # this one through "$ENGINE_NODE", whatever `node` resolves to later.
+      - name: Pin the engine's Node
+        run: echo "ENGINE_NODE=$(command -v node)" >> "$GITHUB_ENV"
 
       - name: Install engine deps
         working-directory: .dev-agent-engine
         run: npm ci
+
+      # The consumer's install, tests, typecheck, build and the agent's shell
+      # run on the Node the consumer declares (.dev-agent.yml runtime.node,
+      # .nvmrc, .node-version, .tool-versions, package.json), not the engine's.
+      - name: Resolve the consumer's Node
+        id: consumer-node
+        env:
+          REPO_ROOT: ${{ github.workspace }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/resolve-consumer-node.ts
+
+      - name: Set up the consumer's Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ steps.consumer-node.outputs.node_version }}
+
+      - run: npm ci
 
       # §22.1 — pre-flight budget gate. The nightly watchdog reports spend
       # AFTER it happens, which is monitoring; this refuses to start the phase
@@ -121,7 +144,8 @@ jobs:
           CONFIG_PATH: ${{ inputs.config_path }}
           PHASE: smoke_verify
           BUDGET_OVERRIDE: ${{ inputs.budget_override || 'false' }}
-        run: .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/budget-gate.ts
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/budget-gate.ts
 
       - name: Classify smoke output (stub)
         env:
@@ -140,4 +164,4 @@ jobs:
             --argjson code "$SMOKE_EXIT_CODE" \
             --argjson issue "$ISSUE_NUMBER" \
             '{smoke_phase:$phase, smoke_output:$out, smoke_exit_code:$code, issue_number:$issue}')
-          .dev-agent-engine/node_modules/.bin/tsx .dev-agent-engine/lib/cli/render-and-run.ts smoke-verify
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/render-and-run.ts smoke-verify

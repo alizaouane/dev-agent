@@ -23,13 +23,15 @@
  *
  * Environment:
  * - `REPO_ROOT` — the consumer checkout. Defaults to the working directory.
+ * - `CONFIG_PATH` — the dev-agent config, relative to `REPO_ROOT` unless
+ *   absolute. Defaults to `.dev-agent.yml`, matching the phase workflows' input.
  * - `GITHUB_OUTPUT` — when set, `node_version` and `node_version_source` are
  *   appended to it for the next steps.
  *
  * Exit codes: 0 resolved, 1 a declaration could not be read.
  */
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 
@@ -47,6 +49,8 @@ export interface ResolveConsumerNodeInput {
   repoRoot: string;
   /** The version to use when the repository declares none: the engine's Node major. */
   defaultVersion: string;
+  /** The dev-agent config, relative to `repoRoot` unless absolute. Defaults to `.dev-agent.yml`. */
+  configPath?: string;
 }
 
 /**
@@ -60,26 +64,27 @@ function readIfPresent(path: string): string | null {
 }
 
 /**
- * Read `runtime.node` from `.dev-agent.yml`.
+ * Read `runtime.node` from the dev-agent config.
  *
  * @param repoRoot - The consumer checkout.
+ * @param configPath - The config file, relative to `repoRoot` unless absolute.
  * @returns The version, or null when the file or the key is absent.
  * @throws When the file is malformed YAML, or `runtime.node` is present but empty.
  */
-function fromDevAgentConfig(repoRoot: string): string | null {
-  const raw = readIfPresent(join(repoRoot, '.dev-agent.yml'));
+function fromDevAgentConfig(repoRoot: string, configPath: string): string | null {
+  const raw = readIfPresent(resolve(repoRoot, configPath));
   if (raw === null) return null;
   let parsed: unknown;
   try {
     parsed = yaml.load(raw);
   } catch (err) {
-    throw new Error(`.dev-agent.yml could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`${configPath} could not be parsed: ${err instanceof Error ? err.message : String(err)}`);
   }
   const node = (parsed as { runtime?: { node?: unknown } } | null)?.runtime?.node;
   if (node === undefined || node === null) return null;
   const version = typeof node === 'number' ? String(node) : typeof node === 'string' ? node.trim() : '';
   if (version === '') {
-    throw new Error('.dev-agent.yml sets runtime.node but it is empty or not a version');
+    throw new Error(`${configPath} sets runtime.node but it is empty or not a version`);
   }
   return version;
 }
@@ -171,8 +176,8 @@ function fromPackageJson(repoRoot: string): ConsumerNode | null {
  * @throws When a declaration exists but cannot be read.
  */
 export function resolveConsumerNode(input: ResolveConsumerNodeInput): ConsumerNode {
-  const { repoRoot, defaultVersion } = input;
-  const override = fromDevAgentConfig(repoRoot);
+  const { repoRoot, defaultVersion, configPath = '.dev-agent.yml' } = input;
+  const override = fromDevAgentConfig(repoRoot, configPath);
   if (override !== null) return { version: override, source: '.dev-agent.yml runtime.node' };
   for (const name of ['.nvmrc', '.node-version']) {
     const version = fromVersionFile(repoRoot, name);
@@ -193,7 +198,8 @@ export function resolveConsumerNode(input: ResolveConsumerNodeInput): ConsumerNo
 function main(): void {
   const repoRoot = process.env.REPO_ROOT ?? process.cwd();
   const defaultVersion = process.versions.node.split('.')[0];
-  const resolved = resolveConsumerNode({ repoRoot, defaultVersion });
+  const configPath = process.env.CONFIG_PATH || '.dev-agent.yml';
+  const resolved = resolveConsumerNode({ repoRoot, defaultVersion, configPath });
   if (process.env.GITHUB_OUTPUT) {
     appendFileSync(
       process.env.GITHUB_OUTPUT,
