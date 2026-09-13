@@ -1,13 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('@octokit/rest', () => ({
-  Octokit: vi.fn(() => ({
+  // `new Octokit()` needs a constructible mock: vitest 5 rejects an arrow
+  // function here, since arrows cannot be called with `new`.
+  Octokit: vi.fn(function () {
+    return {
     paginate: vi.fn().mockResolvedValue([
       { number: 1, title: 'login fails on Safari', body: 'Steps...', html_url: 'https://gh/1', labels: [{ name: 'bug' }] },
       { number: 2, title: 'add dark mode', body: 'Want...', html_url: 'https://gh/2', labels: [{ name: 'triage' }] },
       { number: 3, title: 'bump deps', body: 'routine', html_url: 'https://gh/3', labels: [{ name: 'chore' }] },
     ]),
-  })),
+    };
+  }),
 }));
 
 beforeEach(() => {

@@ -125,7 +125,7 @@ jobs:
       # repo called it, and the triage CLI lives here. Same pattern as every
       # phase workflow, pinned so workflow code and CLI code move together.
       - name: Checkout dev-agent engine
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: v1

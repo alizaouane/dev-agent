@@ -108,7 +108,7 @@ jobs:
           egress-policy: audit
           disable-sudo: true
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with: { fetch-depth: 1 }
 
       - name: Stub-mode — synthesize verification bundle
@@ -140,7 +140,7 @@ jobs:
 
       - name: Upload tier2 verification bundle
         if: inputs.invocation_mode == 'stub'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tier2-smoke-bundle-${{ inputs.issue_number }}
           path: verification-bundle-tier2.tar.gz
@@ -161,7 +161,7 @@ jobs:
       #      comment + label.
       - name: Live mode — checkout dev-agent engine
         if: inputs.invocation_mode == 'live'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
@@ -361,7 +361,7 @@ jobs:
 
       - name: Live mode — upload bundle
         if: inputs.invocation_mode == 'live' && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: tier2-smoke-bundle-${{ inputs.issue_number }}
           path: verification-bundle-tier2.tar.gz

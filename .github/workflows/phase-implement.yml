@@ -242,7 +242,7 @@ jobs:
           egress-policy: audit
           disable-sudo: true
       # Consumer repo at root — agent edits, type-checks, tests against this.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         if: steps.slot.outputs.overtaken != 'true'
         with: { fetch-depth: 0 }
 
@@ -292,7 +292,7 @@ jobs:
       # to v1 so workflow code and CLI code move together.
       - name: Checkout dev-agent engine
         if: steps.slot.outputs.overtaken != 'true'
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: alizaouane/dev-agent
           ref: main
