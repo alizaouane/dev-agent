@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll } from 'vitest';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -2093,13 +2093,21 @@ describe("consumer Node runs apart from the engine's", () => {
   // typecheck and build, which should run on the Node the consumer's CI uses.
   // Both used to find `node` on PATH, so whichever setup-node ran last decided
   // for both.
-  const CONSUMER_WORKFLOWS = [
-    'phase-implement.yml',
-    'phase-staging-deploy.yml',
-    'phase-smoke-verify.yml',
-    'phase-pr-review.yml',
-    'phase-swarm-review.yml',
-  ];
+  // Every workflow that installs the engine, found rather than listed, so a
+  // new phase workflow is held to the split without anyone remembering to add it.
+  const CONSUMER_WORKFLOWS = readdirSync(workflowsDir)
+    .filter((file) => file.endsWith('.yml'))
+    .filter((file) => readFileSync(resolve(workflowsDir, file), 'utf8').includes('working-directory: .dev-agent-engine'))
+    .sort();
+  // Its agent writes Playwright probes against the deployed URL and never runs
+  // the consumer's install or tests, so only the engine pin applies.
+  const ENGINE_ONLY_WORKFLOWS = new Set(['phase-tier2-smoke.yml']);
+
+  it('finds the phase workflows that run consumer code', () => {
+    for (const wf of ['phase-acm.yml', 'phase-implement.yml', 'phase-bug-scout.yml', 'phase-rollback.yml']) {
+      expect(CONSUMER_WORKFLOWS).toContain(wf);
+    }
+  });
 
   /** The parts of a workflow step these assertions read. */
   type Step = {
@@ -2171,7 +2179,7 @@ describe("consumer Node runs apart from the engine's", () => {
           const consumerInstall = steps.findIndex(
             (step) => /^\s*npm ci\s*$/.test(step.run ?? '') && !step['working-directory'],
           );
-          if (agent < 0 && consumerInstall < 0) return;
+          if (ENGINE_ONLY_WORKFLOWS.has(wf) || (agent < 0 && consumerInstall < 0)) return;
 
           it("resolves the consumer's Node and sets it up before any consumer code runs", () => {
             const resolveStep = steps.findIndex((step) => step.id === 'consumer-node');
