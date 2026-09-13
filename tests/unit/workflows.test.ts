@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { describe, it, expect, afterAll } from 'vitest';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
+import { execFileSync, spawnSync } from 'node:child_process';
 import yaml from 'js-yaml';
 
 const workflowsDir = resolve(__dirname, '../../.github/workflows');
@@ -1311,6 +1312,440 @@ describe('.github/workflows/', () => {
         // story would resolve as a spec.
         const body = ['```', 'Story: docs/stories/epic-1/foo.md', ''].join('\n');
         expect(resolve(body)).toBe('docs/stories/epic-1/foo.md');
+      });
+    });
+
+    describe('the approved-text comparison and the status projection', () => {
+      const REPO_ROOT = resolve(__dirname, '../..');
+      const REAL_TSX = resolve(REPO_ROOT, 'node_modules/.bin/tsx');
+      const STORY_REL = 'docs/stories/epic-1/1.1-thing.md';
+      const tempRoots: string[] = [];
+
+      afterAll(() => {
+        for (const dir of tempRoots) rmSync(dir, { recursive: true, force: true });
+      });
+
+      /**
+       * Make a scratch directory that is removed when the block finishes.
+       *
+       * @returns The absolute path of a new empty directory.
+       */
+      const scratch = (): string => {
+        const dir = mkdtempSync(join(tmpdir(), 'wf-story-status-'));
+        tempRoots.push(dir);
+        return dir;
+      };
+
+      /**
+       * Slice one step out of the workflow, from its `- name:` line up to the
+       * next step's.
+       *
+       * @param name - The step's exact name. Matched with a trailing newline,
+       *   so a name that prefixes another's does not match the longer one.
+       * @returns The step's YAML text.
+       * @throws When no step carries that name.
+       */
+      const stepBlock = (name: string): string => {
+        const start = raw.indexOf(`- name: ${name}\n`);
+        if (start < 0) throw new Error(`no step named ${JSON.stringify(name)}`);
+        const next = raw.indexOf('\n      - ', start + 1);
+        return raw.slice(start, next < 0 ? undefined : next);
+      };
+
+      /**
+       * Position of a step in the workflow, for ordering assertions.
+       *
+       * @param name - The step's exact name.
+       * @returns The offset of its `- name:` line, or -1 when absent.
+       */
+      const stepAt = (name: string): number => raw.indexOf(`- name: ${name}\n`);
+
+      /**
+       * Extract a step's `run: |` body as bash sees it: the block scalar's
+       * lines only, with the YAML indentation removed.
+       *
+       * @param block - A step's YAML text, from `stepBlock`.
+       * @returns The script.
+       * @throws When the step has no `run: |` body.
+       */
+      const runBody = (block: string): string => {
+        const marker = block.match(/^[ \t]*run: \|\n/m);
+        if (!marker || marker.index === undefined) throw new Error('step has no run: | body');
+        const lines = block.slice(marker.index + marker[0].length).split('\n');
+        const indentOf = (line: string): number => line.match(/^[ \t]*/)![0].length;
+        const first = lines.find((line) => line.trim() !== '');
+        if (first === undefined) return '';
+        const indent = indentOf(first);
+        const body: string[] = [];
+        for (const line of lines) {
+          if (line.trim() !== '' && indentOf(line) < indent) break;
+          body.push(line.slice(indent));
+        }
+        return body.join('\n');
+      };
+
+      /**
+       * Read a step's `if:` condition.
+       *
+       * @param block - A step's YAML text.
+       * @returns The condition text, or '' when the step has none.
+       */
+      const ifOf = (block: string): string => block.match(/^[ \t]*if: (.*)$/m)?.[1] ?? '';
+
+      /**
+       * Build a fake engine checkout under `dir` whose `tsx` runs this repo's
+       * real CLI of the same file name. A symlinked engine would break the
+       * CLIs' entry guard, which compares argv[1] with the module's real path.
+       *
+       * @param dir - Directory to hold `.dev-agent-engine`.
+       * @param after - Optional bash to run after the CLI, used to move the
+       *   base branch while the step is mid-flight.
+       */
+      const makeEngine = (dir: string, after = ''): void => {
+        const bin = join(dir, '.dev-agent-engine/node_modules/.bin');
+        mkdirSync(bin, { recursive: true });
+        const wrapper = [
+          '#!/usr/bin/env bash',
+          `script='${REPO_ROOT}/lib/cli/'"$(basename "$1")"`,
+          'shift',
+          `'${REAL_TSX}' "$script" "$@"`,
+          'rc=$?',
+          after,
+          'exit $rc',
+          '',
+        ].join('\n');
+        writeFileSync(join(bin, 'tsx'), wrapper);
+        chmodSync(join(bin, 'tsx'), 0o755);
+      };
+
+      /**
+       * Process environment with every inherited git setting stripped and the
+       * user's global and system config hidden, so a test proves what the
+       * workflow itself configures.
+       *
+       * @param extra - Variables to add.
+       * @returns The environment.
+       */
+      const cleanEnv = (extra: Record<string, string>): NodeJS.ProcessEnv => {
+        const env: NodeJS.ProcessEnv = {};
+        for (const [key, value] of Object.entries(process.env)) {
+          if (!key.startsWith('GIT_')) env[key] = value;
+        }
+        return { ...env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...extra };
+      };
+
+      /**
+       * Run git for fixture setup, with a throwaway identity.
+       *
+       * @param cwd - Directory to run in.
+       * @param args - git arguments.
+       * @returns git's stdout.
+       */
+      const git = (cwd: string, ...args: string[]): string =>
+        execFileSync('git', ['-c', 'user.name=fixture', '-c', 'user.email=fixture@example.com', ...args], {
+          cwd,
+          env: cleanEnv({}),
+          encoding: 'utf8',
+        });
+
+      /**
+       * Run a script under bash the way the runner does.
+       *
+       * @param script - The script body.
+       * @param cwd - Working directory.
+       * @param env - Extra environment.
+       * @returns The exit status and captured output.
+       */
+      const runBash = (script: string, cwd: string, env: Record<string, string>) => {
+        const result = spawnSync('bash', ['-c', script], { cwd, env: cleanEnv(env), encoding: 'utf8' });
+        return { status: result.status, stdout: result.stdout, stderr: result.stderr };
+      };
+
+      describe('the working-branch comparison', () => {
+        const verifyRun = (): string => {
+          const body = runBody(stepBlock('Verify spec approval'));
+          const start = body.indexOf('if [ "${OVERRIDE:-}" != "true" ]; then');
+          if (start < 0) throw new Error('no override-guarded comparison in "Verify spec approval"');
+          const rest = body.slice(start).split('\n');
+          const end = rest.findIndex((line) => line === 'fi');
+          if (end < 0) throw new Error('unterminated comparison block');
+          return rest.slice(0, end + 1).join('\n');
+        };
+
+        /**
+         * Run the step's comparison block against two copies of a document
+         * and, optionally, of a plan.
+         */
+        const compare = (opts: {
+          base: string;
+          head: string;
+          story: boolean;
+          planBase?: string;
+          planHead?: string;
+          override?: boolean;
+        }) => {
+          const work = scratch();
+          makeEngine(work);
+          const baseRoot = join(work, 'base-root');
+          const doc = opts.story ? STORY_REL : 'docs/specs/2026-09-12-thing.md';
+          const plan = 'docs/plans/2026-09-12-thing.md';
+          const put = (path: string, text: string) => {
+            mkdirSync(dirname(path), { recursive: true });
+            writeFileSync(path, text);
+          };
+          put(join(baseRoot, doc), opts.base);
+          put(join(work, doc), opts.head);
+          if (opts.planBase !== undefined) {
+            put(join(baseRoot, plan), opts.planBase);
+            put(join(work, plan), opts.planHead ?? opts.planBase);
+          }
+          return runBash(`set -euo pipefail\n${verifyRun()}`, work, {
+            BASE: 'main',
+            BASE_ROOT: baseRoot,
+            DOC_PATH: doc,
+            STORY_PATH: opts.story ? doc : '',
+            SPEC_PATH: opts.story ? '' : doc,
+            PLAN_PATH: opts.planBase !== undefined ? plan : '',
+            OVERRIDE: opts.override ? 'true' : 'false',
+          });
+        };
+
+        const approved = '# Story 1.1\n\n**Status:** Approved\n\nBuild the thing.\n';
+        const inProgress = approved.replace('**Status:** Approved', '**Status:** InProgress');
+
+        it('routes the document through compare-approved-text and keeps cmp for the plan', () => {
+          const block = verifyRun();
+          expect(block).toMatch(/lib\/cli\/compare-approved-text\.ts/);
+          expect(block).not.toMatch(/for REL in "\$DOC_PATH"/);
+          expect(block).toMatch(/for REL in \$\{PLAN_PATH:\+"\$PLAN_PATH"\}; do/);
+          expect(block).toMatch(/cmp -s "\$BASE_ROOT\/\$REL" "\$REL"/);
+        });
+
+        it('sets KIND to story exactly when STORY_PATH is set', () => {
+          expect(verifyRun()).toMatch(
+            /KIND="\$\(\[ -n "\$\{STORY_PATH:-\}" \] && echo story \|\| echo spec\)"/,
+          );
+        });
+
+        it('accepts a story whose copies differ only in the status line', { timeout: 30000 }, () => {
+          expect(compare({ base: approved, head: inProgress, story: true }).status).toBe(0);
+        });
+
+        it('refuses a story whose approved body differs', { timeout: 30000 }, () => {
+          const result = compare({ base: approved, head: `${approved}More.\n`, story: true });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toContain(`${STORY_REL} differs between main and the working branch`);
+        });
+
+        it('keeps a spec byte-exact, with the same message as before', { timeout: 30000 }, () => {
+          const result = compare({ base: approved, head: inProgress, story: false });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toContain(
+            '::error::docs/specs/2026-09-12-thing.md differs between main and the working branch. The approval covers the main copy; the agent would read the other one. Push the approved text, or re-approve the current one.',
+          );
+          expect(compare({ base: approved, head: approved, story: false }).status).toBe(0);
+        });
+
+        it('still refuses a plan that differs by a single byte', { timeout: 30000 }, () => {
+          const result = compare({
+            base: approved,
+            head: approved,
+            story: false,
+            planBase: '# Plan\n',
+            planHead: '# Plan \n',
+          });
+          expect(result.status).toBe(1);
+          expect(result.stderr).toContain('docs/plans/2026-09-12-thing.md differs between main');
+        });
+
+        it('is released by the override label', () => {
+          expect(compare({ base: approved, head: 'other\n', story: false, override: true }).status).toBe(0);
+        });
+      });
+
+      describe('the status stamping steps', () => {
+        const IN_PROGRESS = 'Project the story status';
+        const REVIEW = 'Project the story status (pull request open)';
+
+        it('stamps InProgress straight after the approval gate, for a story only', () => {
+          const block = stepBlock(IN_PROGRESS);
+          expect(stepAt('Verify spec approval')).toBeLessThan(stepAt(IN_PROGRESS));
+          // Immediately after: no other step between the gate and the stamp.
+          expect(raw.slice(stepAt('Verify spec approval') + 1, stepAt(IN_PROGRESS))).not.toMatch(
+            /\n {6}- (name|uses):/,
+          );
+          expect(ifOf(block)).toBe(
+            "steps.slot.outputs.overtaken != 'true' && steps.issue.outputs.story_path != ''",
+          );
+          expect(block).toMatch(/^\s*STATUS: InProgress$/m);
+          expect(block).toMatch(/^\s*STORY_PATH: \$\{\{ steps\.issue\.outputs\.story_path \}\}$/m);
+          expect(block).toMatch(/^\s*BASE: \$\{\{ github\.event\.repository\.default_branch \}\}$/m);
+        });
+
+        it('stamps Review after the telemetry step, only when a pull request was opened', () => {
+          const block = stepBlock(REVIEW);
+          expect(stepAt('Comment telemetry + flip state')).toBeLessThan(stepAt(REVIEW));
+          expect(stepAt(REVIEW)).toBeLessThan(stepAt('Append SESSION_LOG.md entry'));
+          expect(raw.slice(stepAt('Comment telemetry + flip state') + 1, stepAt(REVIEW))).not.toMatch(
+            /\n {6}- (name|uses):/,
+          );
+          // The telemetry step writes phase_outcome=blocked and exits early
+          // when the agent opened no pull request; without this gate the story
+          // would read Review with nothing to review.
+          expect(ifOf(block)).toBe(
+            "steps.slot.outputs.overtaken != 'true' && steps.issue.outputs.story_path != '' && steps.telemetry.outputs.phase_outcome == 'success'",
+          );
+          expect(block).toMatch(/^\s*STATUS: Review$/m);
+        });
+
+        it('skips both steps when the run was overtaken, and when the issue is a spec', () => {
+          for (const name of [IN_PROGRESS, REVIEW]) {
+            const condition = ifOf(stepBlock(name));
+            expect(condition.startsWith("steps.slot.outputs.overtaken != 'true' && ")).toBe(true);
+            expect(condition).toContain("steps.issue.outputs.story_path != ''");
+          }
+        });
+
+        it('runs the same script in both steps', () => {
+          expect(runBody(stepBlock(REVIEW))).toBe(runBody(stepBlock(IN_PROGRESS)));
+        });
+
+        it('puts no token in a URL or argument, and works through a removed worktree', () => {
+          for (const name of [IN_PROGRESS, REVIEW]) {
+            const block = stepBlock(name);
+            expect(block).not.toMatch(/x-access-token|GH_TOKEN|git clone/);
+            const script = runBody(block);
+            expect(script).toMatch(/git worktree add/);
+            expect(script).toMatch(/trap /);
+            expect(script).toMatch(/git -C "\$CONSUMER_DIR" worktree remove --force "\$STAMP_DIR"/);
+            expect(script).toMatch(/git pull --rebase/);
+            expect(script).toMatch(/for attempt in 1 2 3; do/);
+          }
+        });
+
+        /**
+         * A bare origin whose default branch holds an approved story, and a
+         * consumer clone sitting on the agent branch, as the job leaves it.
+         */
+        const makeRepos = () => {
+          const root = scratch();
+          const origin = join(root, 'origin.git');
+          const seed = join(root, 'seed');
+          const consumer = join(root, 'consumer');
+          execFileSync('git', ['init', '-q', '--bare', '-b', 'main', origin], { env: cleanEnv({}) });
+          execFileSync('git', ['init', '-q', '-b', 'main', seed], { env: cleanEnv({}) });
+          mkdirSync(dirname(join(seed, STORY_REL)), { recursive: true });
+          writeFileSync(join(seed, STORY_REL), '# Story 1.1\n\n**Status:** Approved\n\nBuild the thing.\n');
+          git(seed, 'add', '-A');
+          git(seed, 'commit', '-qm', 'seed');
+          git(seed, 'remote', 'add', 'origin', origin);
+          git(seed, 'push', '-q', 'origin', 'main');
+          execFileSync('git', ['clone', '-q', origin, consumer], { env: cleanEnv({}) });
+          git(consumer, 'checkout', '-qb', 'feat/dev-agent-issue-7');
+          writeFileSync(join(consumer, '.git/info/exclude'), '.dev-agent-engine/\n', { flag: 'a' });
+          return { root, origin, seed, consumer };
+        };
+
+        /**
+         * Run the InProgress step's script in a consumer clone.
+         */
+        const stamp = (
+          consumer: string,
+          env: Partial<Record<'BASE' | 'STORY_PATH' | 'STATUS', string>> = {},
+        ) =>
+          runBash(runBody(stepBlock(IN_PROGRESS)), consumer, {
+            GITHUB_WORKSPACE: consumer,
+            BASE: 'main',
+            STORY_PATH: STORY_REL,
+            STATUS: 'InProgress',
+            ...env,
+          });
+
+        const worktreeCount = (consumer: string): number =>
+          git(consumer, 'worktree', 'list', '--porcelain')
+            .split('\n')
+            .filter((line) => line.startsWith('worktree ')).length;
+
+        it('pushes the stamp to the base branch as the bot, leaving the checkout untouched', { timeout: 60000 }, () => {
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const result = stamp(consumer);
+          expect(result.stderr).not.toContain('::warning::');
+          expect(result.stdout).not.toContain('::warning::');
+          expect(result.status).toBe(0);
+          expect(git(origin, 'show', `main:${STORY_REL}`)).toContain('**Status:** InProgress');
+          expect(git(origin, 'log', '-1', '--format=%an <%ae>|%cn <%ce>', 'main').trim()).toBe(
+            'dev-agent[bot] <dev-agent@users.noreply.github.com>|dev-agent[bot] <dev-agent@users.noreply.github.com>',
+          );
+          expect(git(consumer, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('feat/dev-agent-issue-7');
+          expect(git(consumer, 'status', '--porcelain')).toBe('');
+          expect(readFileSync(join(consumer, STORY_REL), 'utf8')).toContain('**Status:** Approved');
+          expect(worktreeCount(consumer)).toBe(1);
+          // No identity leaks into the consumer's shared config, where later
+          // steps and the agent itself commit.
+          expect(spawnSync('git', ['config', '--local', '--get', 'user.name'], { cwd: consumer }).status).toBe(1);
+
+          // Already correct: nothing new is committed.
+          const head = git(origin, 'rev-parse', 'main');
+          expect(stamp(consumer).status).toBe(0);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('rebases and retries when the base branch moves under it', { timeout: 60000 }, () => {
+          const { origin, seed, consumer } = makeRepos();
+          makeEngine(
+            consumer,
+            `git -C '${seed}' -c user.name=other -c user.email=other@example.com commit -q --allow-empty -m concurrent && git -C '${seed}' push -q origin main`,
+          );
+          const result = stamp(consumer);
+          expect(result.stdout).not.toContain('::warning::');
+          expect(result.status).toBe(0);
+          expect(git(origin, 'log', '--format=%s', '-2', 'main').trim().split('\n')).toEqual([
+            `docs(story): ${STORY_REL} -> InProgress`,
+            'concurrent',
+          ]);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('warns and succeeds when every push is refused', { timeout: 60000 }, () => {
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const hook = join(origin, 'hooks/pre-receive');
+          writeFileSync(hook, '#!/usr/bin/env bash\nexit 1\n');
+          chmodSync(hook, 0o755);
+          const result = stamp(consumer);
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::.*after 3 attempts/);
+          expect(git(origin, 'show', `main:${STORY_REL}`)).toContain('**Status:** Approved');
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('warns and succeeds when the story cannot be stamped', { timeout: 60000 }, () => {
+          const { origin, consumer } = makeRepos();
+          makeEngine(consumer);
+          const head = git(origin, 'rev-parse', 'main');
+          const result = stamp(consumer, { STORY_PATH: 'docs/stories/epic-1/missing.md' });
+          expect(result.status).toBe(0);
+          expect(result.stdout).toMatch(/::warning::could not stamp docs\/stories\/epic-1\/missing\.md/);
+          expect(git(origin, 'rev-parse', 'main')).toBe(head);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
+
+        it('warns and skips when the base branch is unknown or unreachable', { timeout: 60000 }, () => {
+          const { consumer } = makeRepos();
+          makeEngine(consumer);
+          const noBase = stamp(consumer, { BASE: '' });
+          expect(noBase.status).toBe(0);
+          expect(noBase.stdout).toMatch(/::warning::could not determine the default branch/);
+          expect(worktreeCount(consumer)).toBe(1);
+
+          git(consumer, 'remote', 'set-url', 'origin', join(consumer, 'no-such-remote'));
+          const noFetch = stamp(consumer);
+          expect(noFetch.status).toBe(0);
+          expect(noFetch.stdout).toMatch(/::warning::/);
+          expect(worktreeCount(consumer)).toBe(1);
+        });
       });
     });
   });
