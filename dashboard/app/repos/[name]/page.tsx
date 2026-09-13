@@ -8,6 +8,10 @@ import { listAllowedRepos } from '@/lib/repos';
 import { loadOverrideEvents } from '@/lib/dashboard/override-events';
 import { loadRepoWorkspace } from '@/lib/dashboard/repo-workspace';
 import { listSpecAndPlanFiles } from '@/lib/dashboard/list-spec-plan-files';
+import { readArtifactsConfig } from '@/lib/dashboard/read-artifacts-config';
+import { listStoryFiles } from '@/lib/dashboard/list-story-files';
+import { toStoryItems } from '@/lib/story-items';
+import { verifyStoryItems } from '@/lib/verify-story-items';
 import { runAllScouts } from '@/lib/scout';
 import { readBugScoutSchedule } from '@/lib/bug-scout-schedule';
 import { FeatureCard } from '@/components/feature-card';
@@ -129,6 +133,32 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
     specPlanFiles.blobShas,
   ).catch(() => []);
 
+  // Stories are listed from the directory the consumer's own config names, and
+  // verified through the story gate — the same treatment specs get, because
+  // the presence of an artifact is not approval.
+  //
+  // Sequential rather than folded into the `Promise.all` above: the listing
+  // read needs the directory the config read resolves, so there is no
+  // independent pair of promises to run concurrently here.
+  const artifactsConfig = repo.wired_up
+    ? await readArtifactsConfig(octokit, repo.owner, repo.name, repo.default_branch)
+    : { storiesDir: 'docs/stories', unreadable: false };
+
+  const storyFiles = repo.wired_up
+    ? await listStoryFiles(
+        octokit, repo.owner, repo.name, repo.default_branch, artifactsConfig.storiesDir,
+      )
+    : { stories: [], approvals: [], blobShas: {}, unreadable: false };
+
+  const storyItems = await verifyStoryItems(
+    octokit,
+    repo.owner,
+    repo.name,
+    repo.default_branch,
+    toStoryItems(storyFiles.stories, storyFiles.approvals),
+    storyFiles.blobShas,
+  ).catch(() => []);
+
   // Probed, not inferred. The previous checklist ticked boxes from earlier
   // steps having run, which reports what should be true rather than what is —
   // the same shape as a gate that passes without checking.
@@ -187,6 +217,8 @@ export default async function RepoPage(props: { params: Promise<{ name: string }
             repo={name}
             pairs={specPairs}
             listingIncomplete={specPlanFiles.unreadable}
+            stories={storyItems}
+            storyListingIncomplete={artifactsConfig.unreadable || storyFiles.unreadable}
           />
         </section>
       ) : null}
