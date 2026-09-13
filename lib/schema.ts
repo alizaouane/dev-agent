@@ -88,6 +88,15 @@ export const devAgentConfigSchema = z.object({
   artifacts: z.object({
     specs_dir: z.string().min(1),
     plans_dir: z.string().min(1),
+    /**
+     * Where sharded story files live, as a repo-relative directory.
+     *
+     * Optional with a default because every consumer config predates the key,
+     * and a required key would fail the parse `phase-implement` runs before
+     * anything else. Stories nest one level deeper than specs — the epic
+     * directory — so consumers point this at the tree, not at one epic.
+     */
+    stories_dir: z.string().min(1).default('docs/stories'),
     status_file: z.string().min(1),
     runbooks_dir: z.string().min(1),
     /**

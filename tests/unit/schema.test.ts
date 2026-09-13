@@ -68,3 +68,32 @@ describe('devAgentConfigSchema', () => {
     expect(result.success).toBe(true);
   });
 });
+
+describe('artifacts.stories_dir', () => {
+  it('defaults for a config written before the key existed', () => {
+    // Every consumer repo's config predates this key. A required key would
+    // fail the parse that phase-implement runs before it does anything else,
+    // which would take every wired repo down at once.
+    const parsed = devAgentConfigSchema.parse(validSample);
+    expect(parsed.artifacts.stories_dir).toBe('docs/stories');
+  });
+
+  it('keeps an explicit value', () => {
+    const parsed = devAgentConfigSchema.parse({
+      ...validSample,
+      artifacts: { ...validSample.artifacts, stories_dir: 'docs/work/stories' },
+    });
+    expect(parsed.artifacts.stories_dir).toBe('docs/work/stories');
+  });
+
+  it('rejects an empty value rather than silently defaulting', () => {
+    // An empty string would list the repository root. Refusing is the only
+    // honest answer: the operator asked for a directory and named none.
+    expect(() =>
+      devAgentConfigSchema.parse({
+        ...validSample,
+        artifacts: { ...validSample.artifacts, stories_dir: '' },
+      }),
+    ).toThrow();
+  });
+});

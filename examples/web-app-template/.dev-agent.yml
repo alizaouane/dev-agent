@@ -34,6 +34,7 @@ scaffold_skills: {}
 artifacts:
   specs_dir: docs/specs
   plans_dir: docs/plans
+  stories_dir: docs/stories
   status_file: docs/program-status.md
   runbooks_dir: docs/runbooks
 

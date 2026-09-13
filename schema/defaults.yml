@@ -23,6 +23,8 @@ scaffold_skills: {}
 artifacts:
   specs_dir: docs/specs
   plans_dir: docs/plans
+  # Sharded story files, one directory per epic beneath this one.
+  stories_dir: docs/stories
   # Open the spec + plan as a PR on `dev-agent/spec-<topic>` instead of
   # pushing to the default branch. The autopilot drives that PR to green.
   spec_plan_via_pr: false
