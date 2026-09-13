@@ -33,6 +33,25 @@ export const devAgentConfigSchema = z.object({
     typecheck: z.string().min(1),
     lint: z.string().optional(),
   }),
+  /**
+   * The Node version dev-agent's gates use for this repo's own commands: its
+   * dependency install, tests, typecheck and build. The engine itself always
+   * runs on its own Node, whatever this says.
+   *
+   * Optional, and deliberately without a default. Unset means the version is
+   * read from the repo's own `.nvmrc`, `.node-version`, `.tool-versions` or
+   * `package.json`, and only when none declares one does the engine's Node
+   * apply. A default here would override what the repo already declares. An
+   * unquoted YAML number such as `node: 22` is accepted and kept as `"22"`.
+   */
+  runtime: z
+    .object({
+      node: z
+        .union([z.string().min(1), z.number()])
+        .transform((value) => String(value))
+        .optional(),
+    })
+    .optional(),
   branches: z.object({
     default: z.string().min(1),
     staging: z.string().nullable(),
