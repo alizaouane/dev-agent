@@ -1,5 +1,22 @@
 # Session Log
 
+## 2026-09-16 20:30 UTC — interactive — CodeRabbit cost controls: fix-round cap + path filters
+
+**Trigger:** CodeRabbit bills $0.25 per reviewed file over the rate limit; the user approved two changes — path filters for unreviewable files, and a cap on automated fix rounds per PR.
+
+**What changed:**
+- `lib/fix-rounds.ts` + `lib/cli/fix-round-gate.ts`: `phase-pr-review` now counts the fixer's commits on the PR (git author `claude[bot]`, pinned as `bot_name` on the action). At `pr_review.max_fix_rounds` (default 3, `schema/defaults.yml`) it posts one hand-over comment and skips the budget gate, agent and telemetry. Fails closed (exit 2) on an unreadable config or GitHub read.
+- `lib/cli/pr-triage.ts`: the autopilot no longer wakes the fixer on a PR carrying the cap notice.
+- `.coderabbit.yaml` (new): `inheritance: true` so the UI settings (request-changes workflow, docstring gate) still apply, plus `reviews.path_filters` excluding `package-lock.json` and the kit-owned `.standard/check.sh`.
+
+**Deferred / Next:**
+- Consumer wrappers call `phase-pr-review.yml@v1`; the cap reaches them only once `v1` is moved (a release step).
+- Measured on 2026-09-16: all of the last 500 fixer runs in whatsapp-console and dev-agent ended `skipped`. So far the repeat CodeRabbit reviews come from interactive sessions pushing fixes, not from this fixer.
+
+**Next session should start with:** check the PR's CI and review threads; after merge, decide whether to move `v1`.
+
+---
+
 ## 2026-09-13 12:45 UTC — interactive — Consumer Node split shipped; product architecture designed
 
 **Trigger:** "finish the workflow wiring" for consumer repos running on the engine's Node 24 after #168, and a brainstorm on having one UI for the whole development process across all apps.

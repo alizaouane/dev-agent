@@ -224,6 +224,14 @@ export const devAgentConfigSchema = z.object({
     github_issue: z.boolean(),
     status_file: z.boolean(),
   }),
+  // Comment-triggered fixer (phase-pr-review). Optional so existing configs
+  // stay valid; defaults.yml supplies the cap. A cap below 1 would disable the
+  // fixer silently, so it is rejected rather than accepted.
+  pr_review: z
+    .object({
+      max_fix_rounds: z.number().int().positive(),
+    })
+    .optional(),
   hotfix: z.object({
     enabled: z.boolean(),
     required_label: z.string().min(1),

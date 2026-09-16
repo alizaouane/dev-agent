@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration — cost controls only.
+#
+# inheritance: true is load-bearing. Without it a repository .coderabbit.yaml
+# REPLACES the organization/UI settings ("Without inheritance, only the
+# highest-priority source is used" — docs.coderabbit.ai/configuration/
+# configuration-inheritance), which would silently drop request_changes_workflow
+# and the docstring pre-merge check configured in the CodeRabbit UI. With it,
+# everything not set here is taken from the UI settings unchanged.
+inheritance: true
+
+reviews:
+  # Files CodeRabbit is billed for but that carry nothing to review: generated
+  # lockfiles and kit-owned copies synced by `standard-init --upgrade` (changes
+  # to those are reviewed in the kit repo, not here).
+  path_filters:
+    - "!**/package-lock.json"
+    - "!.standard/check.sh"

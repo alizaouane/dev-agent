@@ -182,6 +182,14 @@ properties:
       github_issue: { type: boolean }
       status_file: { type: boolean }
 
+  pr_review:
+    type: object
+    properties:
+      max_fix_rounds:
+        type: integer
+        minimum: 1
+        description: "Fixer commits allowed on one PR before phase-pr-review stops and asks a human to take over (default 3)."
+
   hotfix:
     type: object
     required: [enabled, required_label, skip_spec, skip_drift_check]

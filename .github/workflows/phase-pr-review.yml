@@ -65,6 +65,13 @@ jobs:
         github.event.review.user.login != 'claude[bot]'
       )
     runs-on: ubuntu-latest
+    # One fixer run per PR at a time. A review bot posts several @claude
+    # comments at once; run in parallel, each would read the fix-round count
+    # before any had pushed and all would pass a cap only one should. Job-level
+    # so it travels with the reusable workflow into every consumer.
+    concurrency:
+      group: dev-agent-pr-review-${{ github.repository }}-${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     timeout-minutes: 20
     permissions:
       contents: write
@@ -138,8 +145,25 @@ jobs:
         working-directory: .dev-agent-engine
         run: npm ci
 
-      - name: Budget gate
+      # Fix-round cap (lib/fix-rounds.ts). The fixer's push makes every review
+      # bot re-review, and a bot comment that mentions @claude wakes the fixer
+      # again. After `pr_review.max_fix_rounds` fixer commits on this PR the
+      # gate posts one hand-over comment and every later step is skipped, so a
+      # capped PR costs no model run and no re-review push. Counted from the
+      # PR's own commit history, so re-running the job cannot reset it.
+      - name: Fix-round cap
+        id: fixcap
         if: steps.pr.outputs.skip != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+          CONFIG_PATH: ${{ inputs.config_path || '.dev-agent.yml' }}
+        run: |
+          "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs .dev-agent-engine/lib/cli/fix-round-gate.ts
+
+      - name: Budget gate
+        if: steps.pr.outputs.skip != 'true' && steps.fixcap.outputs.allow != 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -167,7 +191,7 @@ jobs:
           node-version: ${{ steps.consumer-node.outputs.node_version }}
 
       - name: Run Claude Code (live agent)
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip != 'true' && steps.fixcap.outputs.allow != 'false'
         id: agent
         uses: anthropics/claude-code-action@v1
         with:
@@ -176,12 +200,15 @@ jobs:
           # `agent` mode reads the PR + triggering comment automatically.
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           show_full_output: 'true'
+          # Pinned, not defaulted: the fix-round cap counts commits by this git
+          # author name (FIXER_COMMIT_AUTHOR in lib/fix-rounds.ts).
+          bot_name: 'claude[bot]'
 
       # Record spend for comment-triggered reviews too — this workflow can fire
       # many times on one PR, which is precisely the shape that produced the
       # July 2026 drain while spend was going unrecorded.
       - name: Emit telemetry
-        if: always() && steps.pr.outputs.skip != 'true'
+        if: always() && steps.pr.outputs.skip != 'true' && steps.fixcap.outputs.allow != 'false'
         env:
           EXECUTION_FILE: ${{ steps.agent.outputs.execution_file }}
           ISSUE_NUMBER: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
