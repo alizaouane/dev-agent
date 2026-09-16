@@ -516,3 +516,16 @@ describe('pr-autopilot label reconciliation', () => {
     expect(source).toMatch(/--remove-label/);
   });
 });
+
+describe('pr-autopilot respects the fix-round cap', () => {
+  const source = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+
+  it('does not wake the fixer on a PR whose cap was announced', () => {
+    // Once phase-pr-review has stood down on a PR, an autopilot wake comment is
+    // a wasted run at best. The check must come before the wake is posted.
+    const capCheck = source.indexOf('alreadyAnnouncedFixCap(comments)');
+    const wake = source.indexOf('renderWakeComment(triage, decision)');
+    expect(capCheck).toBeGreaterThan(-1);
+    expect(capCheck).toBeLessThan(wake);
+  });
+});

@@ -53,6 +53,7 @@ import {
   type PrTriage,
   type PullRequestState,
 } from '../pr-blockers';
+import { alreadyAnnouncedFixCap } from '../fix-rounds';
 
 /** Logins that leave reviews as bots rather than as people. */
 const REVIEW_BOTS = new Set([
@@ -441,6 +442,13 @@ export function runTriage(
     report.actionable.push(triage);
 
     const comments = readComments(repo, triage.number);
+    // The fixer already stood down on this PR and said so (lib/fix-rounds.ts).
+    // A wake comment would start a run that refuses at once; its own notice is
+    // the hand-over, so report the PR as stood down without posting again.
+    if (alreadyAnnouncedFixCap(comments)) {
+      report.wedged.push(triage.number);
+      continue;
+    }
     const decision = shouldWake(triage.signature, priorSignatures(comments), maxRepeats);
 
     if (decision.wake) {

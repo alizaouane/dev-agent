@@ -89,6 +89,12 @@ notifications:
   github_issue: true
   status_file: true
 
+pr_review:
+  # Fixer commits allowed on one PR before phase-pr-review stops, posts one
+  # "a human should take over" comment, and ignores further @claude mentions.
+  # Each fixer push makes every review bot re-review the PR, which is billed.
+  max_fix_rounds: 3
+
 hotfix:
   enabled: false
   required_label: "kind:hotfix"
