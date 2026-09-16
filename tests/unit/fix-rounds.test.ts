@@ -151,6 +151,18 @@ describe('phase-pr-review.yml fix-round cap wiring', () => {
     expect(agent.if).toContain("steps.fixcap.outputs.allow != 'false'");
   });
 
+  it('serialises fixer runs per PR so parallel triggers cannot both pass the cap', () => {
+    // A bot review posts several @claude comments at once. Without a per-PR
+    // group, each run reads the same count before any of them has pushed, so
+    // all of them pass a cap that only one should.
+    const job = (yaml.load(raw) as {
+      jobs: Record<string, { concurrency?: { group?: string; 'cancel-in-progress'?: boolean } }>;
+    }).jobs['pr-review'];
+    expect(job.concurrency?.group).toMatch(/github\.repository/);
+    expect(job.concurrency?.group).toMatch(/inputs\.pr_number \|\| github\.event\.issue\.number \|\| github\.event\.pull_request\.number/);
+    expect(job.concurrency?.['cancel-in-progress']).toBe(false);
+  });
+
   it('pins the fixer commit author the counter relies on', () => {
     const agent = steps[idx('Run Claude Code (live agent)')];
     expect(agent.with?.bot_name).toBe(FIXER_COMMIT_AUTHOR);

@@ -65,6 +65,13 @@ jobs:
         github.event.review.user.login != 'claude[bot]'
       )
     runs-on: ubuntu-latest
+    # One fixer run per PR at a time. A review bot posts several @claude
+    # comments at once; run in parallel, each would read the fix-round count
+    # before any had pushed and all would pass a cap only one should. Job-level
+    # so it travels with the reusable workflow into every consumer.
+    concurrency:
+      group: dev-agent-pr-review-${{ github.repository }}-${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+      cancel-in-progress: false
     timeout-minutes: 20
     permissions:
       contents: write
