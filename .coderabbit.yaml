@@ -4,11 +4,13 @@
 # inheritance: true is load-bearing. Without it a repository .coderabbit.yaml
 # REPLACES the organization/UI settings ("Without inheritance, only the
 # highest-priority source is used" — docs.coderabbit.ai/configuration/
-# configuration-inheritance). dev-agent has no UI settings configured (checked
-# via `@coderabbitai configuration`), so request_changes_workflow and the
-# docstring pre-merge check below are the only source of truth — they are set
-# here, not in the UI. With inheritance: true, everything else not set here
-# still falls back to the UI/org defaults unchanged.
+# configuration-inheritance). The chain still stops at the first parent level
+# where inheritance is false or unset, so an omitted setting here does not
+# automatically reach UI/org defaults unless every level up the chain also has
+# inheritance: true. dev-agent has no UI settings configured (checked via
+# `@coderabbitai configuration`), so request_changes_workflow and the
+# docstring pre-merge check below are set explicitly here — they are the only
+# source of truth for this repo, not the UI.
 inheritance: true
 
 reviews:
