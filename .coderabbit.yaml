@@ -1,12 +1,14 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
-# CodeRabbit configuration — cost controls only.
+# CodeRabbit configuration — cost controls plus the docstring merge gate.
 #
 # inheritance: true is load-bearing. Without it a repository .coderabbit.yaml
 # REPLACES the organization/UI settings ("Without inheritance, only the
 # highest-priority source is used" — docs.coderabbit.ai/configuration/
-# configuration-inheritance), which would silently drop request_changes_workflow
-# and the docstring pre-merge check configured in the CodeRabbit UI. With it,
-# everything not set here is taken from the UI settings unchanged.
+# configuration-inheritance). dev-agent has no UI settings configured (checked
+# via `@coderabbitai configuration`), so request_changes_workflow and the
+# docstring pre-merge check below are the only source of truth — they are set
+# here, not in the UI. With inheritance: true, everything else not set here
+# still falls back to the UI/org defaults unchanged.
 inheritance: true
 
 reviews:
@@ -16,3 +18,16 @@ reviews:
   path_filters:
     - "!**/package-lock.json"
     - "!.standard/check.sh"
+
+  # Required so an `error`-mode pre-merge check (docstrings, below) can
+  # actually block merge instead of only reporting in the walkthrough.
+  request_changes_workflow: true
+
+  pre_merge_checks:
+    # 100% docstring coverage on every function/method/class/exported symbol
+    # touched by a PR (user decision, 2026-07-01 — see CLAUDE.md §10). `error`
+    # + request_changes_workflow above turns a sub-100% PR into a blocking
+    # "request changes" review instead of the 80%-threshold warning default.
+    docstrings:
+      mode: error
+      threshold: 100

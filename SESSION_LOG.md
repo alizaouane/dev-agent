@@ -1,5 +1,19 @@
 # Session Log
 
+## 2026-09-16 21:15 UTC — interactive — CodeRabbit docstring gate now blocking, set in this repo
+
+**Trigger:** the user's global standard requires the 100% docstring pre-merge check as a blocking gate. A `@coderabbitai configuration` check showed dev-agent has no CodeRabbit UI settings, so the header comment added in the previous entry (claiming the UI supplies `request_changes_workflow` and the docstring check) was wrong — today the repo only gets the default 80% warning.
+
+**What changed:**
+- `.coderabbit.yaml`: added `reviews.request_changes_workflow: true` and `reviews.pre_merge_checks.docstrings: { mode: error, threshold: 100 }`, checked against `https://coderabbit.ai/integrations/schema.v2.json`. `inheritance: true` and `reviews.path_filters` unchanged. Corrected the header comment to say these settings are set here, not in a UI that doesn't have them.
+- Effect: a PR whose changed functions lack docstrings now gets a blocking "request changes" review from CodeRabbit instead of a warning.
+
+**Deferred / Next:** none.
+
+**Next session should start with:** check this PR's CI and CodeRabbit review; confirm `@coderabbitai configuration` reports the resolved config after review.
+
+---
+
 ## 2026-09-16 20:30 UTC — interactive — CodeRabbit cost controls: fix-round cap + path filters
 
 **Trigger:** CodeRabbit bills $0.25 per reviewed file over the rate limit; the user approved two changes — path filters for unreviewable files, and a cap on automated fix rounds per PR.
