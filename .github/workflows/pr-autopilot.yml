@@ -219,7 +219,8 @@ jobs:
               "Woken: \(.woken | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
               "Wake dispatch failed: \(.wakeFailed // [] | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
               "Woken but wake comment not posted: \(.wakeUnrecorded // [] | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
-              "Label or comment write failed: \(.writeFailed // [] | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
+              "Comment write failed: \(.writeFailed // [] | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
+              "Ready label not changed: \(.labelFailed // [] | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
               "Stood down: \(.wedged | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
               "Ready to merge: \(.ready | if length == 0 then "none" else map("#\(.)") | join(", ") end)"
             ' /tmp/triage.json

@@ -43,7 +43,7 @@
  *                    (default `dev-agent-pr-review.yml`).
  *   GH_TOKEN         Passed through to `gh`. Needs `actions: write` to dispatch.
  *
- * Output: JSON to stdout — `{ actionable, waiting, woken, wakeFailed, wakeUnrecorded, writeFailed, wedged, ready }`.
+ * Output: JSON to stdout — `{ actionable, waiting, woken, wakeFailed, wakeUnrecorded, writeFailed, labelFailed, wedged, ready }`.
  * Exit code: 0 when the sweep did what it reported; 2 when the GitHub reads
  * fail; 3 when any wake dispatch failed (the report is still printed). "Nothing
  * to do" is a normal, successful outcome and must not read as an error, but a
@@ -303,8 +303,10 @@ export interface TriageReport {
   wakeFailed: number[];
   /** PRs woken (dispatch accepted) whose wake comment could not be posted. */
   wakeUnrecorded: number[];
-  /** PRs where a label or a ready/stood-down comment could not be written. */
+  /** PRs where a ready or stood-down comment could not be written. */
   writeFailed: number[];
+  /** PRs whose ready label could not be changed (reported; does not fail the job). */
+  labelFailed: number[];
   /** PRs the sweep stood down on, having tried and not moved them. */
   wedged: number[];
   /** PRs announced as ready to merge on this sweep. */
@@ -359,29 +361,24 @@ export function readComments(repo: string, number: number): CommentRecord[] {
 }
 
 /**
- * Add or remove a label on a PR, ignoring a failure.
+ * Add or remove a label on a PR.
  *
  * The label is a convenience for scanning the PR list; the comment is the
- * actual signal. A repo that has never created this label should not turn a
- * successful sweep into a failed one.
+ * actual signal. A failure throws so the sweep can report it (`labelFailed`);
+ * the sweep does not fail the job for it, because a repo that has never
+ * created this label should not turn a successful sweep into a failed one.
  *
  * @param repo - owner/name.
  * @param number - PR number.
  * @param label - Label to set.
  * @param present - True to add, false to remove.
+ * @throws Error when `gh pr edit` fails.
  */
 export function setLabel(repo: string, number: number, label: string, present: boolean): void {
   const flag = present ? '--add-label' : '--remove-label';
-  try {
-    execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, flag, label], {
-      encoding: 'utf8',
-    });
-  } catch (err) {
-    process.stderr.write(
-      `could not ${present ? 'add' : 'remove'} ${label} on #${number}: ` +
-        `${err instanceof Error ? err.message : String(err)}\n`,
-    );
-  }
+  execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, flag, label], {
+    encoding: 'utf8',
+  });
 }
 
 /**
@@ -501,11 +498,11 @@ export function runTriage(
   const prs: RawPr[] = onlyPr === undefined ? all : all.filter((p) => p.number === onlyPr);
 
   const report: TriageReport = {
-    actionable: [], waiting: [], woken: [], wakeFailed: [], wakeUnrecorded: [], writeFailed: [], wedged: [], ready: [],
+    actionable: [], waiting: [], woken: [], wakeFailed: [], wakeUnrecorded: [], writeFailed: [], labelFailed: [], wedged: [], ready: [],
   };
   // A failed write on one PR must not end the sweep: every later PR would go
   // unexamined. Each write reports its failure and the loop moves on.
-  const tryWrite = (pr: number, what: string, write: () => void): boolean => {
+  const tryWrite = (pr: number, what: string, write: () => void, failed = report.writeFailed): boolean => {
     try {
       write();
       return true;
@@ -513,7 +510,7 @@ export function runTriage(
       process.stderr.write(
         `could not ${what} on #${pr}: ${err instanceof Error ? err.message : String(err)}\n`,
       );
-      report.writeFailed.push(pr);
+      failed.push(pr);
       return false;
     }
   };
@@ -532,7 +529,12 @@ export function runTriage(
     // signal that lies is worse than none.
     const labelled = state.labels.includes(READY_LABEL);
     if (!dryRun && ready !== labelled) {
-      tryWrite(triage.number, 'set the ready label', () => setLabel(repo, triage.number, READY_LABEL, ready));
+      tryWrite(
+        triage.number,
+        'set the ready label',
+        () => setLabel(repo, triage.number, READY_LABEL, ready),
+        report.labelFailed,
+      );
     }
 
     if (!triage.needsWork) {

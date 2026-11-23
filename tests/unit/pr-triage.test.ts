@@ -634,6 +634,14 @@ describe('runTriage wakes the fixer by workflow dispatch', () => {
     expect(report.wakeFailed).toEqual([]);
   });
 
+  it('setLabel lets a failure reach the sweep instead of swallowing it', () => {
+    // PR #201 review round 2: a setLabel that logs and returns hid every label
+    // failure from `labelFailed`. Breaker: wrap its execFileSync in try/catch.
+    const src = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+    const body = src.slice(src.indexOf('export function setLabel'), src.indexOf('export function postComment'));
+    expect(body).not.toMatch(/\btry\s*\{/);
+  });
+
   it('keeps sweeping when a label write fails', () => {
     // PR #201 review, same class as the wake comment: any write that throws
     // must not end the sweep. A stale ready label on a blocked PR forces the
@@ -647,7 +655,8 @@ describe('runTriage wakes the fixer by workflow dispatch', () => {
       },
     });
     const report = runTriage(REPO, { effects });
-    expect(report.writeFailed).toEqual([42, 43]);
+    expect(report.labelFailed).toEqual([42, 43]);
+    expect(report.writeFailed).toEqual([]);
     expect(calls.dispatched.map((d) => d[1])).toEqual([42, 43]);
   });
 
