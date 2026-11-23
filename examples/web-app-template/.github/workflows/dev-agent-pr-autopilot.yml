@@ -6,8 +6,9 @@ run-name: ${{ github.event_name }} → pr-autopilot sweep
 # Every 20 minutes it looks at the open PRs on dev-agent-owned branches and
 # asks the question the operator would otherwise have to remember to ask: is
 # anything red, unreviewed, or unresolved? When something is, it wakes the
-# fixer by posting `@claude` on that PR, which is the trigger
-# `dev-agent-pr-review.yml` already listens for.
+# fixer by dispatching `dev-agent-pr-review.yml` for that PR, and leaves a
+# short comment saying so. (It used to post `@claude`, but a comment made with
+# GITHUB_TOKEN starts no run, so the fixer never woke.)
 #
 # It touches only `feat/dev-agent-issue-*` and `dev-agent/spec-*` branches,
 # never a draft, and never a PR labelled `autopilot:off`. It makes no model
@@ -19,7 +20,9 @@ run-name: ${{ github.event_name }} → pr-autopilot sweep
 # To pause it: disable this workflow in the Actions tab, or label the PR
 # `autopilot:off`.
 #
-# Requires: `dev-agent-pr-review.yml` in this repo (the fixer this wakes).
+# Requires: `dev-agent-pr-review.yml` in this repo, with its
+# `workflow_dispatch` trigger, on the default branch (the fixer this wakes),
+# and dev-agent's dispatching pr-autopilot.yml in the pinned ref below.
 
 on:
   schedule:
@@ -45,6 +48,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # Dispatching the fixer (`gh workflow run dev-agent-pr-review.yml`).
+  actions: write
   # `statusCheckRollup` reads CheckRun and StatusContext nodes, and the token
   # cannot see either without these. Without them `gh pr list` fails outright
   # with "Resource not accessible by integration" — the sweep does not degrade

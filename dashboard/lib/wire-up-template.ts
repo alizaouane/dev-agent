@@ -922,9 +922,12 @@ export const TEMPLATE_SESSION_LOG_MD = `# Session Log
 export const TEMPLATE_PR_REVIEW_WORKFLOW_YML = `name: dev-agent · pr-review
 run-name: \${{ github.event_name }} → pr-review
 
-# The fixer. When a reviewer — a person, a review bot, or the pr-autopilot
-# sweep — mentions \`@claude\` on a dev-agent PR, this reads the comment,
-# addresses it on the same branch, and pushes.
+# The fixer. When a reviewer — a person or a review bot — mentions \`@claude\`
+# on a dev-agent PR, or the pr-autopilot sweep dispatches this workflow for a
+# PR, this addresses the PR's blockers on the same branch and pushes.
+#
+# It acts ONLY on dev-agent-owned branches (\`feat/dev-agent-issue-<n>\` and
+# \`dev-agent/spec-<slug>\`); on any other PR it exits without a model call.
 #
 # Without this file in your repo, \`@claude\` on a PR does nothing: the reusable
 # workflow it calls only carries comment triggers inside dev-agent's own
@@ -934,6 +937,11 @@ run-name: \${{ github.event_name }} → pr-review
 #   - issue_comment.created           — top-level PR comments
 #   - pull_request_review_comment     — inline file comments
 #   - pull_request_review.submitted   — a review with a body
+#   - workflow_dispatch (pr_number)   — how pr-autopilot wakes the fixer. A
+#     comment the sweep posts with GITHUB_TOKEN starts no run; a dispatch does
+#     (https://docs.github.com/en/actions/concepts/security/github_token).
+#     Needs dev-agent's phase-pr-review.yml from the fix that handles a
+#     dispatch (explicit prompt, GH_REPO) in the pinned ref below.
 #
 # Only PRs on dev-agent-owned branches proceed; the reusable workflow enforces
 # that itself and exits quietly on anything else.
@@ -949,6 +957,12 @@ on:
     types: [submitted]
   pull_request_review_comment:
     types: [created]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request to fix'
+        required: true
+        type: number
 
 permissions:
   contents: write
@@ -969,7 +983,12 @@ jobs:
     # Codex) and the autopilot report as NONE, so they are allowed by login
     # rather than by association; every other actor must be an owner, member,
     # or collaborator. Same allowlist the /swarm-override handler uses.
+    #
+    # A dispatch needs no filter here: only a person with write access, or
+    # this repository's own workflows (the autopilot), can dispatch it. The
+    # fix-round cap and budget gate in the called workflow still apply.
     if: |
+      github.event_name == 'workflow_dispatch' ||
       (
         github.event_name == 'issue_comment' &&
         github.event.issue.pull_request != null &&
@@ -1000,7 +1019,7 @@ jobs:
       )
     uses: alizaouane/dev-agent/.github/workflows/phase-pr-review.yml@v1
     with:
-      pr_number: \${{ github.event.issue.number || github.event.pull_request.number }}
+      pr_number: \${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
     secrets:
       ANTHROPIC_API_KEY: \${{ secrets.ANTHROPIC_API_KEY }}
 `;
@@ -1019,8 +1038,9 @@ run-name: \${{ github.event_name }} → pr-autopilot sweep
 # Every 20 minutes it looks at the open PRs on dev-agent-owned branches and
 # asks the question the operator would otherwise have to remember to ask: is
 # anything red, unreviewed, or unresolved? When something is, it wakes the
-# fixer by posting \`@claude\` on that PR, which is the trigger
-# \`dev-agent-pr-review.yml\` already listens for.
+# fixer by dispatching \`dev-agent-pr-review.yml\` for that PR, and leaves a
+# short comment saying so. (It used to post \`@claude\`, but a comment made with
+# GITHUB_TOKEN starts no run, so the fixer never woke.)
 #
 # It touches only \`feat/dev-agent-issue-*\` and \`dev-agent/spec-*\` branches,
 # never a draft, and never a PR labelled \`autopilot:off\`. It makes no model
@@ -1032,7 +1052,9 @@ run-name: \${{ github.event_name }} → pr-autopilot sweep
 # To pause it: disable this workflow in the Actions tab, or label the PR
 # \`autopilot:off\`.
 #
-# Requires: \`dev-agent-pr-review.yml\` in this repo (the fixer this wakes).
+# Requires: \`dev-agent-pr-review.yml\` in this repo, with its
+# \`workflow_dispatch\` trigger, on the default branch (the fixer this wakes),
+# and dev-agent's dispatching pr-autopilot.yml in the pinned ref below.
 
 on:
   schedule:
@@ -1058,6 +1080,8 @@ on:
 permissions:
   contents: read
   pull-requests: write
+  # Dispatching the fixer (\`gh workflow run dev-agent-pr-review.yml\`).
+  actions: write
   # \`statusCheckRollup\` reads CheckRun and StatusContext nodes, and the token
   # cannot see either without these. Without them \`gh pr list\` fails outright
   # with "Resource not accessible by integration" — the sweep does not degrade

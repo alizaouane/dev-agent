@@ -19,21 +19,35 @@
  * Required env:
  *   REPO             owner/name of the repo to sweep.
  *
- * Having decided, it wakes the fixer the way a human would: by posting
- * `@claude` on the PR. That is the trigger `phase-pr-review` already listens
- * for, so this works unchanged in every wired consumer repo with no new
- * plumbing, and the comment doubles as the audit trail — anyone reading the
- * thread later can see what woke it and why.
+ * Having decided, it wakes the fixer by dispatching the consumer's fixer
+ * wrapper (`gh workflow run <FIXER_WORKFLOW> -f pr_number=N`). It used to post
+ * `@claude` instead, but this runs on GITHUB_TOKEN, and a comment created with
+ * GITHUB_TOKEN starts no `issue_comment` run — so every wake was a no-op while
+ * the report said "Woken". A `workflow_dispatch` is the documented exception
+ * that does start a run
+ * (https://docs.github.com/en/actions/concepts/security/github_token), and it
+ * needs no credential beyond `actions: write`.
+ *
+ * It still posts a comment per wake, without the mention: the comment is the
+ * audit trail (what woke the fixer and why), the record the stand-down count
+ * is read back from, and the blocker list the dispatched fixer is told to
+ * read. Dropping the mention keeps the comment from ever becoming a second
+ * trigger, should a consumer run the sweep on a token whose comments do start
+ * runs.
  *
  * Optional env:
  *   PR_NUMBER        Triage only this PR instead of sweeping the repo.
  *   DRY_RUN          `true` reports what it would post without posting.
  *   MAX_REPEATS      Consecutive unchanged wakeups before standing down (4).
- *   GH_TOKEN         Passed through to `gh`.
+ *   FIXER_WORKFLOW   File name of the fixer wrapper to dispatch
+ *                    (default `dev-agent-pr-review.yml`).
+ *   GH_TOKEN         Passed through to `gh`. Needs `actions: write` to dispatch.
  *
- * Output: JSON to stdout — `{ actionable, waiting, woken, wedged }`.
- * Exit code: 0 always, unless the GitHub calls themselves fail (2). "Nothing to
- * do" is a normal, successful outcome and must not read as an error.
+ * Output: JSON to stdout — `{ actionable, waiting, woken, wakeFailed, wedged, ready }`.
+ * Exit code: 0 when the sweep did what it reported; 2 when the GitHub reads
+ * fail; 3 when any wake dispatch failed (the report is still printed). "Nothing
+ * to do" is a normal, successful outcome and must not read as an error, but a
+ * wake that did not happen must not read as one that did.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -283,8 +297,10 @@ export interface TriageReport {
   actionable: PrTriage[];
   /** PRs whose only blocker is a check still running. */
   waiting: PrTriage[];
-  /** PRs the sweep woke the fixer on. */
+  /** PRs the sweep woke the fixer on (the dispatch was accepted). */
   woken: number[];
+  /** PRs that needed a wake whose dispatch failed; nothing was recorded on them. */
+  wakeFailed: number[];
   /** PRs the sweep stood down on, having tried and not moved them. */
   wedged: number[];
   /** PRs announced as ready to merge on this sweep. */
@@ -378,27 +394,111 @@ export function postComment(repo: string, number: number, body: string): void {
   });
 }
 
+/** Fixer wrapper the sweep dispatches when the caller names none. */
+export const DEFAULT_FIXER_WORKFLOW = 'dev-agent-pr-review.yml';
+
+/**
+ * Check a fixer workflow file name before it reaches `gh workflow run`.
+ *
+ * It comes from a workflow input, so it is held to a bare `*.yml` / `*.yaml`
+ * file name: no path, no leading dash that `gh` would read as a flag.
+ *
+ * @param name - Candidate file name.
+ * @returns The same name when it is safe.
+ * @throws Error when it is not a bare workflow file name.
+ */
+export function validateFixerWorkflow(name: string): string {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml$/.test(name)) {
+    throw new Error(`FIXER_WORKFLOW must be a workflow file name like dev-agent-pr-review.yml, got: ${name}`);
+  }
+  return name;
+}
+
+/**
+ * Wake the fixer on one PR by dispatching the consumer's fixer wrapper.
+ *
+ * A dispatch, not a comment: this runs on GITHUB_TOKEN, and only
+ * `workflow_dispatch` / `repository_dispatch` events created with that token
+ * start a workflow run. The run is on the repository's default branch, which
+ * is where GitHub reads the wrapper's `workflow_dispatch` trigger from.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number, passed as the wrapper's `pr_number` input.
+ * @param workflow - Fixer wrapper file name (already validated).
+ * @throws Error when `gh` cannot dispatch (missing `actions: write`, no such
+ *   workflow, or a wrapper without a `workflow_dispatch` trigger).
+ */
+export function dispatchFixer(repo: string, number: number, workflow: string): void {
+  execFileSync(
+    'gh',
+    ['workflow', 'run', workflow, '--repo', repo, '-f', `pr_number=${number}`],
+    { encoding: 'utf8' },
+  );
+}
+
+/** The side effects the sweep performs, injectable so tests can see them. */
+export interface TriageEffects {
+  postComment: (repo: string, number: number, body: string) => void;
+  dispatchFixer: (repo: string, number: number, workflow: string) => void;
+  setLabel: (repo: string, number: number, label: string, present: boolean) => void;
+  readOpenPullRequests: (repo: string) => RawPr[];
+  countUnresolvedThreads: (repo: string, number: number) => number;
+  readComments: (repo: string, number: number) => CommentRecord[];
+}
+
+/** The real `gh`-backed effects. */
+const GH_EFFECTS: TriageEffects = {
+  postComment,
+  dispatchFixer,
+  setLabel,
+  readOpenPullRequests,
+  countUnresolvedThreads,
+  readComments,
+};
+
 /**
  * Sweep a repo (or one PR), wake the fixer where it is needed, and report.
  *
+ * A wake is dispatch first, comment second. The comment is what the next
+ * sweep counts towards the stand-down cap, so it is written only once the
+ * dispatch succeeded: a failed dispatch must not use up one of the attempts,
+ * and must not be reported as woken. It goes in `wakeFailed` instead, and the
+ * sweep carries on with the other PRs.
+ *
  * @param repo - owner/name.
  * @param opts.onlyPr - Restrict to this PR number when given.
- * @param opts.dryRun - Decide and report, but post nothing.
+ * @param opts.dryRun - Decide and report, but post and dispatch nothing.
  * @param opts.maxRepeats - Unchanged wakeups before standing down.
+ * @param opts.fixerWorkflow - Fixer wrapper file name to dispatch.
+ * @param opts.effects - Side effects; the real `gh` calls unless a test
+ *   substitutes them.
  * @returns What was found and what was done about it.
  */
 export function runTriage(
   repo: string,
-  { onlyPr, dryRun = false, maxRepeats = 4 }: {
+  {
+    onlyPr,
+    dryRun = false,
+    maxRepeats = 4,
+    fixerWorkflow = DEFAULT_FIXER_WORKFLOW,
+    effects = GH_EFFECTS,
+  }: {
     onlyPr?: number;
     dryRun?: boolean;
     maxRepeats?: number;
+    fixerWorkflow?: string;
+    effects?: TriageEffects;
   } = {},
 ): TriageReport {
+  const { postComment, dispatchFixer, setLabel, readOpenPullRequests, countUnresolvedThreads, readComments } =
+    effects;
+  validateFixerWorkflow(fixerWorkflow);
   const all = readOpenPullRequests(repo);
   const prs: RawPr[] = onlyPr === undefined ? all : all.filter((p) => p.number === onlyPr);
 
-  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [], ready: [] };
+  const report: TriageReport = {
+    actionable: [], waiting: [], woken: [], wakeFailed: [], wedged: [], ready: [],
+  };
   for (const raw of prs) {
     // Skip the thread query for branches we would never act on — it is the
     // expensive call in this sweep and most open PRs are not ours.
@@ -452,7 +552,19 @@ export function runTriage(
     const decision = shouldWake(triage.signature, priorSignatures(comments), maxRepeats);
 
     if (decision.wake) {
-      if (!dryRun) postComment(repo, triage.number, renderWakeComment(triage, decision));
+      if (!dryRun) {
+        try {
+          dispatchFixer(repo, triage.number, fixerWorkflow);
+        } catch (err) {
+          process.stderr.write(
+            `could not dispatch ${fixerWorkflow} for #${triage.number}: ` +
+              `${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          report.wakeFailed.push(triage.number);
+          continue;
+        }
+        postComment(repo, triage.number, renderWakeComment(triage, decision));
+      }
       report.woken.push(triage.number);
       continue;
     }
@@ -471,9 +583,10 @@ export function runTriage(
 }
 
 /**
- * CLI entry point: sweep, print JSON, exit 0.
+ * CLI entry point: sweep, print JSON, and set exit code 3 if any wake failed.
  *
  * @returns Nothing.
+ * @throws Error on invalid env input or a failed GitHub read (exit 2).
  */
 function main(): void {
   const repo = process.env.REPO;
@@ -498,8 +611,12 @@ function main(): void {
     onlyPr,
     dryRun: process.env.DRY_RUN === 'true',
     maxRepeats,
+    fixerWorkflow: process.env.FIXER_WORKFLOW || DEFAULT_FIXER_WORKFLOW,
   });
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  // A wake that did not happen must not leave a green run behind it: that is
+  // the silent failure this dispatch path replaced.
+  if (report.wakeFailed.length > 0) process.exitCode = 3;
 }
 
 const invokedAsCli = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);

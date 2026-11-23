@@ -17,14 +17,27 @@ name: dev-agent · pr-autopilot
 #   PR carrying an approved spec got no automation at all.
 #
 #   This workflow is the missing trigger: a sweep that decides which PRs need
-#   work, and wakes the fixer the way a person would.
+#   work, and wakes the fixer.
 #
-# WHY A COMMENT RATHER THAN A WORKFLOW DISPATCH
-#   `@claude` is the trigger phase-pr-review already listens for, so this works
-#   unchanged in every wired consumer repo with no new plumbing, and it cannot
-#   drift from the manual path because it IS the manual path. The comment is
-#   also the audit trail: whoever reads the thread later sees what woke the
-#   fixer and why, without opening a run.
+# WHY A WORKFLOW DISPATCH RATHER THAN A COMMENT
+#   It used to post `@claude`, the trigger phase-pr-review listens for. That
+#   never worked: this job runs on GITHUB_TOKEN, and a comment created with
+#   GITHUB_TOKEN starts no `issue_comment` run, so the fixer never ran while
+#   the summary reported it "Woken". `workflow_dispatch` is the documented
+#   exception that does start a run, with no extra credential:
+#   https://docs.github.com/en/actions/concepts/security/github_token
+#   So the sweep runs `gh workflow run <fixer_workflow> -f pr_number=N`. The
+#   consumer's fixer wrapper (dev-agent-pr-review.yml) must therefore have a
+#   `workflow_dispatch` trigger with a `pr_number` input, on its default
+#   branch. It still posts one comment per wake, without the mention, as the
+#   audit trail and the record the stand-down count is read from.
+#
+# CALLER PERMISSIONS
+#   A caller must grant `actions: write` (to dispatch) in addition to
+#   `contents: read`, `pull-requests: write`, `checks: read`, `statuses: read`.
+#   A reusable workflow cannot hold more than its caller grants; without
+#   `actions: write` every dispatch fails, the PR lands in `wakeFailed`, and
+#   the sweep step goes red rather than claiming a wake.
 #
 # WHAT IT WILL AND WILL NOT TOUCH
 #   Only branches matching a dev-agent-owned shape (`isDevAgentBranch` in
@@ -69,6 +82,11 @@ on:
         required: false
         type: number
         default: 4
+      fixer_workflow:
+        description: "File name of this repo's fixer wrapper, dispatched to wake the fixer"
+        required: false
+        type: string
+        default: 'dev-agent-pr-review.yml'
   schedule:
     # Every 20 minutes during working hours, hourly otherwise. Frequent enough
     # that a red check is picked up before the operator would have seen it,
@@ -92,11 +110,14 @@ on:
         type: boolean
         default: false
 
-# Least privilege: the sweep reads PR state and writes one comment. It never
-# pushes; the fixer it wakes does that, under its own permissions.
+# Least privilege: the sweep reads PR state, dispatches the fixer, and writes
+# one comment. It never pushes; the fixer it wakes does that, under its own
+# permissions.
 permissions:
   contents: read
   pull-requests: write
+  # `gh workflow run` — the dispatch that wakes the fixer.
+  actions: write
   # `statusCheckRollup` reads CheckRun and StatusContext nodes, and the token
   # cannot see either without these. Without them `gh pr list` fails outright
   # with "Resource not accessible by integration" — the sweep does not degrade
@@ -161,6 +182,11 @@ jobs:
           PR_NUMBER: ${{ inputs.pr_number }}
           DRY_RUN: ${{ inputs.dry_run }}
           MAX_REPEATS: ${{ inputs.max_repeats }}
+          # Consumers reach this through workflow_call, whose input defaults
+          # to their wrapper. A scheduled or dispatched run happens only in
+          # dev-agent's own repo, where the fixer is phase-pr-review.yml.
+          # Validated by the CLI as a bare workflow file name.
+          FIXER_WORKFLOW: ${{ inputs.fixer_workflow || 'phase-pr-review.yml' }}
         run: |
           set -euo pipefail
           "$ENGINE_NODE" .dev-agent-engine/node_modules/tsx/dist/cli.mjs \
@@ -191,6 +217,7 @@ jobs:
               end,
               "",
               "Woken: \(.woken | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
+              "Wake dispatch failed: \(.wakeFailed // [] | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
               "Stood down: \(.wedged | if length == 0 then "none" else map("#\(.)") | join(", ") end)",
               "Ready to merge: \(.ready | if length == 0 then "none" else map("#\(.)") | join(", ") end)"
             ' /tmp/triage.json

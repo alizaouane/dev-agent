@@ -8,6 +8,11 @@ name: dev-agent · phase-pr-review
 #   - issue_comment.created — top-level PR comments (PRs are issues to GH)
 #   - pull_request_review_comment.created — inline file comments
 #   - pull_request_review.submitted — top-level review with body
+#   - workflow_call from a consumer wrapper, which may itself have been
+#     started by workflow_dispatch: that is how pr-autopilot wakes the fixer,
+#     because a comment it posts with GITHUB_TOKEN starts no run
+#     (https://docs.github.com/en/actions/concepts/security/github_token).
+#     A dispatched run gets an explicit prompt; see "Run Claude Code".
 #
 # Filter: only PRs whose head branch matches `feat/dev-agent-issue-*`
 # (everything the dev-agent ships) AND the comment/review body contains
@@ -37,6 +42,15 @@ on:
     secrets:
       ANTHROPIC_API_KEY:
         required: true
+  # dev-agent's own pr-autopilot sweep wakes the fixer here by dispatch (a
+  # comment it posts with GITHUB_TOKEN would start no run). Consumers dispatch
+  # their wrapper instead, which reaches this file through workflow_call.
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: 'Pull request to fix'
+        required: true
+        type: number
   issue_comment:
     types: [created]
   pull_request_review:
@@ -90,9 +104,20 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
+          # This step runs before any checkout, so there is no git remote for
+          # `gh` to infer the repository from. Without GH_REPO, `gh pr view`
+          # fails on every fresh runner and the fixer never starts.
+          GH_REPO: ${{ github.repository }}
           PR_NUMBER: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
         run: |
           set -euo pipefail
+          # The number is echoed into a step output that the agent prompt
+          # reads, so it is checked to be an integer first.
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "PR number is not an integer; exiting." >&2
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           HEAD=$(gh pr view "$PR_NUMBER" --json headRefName --jq '.headRefName')
           # Strict regex gate: only dev-agent-authored PRs proceed. The head
           # ref came from GH but we still validate it against a known-safe
@@ -108,8 +133,11 @@ jobs:
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          echo "head=$HEAD" >> "$GITHUB_OUTPUT"
-          echo "skip=false" >> "$GITHUB_OUTPUT"
+          {
+            echo "head=$HEAD"
+            echo "number=$PR_NUMBER"
+            echo "skip=false"
+          } >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v7
         if: steps.pr.outputs.skip != 'true'
@@ -196,8 +224,23 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # No explicit prompt — claude-code-action's auto-detected
-          # `agent` mode reads the PR + triggering comment automatically.
+          # Comment events pass no prompt: claude-code-action's tag mode reads
+          # the PR and the triggering comment itself.
+          #
+          # A workflow_dispatch has no comment to read. That is how the
+          # pr-autopilot sweep wakes the fixer (a comment posted with
+          # GITHUB_TOKEN starts no workflow run; a dispatch does), and
+          # claude-code-action runs nothing on a dispatch without a prompt.
+          # The prompt names the PR and its head branch, both validated above
+          # (an integer input and a regex-gated ref), and points the agent at
+          # the sweep's own comment, which lists the blockers.
+          prompt: ${{ github.event_name == 'workflow_dispatch' && format('You are the fixer for pull request {0} in {1}, on branch {2}, which is already checked out. The pr-autopilot sweep found it not mergeable. Read its newest comment on the PR that contains `<!-- dev-agent:pr-autopilot -->` (use `gh pr view {0} --comments`), then read the failing checks (`gh pr checks {0}`) and every unresolved review thread. Fix each blocker on this branch, commit, and push to {2}. Reply to and resolve each review thread you address. Never push to another branch, never force-push, never merge.', steps.pr.outputs.number, github.repository, steps.pr.outputs.head) || '' }}
+          # The sweep dispatches as `github-actions[bot]`, which
+          # claude-code-action refuses as a non-human actor unless allowed.
+          # Allowed on a dispatch only: a dispatch needs write access (a person
+          # with write, or this repository's own workflows), so this admits no
+          # outside actor; comment events keep the default (no bots).
+          allowed_bots: ${{ github.event_name == 'workflow_dispatch' && 'github-actions' || '' }}
           claude_args: '--max-turns 30 --model claude-sonnet-4-6 --allowedTools Bash Edit Write Read Glob Grep TodoWrite NotebookEdit Task WebFetch WebSearch'
           show_full_output: 'true'
           # Pinned, not defaulted: the fix-round cap counts commits by this git
