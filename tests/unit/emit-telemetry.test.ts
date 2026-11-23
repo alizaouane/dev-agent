@@ -53,6 +53,19 @@ describe('buildBody', () => {
     expect(body).toMatch(/cost_source: unavailable/);
   });
 
+  // dev-agent#200 ruling A. Breakers: `cost ?? 0` in buildBody (both tests red);
+  // `?? UNKNOWN_RUN_FALLBACK_USD` -> `?? 0` (second test red).
+  it('charges an unmeasured run at the phase cap, never $0', () => {
+    const body = buildBody({ phase: 'implement', model: 'mystery', usage, status: 'blocked', unknownCostUsd: 5 });
+    expect(body).toMatch(/Cost: \$5\.00/);
+    expect(body).toMatch(/cost_source: unavailable-charged-at-cap/);
+  });
+  it('charges the fallback when no cap is passed', () => {
+    const body = buildBody({ phase: 'implement', model: 'mystery', usage, status: 'blocked' });
+    expect(body).not.toMatch(/Cost: \$0\.00/);
+    expect(body).toMatch(/Cost: \$5\.00/);
+  });
+
   it('labels an estimated cost as estimated', () => {
     const body = buildBody({ phase: 'implement', model: 'claude-sonnet-4-6', usage, status: 'success' });
     expect(body).toMatch(/cost_source: estimated/);
