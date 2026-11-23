@@ -3,7 +3,7 @@
  * Nightly per-repo monthly-budget watchdog (Pillar 10, build step 15).
  *
  * Reads `.dev-agent.yml`'s `cost_caps.monthly_budget_usd` /
- * `cost_caps.alert_threshold_pct`, paginates the repo's issues + telemetry
+ * `cost_caps.alert_threshold_pct`, paginates the repo's issues and PRs + telemetry
  * comments for the current month, aggregates spend via the pure helpers in
  * `lib/cost-watchdog.ts`, and upserts a single alert issue per tier-month
  * when spend crosses the warning threshold (default 80%) or exceeds the
@@ -31,10 +31,7 @@ import {
   dedupeLabels,
   type Tier,
 } from '../cost-watchdog';
-
-export function startOfMonthUtc(d: Date): Date {
-  return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1));
-}
+import { collectIssuesWithComments, startOfMonthUtc } from '../telemetry-source';
 
 function monthLabel(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
@@ -99,46 +96,6 @@ async function upsertAlertIssue(
     labels,
   });
   return { number: created.data.number, created: true };
-}
-
-export async function collectIssuesWithComments(
-  octokit: Octokit,
-  owner: string,
-  repo: string,
-  monthStart: Date,
-) {
-  const issues = await octokit.paginate(octokit.issues.listForRepo, {
-    owner,
-    repo,
-    state: 'all',
-    since: monthStart.toISOString(),
-    per_page: 100,
-  });
-  const realIssues = issues.filter((i) => !i.pull_request);
-  // Sequential pagination avoids secondary-rate-limit bursts on busy repos
-  // (N issues × paginated listComments would otherwise fan out concurrently).
-  // Author filter restricts spend aggregation to trusted telemetry posters —
-  // dev-agent's phase workflows post under `github-actions[bot]`, so a forged
-  // user comment matching the telemetry shape cannot inflate MTD totals.
-  const results: Array<{ number: number; title: string; comments: { body: string; created_at: string }[] }> = [];
-  for (const issue of realIssues) {
-    const comments = await octokit.paginate(octokit.issues.listComments, {
-      owner,
-      repo,
-      issue_number: issue.number,
-      per_page: 100,
-    });
-    const trusted = comments.filter((c) => c.user?.login === 'github-actions[bot]');
-    results.push({
-      number: issue.number,
-      title: issue.title,
-      comments: trusted.map((c) => ({
-        body: c.body ?? '',
-        created_at: c.created_at,
-      })),
-    });
-  }
-  return results;
 }
 
 async function main(): Promise<void> {

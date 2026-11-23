@@ -1,8 +1,12 @@
 name: dev-agent · phase-pr-review
 
-# Phase 2b: when a reviewer (human or bot) mentions `@claude` on a dev-agent
-# authored PR, the agent reads the comment, addresses it on the same branch,
-# and pushes the fix. Closes the implement → review → fix → merge loop.
+# Phase 2b: when a reviewer (human or bot) mentions `@claude` on a PR whose
+# head branch is dev-agent-owned, the agent reads the comment, addresses it on
+# the same branch, and pushes the fix. Closes the implement → review → fix →
+# merge loop. Scope is by head-branch name, not by PR author: dev-agent PRs are
+# opened by several identities (the Claude app, github-actions, and the person
+# running start-feature for spec branches), so a person who names a branch
+# `feat/dev-agent-issue-<n>` or `dev-agent/spec-<slug>` opts that PR in.
 #
 # Triggered events:
 #   - issue_comment.created — top-level PR comments (PRs are issues to GH)

@@ -32,7 +32,7 @@ import { appendFileSync } from 'node:fs';
 import { Octokit } from '@octokit/rest';
 import { parseConfig } from '../parse-config';
 import { aggregateCostFromComments, budgetGateDecision } from '../cost-watchdog';
-import { collectIssuesWithComments, startOfMonthUtc } from './cost-watchdog';
+import { collectIssuesWithComments, startOfMonthUtc } from '../telemetry-source';
 
 /**
  * Publish the decision to the workflow, both as step outputs and as a log line.
