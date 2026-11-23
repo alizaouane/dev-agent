@@ -98,6 +98,10 @@ jobs:
       )
     uses: alizaouane/dev-agent/.github/workflows/phase-pr-review.yml@v1
     with:
-      pr_number: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}
+      # fromJSON forces a number: an input forwarded to a typed reusable
+      # input is serialized as a string and the run fails at start with
+      # "Unexpected value" (seen 2026-11-23 on a workflow_dispatch). format()
+      # gives fromJSON a string for the event-number fallbacks too.
+      pr_number: ${{ fromJSON(format('{0}', inputs.pr_number || github.event.issue.number || github.event.pull_request.number)) }}
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}

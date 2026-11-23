@@ -33,6 +33,7 @@ import { fileURLToPath } from 'node:url';
 import { parseConfig } from '../parse-config';
 import { Octokit } from '@octokit/rest';
 import { formatTelemetry, asPhaseName, type PhaseName, type PhaseStatus } from '../telemetry';
+import { MAX_COST_PER_COMMENT_USD } from '../cost-watchdog';
 
 /** USD per million tokens, by model family. Used only when the run does not report cost. */
 const RATES: Record<string, { in: number; out: number }> = {
@@ -122,6 +123,25 @@ export function estimateCost(model: string, tokensIn: number, tokensOut: number)
 /** Charge for an unmeasured run when the consumer's config names no cap for the phase. */
 export const UNKNOWN_RUN_FALLBACK_USD = 5;
 
+/** Smallest charge the Cost line can show without rounding to `$0.00`. */
+export const MIN_UNKNOWN_RUN_CHARGE_USD = 0.01;
+
+/**
+ * The amount to record for a run whose cost is unknown, kept inside the range the
+ * budget readers count. `aggregateCostFromComments` drops any block above
+ * `MAX_COST_PER_COMMENT_USD`, and the Cost line is printed to the cent, so a cap
+ * outside [0.01, 1000] would otherwise be recorded as free.
+ *
+ * @param capUsd - The phase cap, or undefined for the fallback.
+ * @returns A charge in USD between `MIN_UNKNOWN_RUN_CHARGE_USD` and
+ *   `MAX_COST_PER_COMMENT_USD`; the fallback when `capUsd` is not finite.
+ */
+export function unknownRunChargeUsd(capUsd?: number): number {
+  const v = capUsd ?? UNKNOWN_RUN_FALLBACK_USD;
+  if (!Number.isFinite(v)) return UNKNOWN_RUN_FALLBACK_USD;
+  return Math.min(MAX_COST_PER_COMMENT_USD, Math.max(MIN_UNKNOWN_RUN_CHARGE_USD, v));
+}
+
 /**
  * Read the phase's per-run cap (`cost_caps.<phase>.dollars`) from the consumer's config.
  *
@@ -162,7 +182,7 @@ export function buildBody(args: {
   // model) is CHARGED at the phase's per-run cap, never recorded as free: the budget
   // gate sums these blocks, so a $0 would let unmeasured runs spend without limit
   // (dev-agent#200, owner ruling A).
-  const charged = cost ?? Math.max(0, args.unknownCostUsd ?? UNKNOWN_RUN_FALLBACK_USD);
+  const charged = cost ?? unknownRunChargeUsd(args.unknownCostUsd);
   return formatTelemetry({
     phase,
     model: model || '(unknown)',

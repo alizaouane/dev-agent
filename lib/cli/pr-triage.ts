@@ -43,7 +43,7 @@
  *                    (default `dev-agent-pr-review.yml`).
  *   GH_TOKEN         Passed through to `gh`. Needs `actions: write` to dispatch.
  *
- * Output: JSON to stdout — `{ actionable, waiting, woken, wakeFailed, wedged, ready }`.
+ * Output: JSON to stdout — `{ actionable, waiting, woken, wakeFailed, wakeUnrecorded, writeFailed, wedged, ready }`.
  * Exit code: 0 when the sweep did what it reported; 2 when the GitHub reads
  * fail; 3 when any wake dispatch failed (the report is still printed). "Nothing
  * to do" is a normal, successful outcome and must not read as an error, but a
@@ -301,6 +301,10 @@ export interface TriageReport {
   woken: number[];
   /** PRs that needed a wake whose dispatch failed; nothing was recorded on them. */
   wakeFailed: number[];
+  /** PRs woken (dispatch accepted) whose wake comment could not be posted. */
+  wakeUnrecorded: number[];
+  /** PRs where a label or a ready/stood-down comment could not be written. */
+  writeFailed: number[];
   /** PRs the sweep stood down on, having tried and not moved them. */
   wedged: number[];
   /** PRs announced as ready to merge on this sweep. */
@@ -497,7 +501,21 @@ export function runTriage(
   const prs: RawPr[] = onlyPr === undefined ? all : all.filter((p) => p.number === onlyPr);
 
   const report: TriageReport = {
-    actionable: [], waiting: [], woken: [], wakeFailed: [], wedged: [], ready: [],
+    actionable: [], waiting: [], woken: [], wakeFailed: [], wakeUnrecorded: [], writeFailed: [], wedged: [], ready: [],
+  };
+  // A failed write on one PR must not end the sweep: every later PR would go
+  // unexamined. Each write reports its failure and the loop moves on.
+  const tryWrite = (pr: number, what: string, write: () => void): boolean => {
+    try {
+      write();
+      return true;
+    } catch (err) {
+      process.stderr.write(
+        `could not ${what} on #${pr}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      report.writeFailed.push(pr);
+      return false;
+    }
   };
   for (const raw of prs) {
     // Skip the thread query for branches we would never act on — it is the
@@ -513,7 +531,9 @@ export function runTriage(
     // kept a `ready-to-merge` label that was no longer true — a list-scanning
     // signal that lies is worse than none.
     const labelled = state.labels.includes(READY_LABEL);
-    if (!dryRun && ready !== labelled) setLabel(repo, triage.number, READY_LABEL, ready);
+    if (!dryRun && ready !== labelled) {
+      tryWrite(triage.number, 'set the ready label', () => setLabel(repo, triage.number, READY_LABEL, ready));
+    }
 
     if (!triage.needsWork) {
       if (triage.waitingOnly) {
@@ -535,7 +555,8 @@ export function runTriage(
       // scan stays as the fallback for when a previous label write failed.
       if (labelled || alreadyAnnouncedReady(readComments(repo, triage.number))) continue;
 
-      if (!dryRun) postComment(repo, triage.number, renderReadyComment(state));
+      if (!dryRun && !tryWrite(triage.number, 'post the ready comment', () =>
+        postComment(repo, triage.number, renderReadyComment(state)))) continue;
       report.ready.push(triage.number);
       continue;
     }
@@ -563,7 +584,20 @@ export function runTriage(
           report.wakeFailed.push(triage.number);
           continue;
         }
-        postComment(repo, triage.number, renderWakeComment(triage, decision));
+        // The fixer is already running, so this PR IS woken whatever happens to
+        // the comment. A failed write must not end the sweep (later PRs would go
+        // unexamined); it is reported in `wakeUnrecorded`, which fails the job.
+        // Without the comment this wake is not counted toward the stand-down
+        // cap; the fixer's own fix-round cap (lib/fix-rounds.ts) still bounds it.
+        try {
+          postComment(repo, triage.number, renderWakeComment(triage, decision));
+        } catch (err) {
+          process.stderr.write(
+            `dispatched the fixer for #${triage.number} but could not post its wake comment: ` +
+              `${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          report.wakeUnrecorded.push(triage.number);
+        }
       }
       report.woken.push(triage.number);
       continue;
@@ -575,7 +609,8 @@ export function runTriage(
       (c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes('<!-- wedged -->'),
     );
     if (!alreadySaid && !dryRun) {
-      postComment(repo, triage.number, renderWedgedComment(triage, decision));
+      tryWrite(triage.number, 'post the stood-down comment', () =>
+        postComment(repo, triage.number, renderWedgedComment(triage, decision)));
     }
     report.wedged.push(triage.number);
   }
@@ -583,7 +618,7 @@ export function runTriage(
 }
 
 /**
- * CLI entry point: sweep, print JSON, and set exit code 3 if any wake failed.
+ * CLI entry point: sweep, print JSON, and set exit code 3 if any wake or write failed.
  *
  * @returns Nothing.
  * @throws Error on invalid env input or a failed GitHub read (exit 2).
@@ -616,7 +651,9 @@ function main(): void {
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
   // A wake that did not happen must not leave a green run behind it: that is
   // the silent failure this dispatch path replaced.
-  if (report.wakeFailed.length > 0) process.exitCode = 3;
+  if (report.wakeFailed.length > 0 || report.wakeUnrecorded.length > 0 || report.writeFailed.length > 0) {
+    process.exitCode = 3;
+  }
 }
 
 const invokedAsCli = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);

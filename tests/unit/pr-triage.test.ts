@@ -615,6 +615,42 @@ describe('runTriage wakes the fixer by workflow dispatch', () => {
     expect(calls.comments).toEqual([]);
   });
 
+  it('keeps sweeping when the wake comment fails after an accepted dispatch', () => {
+    // PR #201 review. The fixer already started, so the PR is woken and the
+    // failure is reported; the next PR must still be examined.
+    // Breaker: remove the try/catch around the wake `postComment` — the throw
+    // escapes runTriage and this goes red.
+    const second = { ...blockedPr, number: 43 };
+    const { effects, calls } = fakes({
+      readOpenPullRequests: () => [blockedPr, second],
+      postComment: () => {
+        throw new Error('HTTP 502');
+      },
+    });
+    const report = runTriage(REPO, { effects });
+    expect(calls.dispatched.map((d) => d[1])).toEqual([42, 43]);
+    expect(report.woken).toEqual([42, 43]);
+    expect(report.wakeUnrecorded).toEqual([42, 43]);
+    expect(report.wakeFailed).toEqual([]);
+  });
+
+  it('keeps sweeping when a label write fails', () => {
+    // PR #201 review, same class as the wake comment: any write that throws
+    // must not end the sweep. A stale ready label on a blocked PR forces the
+    // label write here. Breaker: call `setLabel(...)` directly instead of
+    // through `tryWrite` — the throw escapes and this goes red.
+    const stale = { ...blockedPr, labels: [{ name: 'ready-to-merge' }] };
+    const { effects, calls } = fakes({
+      readOpenPullRequests: () => [stale, { ...stale, number: 43 }],
+      setLabel: () => {
+        throw new Error('HTTP 502');
+      },
+    });
+    const report = runTriage(REPO, { effects });
+    expect(report.writeFailed).toEqual([42, 43]);
+    expect(calls.dispatched.map((d) => d[1])).toEqual([42, 43]);
+  });
+
   it('neither dispatches nor comments on a dry run', () => {
     const { effects, calls } = fakes();
     const report = runTriage(REPO, { effects, dryRun: true });
@@ -661,7 +697,13 @@ describe('the dispatch wake is wired end to end', () => {
     const raw = read('examples/web-app-template/.github/workflows/dev-agent-pr-review.yml');
     expect(raw).toMatch(/workflow_dispatch:\n\s+inputs:\n\s+pr_number:/);
     expect(raw).toMatch(/if: \|\n\s+github\.event_name == 'workflow_dispatch' \|\|/);
-    expect(raw).toContain('pr_number: ${{ inputs.pr_number || github.event.issue.number || github.event.pull_request.number }}');
+    // PR #201 review: the forward must be converted with fromJSON, or a
+    // dispatched run fails at start with "Unexpected value" (measured on
+    // caliente-booking-app run 45164651633; the fromJSON form started, 45164879402).
+    // Breaker: drop the `fromJSON(format('{0}', ...))` wrapper.
+    expect(raw).toContain(
+      "pr_number: ${{ fromJSON(format('{0}', inputs.pr_number || github.event.issue.number || github.event.pull_request.number)) }}",
+    );
     const auto = read('examples/web-app-template/.github/workflows/dev-agent-pr-autopilot.yml');
     expect(auto).toMatch(/^  actions: write$/m);
   });

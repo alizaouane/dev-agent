@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { extractUsage, estimateCost, buildBody } from '../../lib/cli/emit-telemetry';
+import { aggregateCostFromComments } from '../../lib/cost-watchdog';
 
 describe('extractUsage', () => {
   it('reads a reported total cost', () => {
@@ -64,6 +65,24 @@ describe('buildBody', () => {
     const body = buildBody({ phase: 'implement', model: 'mystery', usage, status: 'blocked' });
     expect(body).not.toMatch(/Cost: \$0\.00/);
     expect(body).toMatch(/Cost: \$5\.00/);
+  });
+
+  // PR #201 review: a charge outside what the budget reader counts is a $0 again.
+  // Breaker: `cost ?? (args.unknownCostUsd ?? UNKNOWN_RUN_FALLBACK_USD)` in
+  // buildBody (both red: 1001 is dropped by the reader, 0.001 prints $0.00).
+  const counted = (body: string) =>
+    aggregateCostFromComments(
+      [{ number: 1, title: 't', comments: [{ body, created_at: '2026-11-15T00:00:00Z' }] }],
+      new Date('2026-11-01T00:00:00Z'),
+    ).total;
+  it('records a cap above the reader limit at the limit, so it still counts', () => {
+    const body = buildBody({ phase: 'implement', model: 'mystery', usage, status: 'blocked', unknownCostUsd: 1001 });
+    expect(counted(body)).toBe(1000);
+  });
+  it('records a sub-cent cap as one cent, never $0.00', () => {
+    const body = buildBody({ phase: 'implement', model: 'mystery', usage, status: 'blocked', unknownCostUsd: 0.001 });
+    expect(body).not.toMatch(/Cost: \$0\.00/);
+    expect(counted(body)).toBeGreaterThan(0);
   });
 
   it('labels an estimated cost as estimated', () => {
