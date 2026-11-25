@@ -143,7 +143,7 @@ jobs:
             echo "skip=false"
           } >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
         if: steps.pr.outputs.skip != 'true'
         with:
           fetch-depth: 0
@@ -155,7 +155,7 @@ jobs:
       # to run the gate, before any model call, so a refusal costs nothing.
       - name: Checkout dev-agent engine (for the budget gate)
         if: steps.pr.outputs.skip != 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           repository: alizaouane/dev-agent
           ref: main
