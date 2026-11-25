@@ -1,7 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { normalizeChecks, toPullRequestState } from '../../lib/cli/pr-triage';
+import {
+  DEFAULT_FIXER_WORKFLOW,
+  normalizeChecks,
+  runTriage,
+  toPullRequestState,
+  validateFixerWorkflow,
+  type TriageEffects,
+} from '../../lib/cli/pr-triage';
 import {
   AUTOPILOT_MARKER,
   READY_MARKER,
@@ -314,8 +321,13 @@ describe('renderWakeComment', () => {
     unresolvedThreadCount: 2,
   });
 
-  it('mentions @claude, which is the trigger phase-pr-review listens for', () => {
-    expect(renderWakeComment(triage, shouldWake(triage.signature, []))).toContain('@claude');
+  it('never mentions @claude: the dispatch is the wake, and a mention would be a second one', () => {
+    // The sweep posts on GITHUB_TOKEN, whose comments start no run, so the
+    // mention never woke anything. On a token whose comments DO start runs it
+    // would wake the fixer a second time alongside the dispatch.
+    const body = renderWakeComment(triage, shouldWake(triage.signature, []));
+    expect(body).not.toContain('@claude');
+    expect(body).toContain('dispatched the fixer');
   });
 
   it('embeds a signature the next sweep can read back', () => {
@@ -527,5 +539,190 @@ describe('pr-autopilot respects the fix-round cap', () => {
     const wake = source.indexOf('renderWakeComment(triage, decision)');
     expect(capCheck).toBeGreaterThan(-1);
     expect(capCheck).toBeLessThan(wake);
+  });
+});
+
+describe('runTriage wakes the fixer by workflow dispatch', () => {
+  const REPO = 'acme/app';
+  /** A dev-agent PR with a failing check: needs a wake. */
+  const blockedPr = {
+    number: 42,
+    headRefName: 'feat/dev-agent-issue-7',
+    isDraft: false,
+    reviewDecision: null,
+    headRefOid: 'abc1234def',
+    statusCheckRollup: [{ name: 'test', status: 'COMPLETED', conclusion: 'FAILURE' }],
+    reviews: [],
+    labels: [],
+  };
+
+  /**
+   * Build recording fakes for every side effect.
+   *
+   * @param over - Effects to replace, e.g. a dispatch that throws.
+   * @returns The effects plus the log of calls they recorded.
+   */
+  function fakes(over: Partial<TriageEffects> = {}) {
+    const calls: { dispatched: unknown[][]; comments: Array<{ number: number; body: string }> } = {
+      dispatched: [],
+      comments: [],
+    };
+    const effects: TriageEffects = {
+      readOpenPullRequests: () => [blockedPr],
+      countUnresolvedThreads: () => 0,
+      readComments: () => [],
+      setLabel: () => {},
+      postComment: (_r, number, body) => calls.comments.push({ number, body }),
+      dispatchFixer: (...args) => calls.dispatched.push(args),
+      ...over,
+    };
+    return { effects, calls };
+  }
+
+  it('dispatches the fixer wrapper for the PR rather than relying on a comment', () => {
+    // Breaker: in runTriage's wake branch, delete the
+    // `dispatchFixer(repo, triage.number, fixerWorkflow)` line (the old
+    // comment-only wake) — `dispatched` is then empty and this goes red.
+    const { effects, calls } = fakes();
+    const report = runTriage(REPO, { effects });
+    expect(calls.dispatched).toEqual([[REPO, 42, DEFAULT_FIXER_WORKFLOW]]);
+    expect(report.woken).toEqual([42]);
+    // The audit/signature comment still goes up, and it is not a trigger.
+    expect(calls.comments).toHaveLength(1);
+    expect(calls.comments[0].body).toContain(AUTOPILOT_MARKER);
+    expect(calls.comments[0].body).not.toContain('@claude');
+  });
+
+  it('dispatches the wrapper the caller named', () => {
+    const { effects, calls } = fakes();
+    runTriage(REPO, { effects, fixerWorkflow: 'my-fixer.yaml' });
+    expect(calls.dispatched).toEqual([[REPO, 42, 'my-fixer.yaml']]);
+  });
+
+  it('does not report or record a wake whose dispatch failed', () => {
+    // A failed dispatch reported as "Woken" is the silent failure this path
+    // replaced; recording its comment would also spend a stand-down attempt.
+    // Breaker: move `postComment(...)` above the dispatch try/catch, or drop
+    // the `continue` in its catch — a comment then appears and this goes red.
+    const { effects, calls } = fakes({
+      dispatchFixer: () => {
+        throw new Error('HTTP 403: Resource not accessible by integration');
+      },
+    });
+    const report = runTriage(REPO, { effects });
+    expect(report.woken).toEqual([]);
+    expect(report.wakeFailed).toEqual([42]);
+    expect(calls.comments).toEqual([]);
+  });
+
+  it('keeps sweeping when the wake comment fails after an accepted dispatch', () => {
+    // PR #201 review. The fixer already started, so the PR is woken and the
+    // failure is reported; the next PR must still be examined.
+    // Breaker: remove the try/catch around the wake `postComment` — the throw
+    // escapes runTriage and this goes red.
+    const second = { ...blockedPr, number: 43 };
+    const { effects, calls } = fakes({
+      readOpenPullRequests: () => [blockedPr, second],
+      postComment: () => {
+        throw new Error('HTTP 502');
+      },
+    });
+    const report = runTriage(REPO, { effects });
+    expect(calls.dispatched.map((d) => d[1])).toEqual([42, 43]);
+    expect(report.woken).toEqual([42, 43]);
+    expect(report.wakeUnrecorded).toEqual([42, 43]);
+    expect(report.wakeFailed).toEqual([]);
+  });
+
+  it('setLabel lets a failure reach the sweep instead of swallowing it', () => {
+    // PR #201 review round 2: a setLabel that logs and returns hid every label
+    // failure from `labelFailed`. Breaker: wrap its execFileSync in try/catch.
+    const src = readFileSync(resolve(__dirname, '../../lib/cli/pr-triage.ts'), 'utf8');
+    const body = src.slice(src.indexOf('export function setLabel'), src.indexOf('export function postComment'));
+    expect(body).not.toMatch(/\btry\s*\{/);
+  });
+
+  it('keeps sweeping when a label write fails', () => {
+    // PR #201 review, same class as the wake comment: any write that throws
+    // must not end the sweep. A stale ready label on a blocked PR forces the
+    // label write here. Breaker: call `setLabel(...)` directly instead of
+    // through `tryWrite` — the throw escapes and this goes red.
+    const stale = { ...blockedPr, labels: [{ name: 'ready-to-merge' }] };
+    const { effects, calls } = fakes({
+      readOpenPullRequests: () => [stale, { ...stale, number: 43 }],
+      setLabel: () => {
+        throw new Error('HTTP 502');
+      },
+    });
+    const report = runTriage(REPO, { effects });
+    expect(report.labelFailed).toEqual([42, 43]);
+    expect(report.writeFailed).toEqual([]);
+    expect(calls.dispatched.map((d) => d[1])).toEqual([42, 43]);
+  });
+
+  it('neither dispatches nor comments on a dry run', () => {
+    const { effects, calls } = fakes();
+    const report = runTriage(REPO, { effects, dryRun: true });
+    expect(report.woken).toEqual([42]);
+    expect(calls.dispatched).toEqual([]);
+    expect(calls.comments).toEqual([]);
+  });
+
+  it('does not dispatch on a branch dev-agent does not own', () => {
+    const { effects, calls } = fakes({
+      readOpenPullRequests: () => [{ ...blockedPr, headRefName: 'feature/human-work' }],
+    });
+    runTriage(REPO, { effects });
+    expect(calls.dispatched).toEqual([]);
+  });
+
+  it('refuses a fixer workflow that is not a bare workflow file name', () => {
+    expect(validateFixerWorkflow('dev-agent-pr-review.yml')).toBe('dev-agent-pr-review.yml');
+    for (const bad of ['--repo=x/y.yml', '../evil.yml', 'a/b.yml', 'fixer', '']) {
+      expect(() => validateFixerWorkflow(bad)).toThrow(/FIXER_WORKFLOW/);
+    }
+    const { effects } = fakes();
+    expect(() => runTriage(REPO, { effects, fixerWorkflow: '-x.yml' })).toThrow(/FIXER_WORKFLOW/);
+  });
+});
+
+describe('the dispatch wake is wired end to end', () => {
+  const root = resolve(__dirname, '../..');
+  /** Read a repo file as text, by its path from the repo root. */
+  const read = (p: string) => readFileSync(resolve(root, p), 'utf8');
+
+  it('pr-autopilot.yml can dispatch and names the fixer wrapper', () => {
+    // Breaker: delete `actions: write` from pr-autopilot.yml — every
+    // `gh workflow run` then fails with 403 on the runner, and this goes red.
+    const raw = read('.github/workflows/pr-autopilot.yml');
+    expect(raw).toMatch(/^  actions: write$/m);
+    expect(raw).toMatch(/fixer_workflow:[\s\S]*?default: 'dev-agent-pr-review\.yml'/);
+    expect(raw).toMatch(/FIXER_WORKFLOW: \$\{\{ inputs\.fixer_workflow \|\| 'phase-pr-review\.yml' \}\}/);
+  });
+
+  it('the consumer wrapper template accepts a dispatch and passes its PR through', () => {
+    // Breaker: drop `inputs.pr_number ||` from the wrapper's `with:` — a
+    // dispatched run then calls phase-pr-review with an empty PR number.
+    const raw = read('examples/web-app-template/.github/workflows/dev-agent-pr-review.yml');
+    expect(raw).toMatch(/workflow_dispatch:\n\s+inputs:\n\s+pr_number:/);
+    expect(raw).toMatch(/if: \|\n\s+github\.event_name == 'workflow_dispatch' \|\|/);
+    // PR #201 review: the forward must be converted with fromJSON, or a
+    // dispatched run fails at start with "Unexpected value" (measured on
+    // caliente-booking-app run 45164651633; the fromJSON form started, 45164879402).
+    // Breaker: drop the `fromJSON(format('{0}', ...))` wrapper.
+    expect(raw).toContain(
+      "pr_number: ${{ fromJSON(format('{0}', inputs.pr_number || github.event.issue.number || github.event.pull_request.number)) }}",
+    );
+    const auto = read('examples/web-app-template/.github/workflows/dev-agent-pr-autopilot.yml');
+    expect(auto).toMatch(/^  actions: write$/m);
+  });
+
+  it('phase-pr-review gives a dispatched run a prompt and admits the sweep as actor', () => {
+    // claude-code-action runs nothing on workflow_dispatch without a prompt,
+    // and refuses github-actions[bot] as a non-human actor unless allowed.
+    const raw = read('.github/workflows/phase-pr-review.yml');
+    expect(raw).toMatch(/prompt: \$\{\{ github\.event_name == 'workflow_dispatch' && format\(/);
+    expect(raw).toMatch(/allowed_bots: \$\{\{ github\.event_name == 'workflow_dispatch' && 'github-actions' \|\| '' \}\}/);
+    expect(raw).toMatch(/^  workflow_dispatch:\n    inputs:\n      pr_number:/m);
   });
 });

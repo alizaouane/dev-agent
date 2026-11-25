@@ -28,8 +28,12 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { parseConfig } from '../parse-config';
 import { Octokit } from '@octokit/rest';
 import { formatTelemetry, asPhaseName, type PhaseName, type PhaseStatus } from '../telemetry';
+import { MAX_COST_PER_COMMENT_USD } from '../cost-watchdog';
 
 /** USD per million tokens, by model family. Used only when the run does not report cost. */
 const RATES: Record<string, { in: number; out: number }> = {
@@ -116,6 +120,47 @@ export function estimateCost(model: string, tokensIn: number, tokensOut: number)
   return (tokensIn / 1_000_000) * r.in + (tokensOut / 1_000_000) * r.out;
 }
 
+/** Charge for an unmeasured run when the consumer's config names no cap for the phase. */
+export const UNKNOWN_RUN_FALLBACK_USD = 5;
+
+/** Smallest charge the Cost line can show without rounding to `$0.00`. */
+export const MIN_UNKNOWN_RUN_CHARGE_USD = 0.01;
+
+/**
+ * The amount to record for a run whose cost is unknown, kept inside the range the
+ * budget readers count. `aggregateCostFromComments` drops any block above
+ * `MAX_COST_PER_COMMENT_USD`, and the Cost line is printed to the cent, so a cap
+ * outside [0.01, 1000] would otherwise be recorded as free.
+ *
+ * @param capUsd - The phase cap, or undefined for the fallback.
+ * @returns A charge in USD between `MIN_UNKNOWN_RUN_CHARGE_USD` and
+ *   `MAX_COST_PER_COMMENT_USD`; the fallback when `capUsd` is not finite.
+ */
+export function unknownRunChargeUsd(capUsd?: number): number {
+  const v = capUsd ?? UNKNOWN_RUN_FALLBACK_USD;
+  if (!Number.isFinite(v)) return UNKNOWN_RUN_FALLBACK_USD;
+  return Math.min(MAX_COST_PER_COMMENT_USD, Math.max(MIN_UNKNOWN_RUN_CHARGE_USD, v));
+}
+
+/**
+ * Read the phase's per-run cap (`cost_caps.<phase>.dollars`) from the consumer's config.
+ *
+ * @param phase - Phase name to look up.
+ * @param configPath - Path to the consumer's `.dev-agent.yml`.
+ * @returns The cap in USD, or `UNKNOWN_RUN_FALLBACK_USD` when the config or the cap
+ *   cannot be read (never 0, so an unmeasured run is never free).
+ */
+export async function phaseCapUsd(phase: PhaseName, configPath: string): Promise<number> {
+  try {
+    const defaultsPath = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'schema', 'defaults.yml');
+    const config = await parseConfig({ configPath, defaultsPath });
+    const cap = (config.cost_caps as Record<string, { dollars?: number } | undefined>)?.[phase]?.dollars;
+    return typeof cap === 'number' && Number.isFinite(cap) && cap > 0 ? cap : UNKNOWN_RUN_FALLBACK_USD;
+  } catch {
+    return UNKNOWN_RUN_FALLBACK_USD;
+  }
+}
+
 /**
  * Build the telemetry comment body for a run.
  *
@@ -123,27 +168,33 @@ export function estimateCost(model: string, tokensIn: number, tokensOut: number)
  * @param args.model - Model id.
  * @param args.usage - Extracted usage.
  * @param args.status - Agent status to record.
+ * @param args.unknownCostUsd - What to charge when the cost cannot be determined
+ *   (the phase cap); defaults to `UNKNOWN_RUN_FALLBACK_USD`.
  * @returns The comment body, in the format the watchdog and gate parse.
  */
 export function buildBody(args: {
   phase: PhaseName; model: string; usage: ExtractedUsage; status: PhaseStatus;
+  unknownCostUsd?: number;
 }): string {
   const { phase, model, usage, status } = args;
   const cost = usage.costUsd ?? estimateCost(model, usage.tokensIn, usage.tokensOut);
+  // A run whose cost cannot be determined (cancelled, no execution file, an unknown
+  // model) is CHARGED at the phase's per-run cap, never recorded as free: the budget
+  // gate sums these blocks, so a $0 would let unmeasured runs spend without limit
+  // (dev-agent#200, owner ruling A).
+  const charged = cost ?? unknownRunChargeUsd(args.unknownCostUsd);
   return formatTelemetry({
     phase,
     model: model || '(unknown)',
     duration_ms: usage.durationMs,
     tokens_in: usage.tokensIn,
     tokens_out: usage.tokensOut,
-    // A run whose cost cannot be determined is recorded as 0 but flagged in
-    // status, so it is visibly unknown rather than silently free.
-    cost_usd: cost ?? 0,
+    cost_usd: charged,
     attempts: 1,
     status,
     // Recorded in artifacts rather than folded into status: a run whose cost
     // could not be determined must be visibly unknown, not silently free.
-    artifacts: { cost_source: cost === null ? 'unavailable' : usage.costUsd !== null ? 'reported' : 'estimated' },
+    artifacts: { cost_source: cost === null ? 'unavailable-charged-at-cap' : usage.costUsd !== null ? 'reported' : 'estimated' },
   });
 }
 
@@ -175,7 +226,8 @@ async function main(): Promise<void> {
     console.log(`::warning::emit-telemetry: could not read execution file '${file}'; recording cost as unknown.`);
   }
 
-  const body = buildBody({ phase, model, usage, status });
+  const unknownCostUsd = await phaseCapUsd(phase, process.env.CONFIG_PATH ?? '.dev-agent.yml');
+  const body = buildBody({ phase, model, usage, status, unknownCostUsd });
   await new Octokit({ auth: token }).issues.createComment({
     owner, repo, issue_number: issue, body,
   });

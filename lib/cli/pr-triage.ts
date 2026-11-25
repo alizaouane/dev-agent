@@ -19,21 +19,35 @@
  * Required env:
  *   REPO             owner/name of the repo to sweep.
  *
- * Having decided, it wakes the fixer the way a human would: by posting
- * `@claude` on the PR. That is the trigger `phase-pr-review` already listens
- * for, so this works unchanged in every wired consumer repo with no new
- * plumbing, and the comment doubles as the audit trail — anyone reading the
- * thread later can see what woke it and why.
+ * Having decided, it wakes the fixer by dispatching the consumer's fixer
+ * wrapper (`gh workflow run <FIXER_WORKFLOW> -f pr_number=N`). It used to post
+ * `@claude` instead, but this runs on GITHUB_TOKEN, and a comment created with
+ * GITHUB_TOKEN starts no `issue_comment` run — so every wake was a no-op while
+ * the report said "Woken". A `workflow_dispatch` is the documented exception
+ * that does start a run
+ * (https://docs.github.com/en/actions/concepts/security/github_token), and it
+ * needs no credential beyond `actions: write`.
+ *
+ * It still posts a comment per wake, without the mention: the comment is the
+ * audit trail (what woke the fixer and why), the record the stand-down count
+ * is read back from, and the blocker list the dispatched fixer is told to
+ * read. Dropping the mention keeps the comment from ever becoming a second
+ * trigger, should a consumer run the sweep on a token whose comments do start
+ * runs.
  *
  * Optional env:
  *   PR_NUMBER        Triage only this PR instead of sweeping the repo.
  *   DRY_RUN          `true` reports what it would post without posting.
  *   MAX_REPEATS      Consecutive unchanged wakeups before standing down (4).
- *   GH_TOKEN         Passed through to `gh`.
+ *   FIXER_WORKFLOW   File name of the fixer wrapper to dispatch
+ *                    (default `dev-agent-pr-review.yml`).
+ *   GH_TOKEN         Passed through to `gh`. Needs `actions: write` to dispatch.
  *
- * Output: JSON to stdout — `{ actionable, waiting, woken, wedged }`.
- * Exit code: 0 always, unless the GitHub calls themselves fail (2). "Nothing to
- * do" is a normal, successful outcome and must not read as an error.
+ * Output: JSON to stdout — `{ actionable, waiting, woken, wakeFailed, wakeUnrecorded, writeFailed, labelFailed, wedged, ready }`.
+ * Exit code: 0 when the sweep did what it reported; 2 when the GitHub reads
+ * fail; 3 when any wake dispatch failed (the report is still printed). "Nothing
+ * to do" is a normal, successful outcome and must not read as an error, but a
+ * wake that did not happen must not read as one that did.
  */
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -283,8 +297,16 @@ export interface TriageReport {
   actionable: PrTriage[];
   /** PRs whose only blocker is a check still running. */
   waiting: PrTriage[];
-  /** PRs the sweep woke the fixer on. */
+  /** PRs the sweep woke the fixer on (the dispatch was accepted). */
   woken: number[];
+  /** PRs that needed a wake whose dispatch failed; nothing was recorded on them. */
+  wakeFailed: number[];
+  /** PRs woken (dispatch accepted) whose wake comment could not be posted. */
+  wakeUnrecorded: number[];
+  /** PRs where a ready or stood-down comment could not be written. */
+  writeFailed: number[];
+  /** PRs whose ready label could not be changed (reported; does not fail the job). */
+  labelFailed: number[];
   /** PRs the sweep stood down on, having tried and not moved them. */
   wedged: number[];
   /** PRs announced as ready to merge on this sweep. */
@@ -339,29 +361,24 @@ export function readComments(repo: string, number: number): CommentRecord[] {
 }
 
 /**
- * Add or remove a label on a PR, ignoring a failure.
+ * Add or remove a label on a PR.
  *
  * The label is a convenience for scanning the PR list; the comment is the
- * actual signal. A repo that has never created this label should not turn a
- * successful sweep into a failed one.
+ * actual signal. A failure throws so the sweep can report it (`labelFailed`);
+ * the sweep does not fail the job for it, because a repo that has never
+ * created this label should not turn a successful sweep into a failed one.
  *
  * @param repo - owner/name.
  * @param number - PR number.
  * @param label - Label to set.
  * @param present - True to add, false to remove.
+ * @throws Error when `gh pr edit` fails.
  */
 export function setLabel(repo: string, number: number, label: string, present: boolean): void {
   const flag = present ? '--add-label' : '--remove-label';
-  try {
-    execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, flag, label], {
-      encoding: 'utf8',
-    });
-  } catch (err) {
-    process.stderr.write(
-      `could not ${present ? 'add' : 'remove'} ${label} on #${number}: ` +
-        `${err instanceof Error ? err.message : String(err)}\n`,
-    );
-  }
+  execFileSync('gh', ['pr', 'edit', String(number), '--repo', repo, flag, label], {
+    encoding: 'utf8',
+  });
 }
 
 /**
@@ -378,27 +395,125 @@ export function postComment(repo: string, number: number, body: string): void {
   });
 }
 
+/** Fixer wrapper the sweep dispatches when the caller names none. */
+export const DEFAULT_FIXER_WORKFLOW = 'dev-agent-pr-review.yml';
+
+/**
+ * Check a fixer workflow file name before it reaches `gh workflow run`.
+ *
+ * It comes from a workflow input, so it is held to a bare `*.yml` / `*.yaml`
+ * file name: no path, no leading dash that `gh` would read as a flag.
+ *
+ * @param name - Candidate file name.
+ * @returns The same name when it is safe.
+ * @throws Error when it is not a bare workflow file name.
+ */
+export function validateFixerWorkflow(name: string): string {
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]*\.ya?ml$/.test(name)) {
+    throw new Error(`FIXER_WORKFLOW must be a workflow file name like dev-agent-pr-review.yml, got: ${name}`);
+  }
+  return name;
+}
+
+/**
+ * Wake the fixer on one PR by dispatching the consumer's fixer wrapper.
+ *
+ * A dispatch, not a comment: this runs on GITHUB_TOKEN, and only
+ * `workflow_dispatch` / `repository_dispatch` events created with that token
+ * start a workflow run. The run is on the repository's default branch, which
+ * is where GitHub reads the wrapper's `workflow_dispatch` trigger from.
+ *
+ * @param repo - owner/name.
+ * @param number - PR number, passed as the wrapper's `pr_number` input.
+ * @param workflow - Fixer wrapper file name (already validated).
+ * @throws Error when `gh` cannot dispatch (missing `actions: write`, no such
+ *   workflow, or a wrapper without a `workflow_dispatch` trigger).
+ */
+export function dispatchFixer(repo: string, number: number, workflow: string): void {
+  execFileSync(
+    'gh',
+    ['workflow', 'run', workflow, '--repo', repo, '-f', `pr_number=${number}`],
+    { encoding: 'utf8' },
+  );
+}
+
+/** The side effects the sweep performs, injectable so tests can see them. */
+export interface TriageEffects {
+  postComment: (repo: string, number: number, body: string) => void;
+  dispatchFixer: (repo: string, number: number, workflow: string) => void;
+  setLabel: (repo: string, number: number, label: string, present: boolean) => void;
+  readOpenPullRequests: (repo: string) => RawPr[];
+  countUnresolvedThreads: (repo: string, number: number) => number;
+  readComments: (repo: string, number: number) => CommentRecord[];
+}
+
+/** The real `gh`-backed effects. */
+const GH_EFFECTS: TriageEffects = {
+  postComment,
+  dispatchFixer,
+  setLabel,
+  readOpenPullRequests,
+  countUnresolvedThreads,
+  readComments,
+};
+
 /**
  * Sweep a repo (or one PR), wake the fixer where it is needed, and report.
  *
+ * A wake is dispatch first, comment second. The comment is what the next
+ * sweep counts towards the stand-down cap, so it is written only once the
+ * dispatch succeeded: a failed dispatch must not use up one of the attempts,
+ * and must not be reported as woken. It goes in `wakeFailed` instead, and the
+ * sweep carries on with the other PRs.
+ *
  * @param repo - owner/name.
  * @param opts.onlyPr - Restrict to this PR number when given.
- * @param opts.dryRun - Decide and report, but post nothing.
+ * @param opts.dryRun - Decide and report, but post and dispatch nothing.
  * @param opts.maxRepeats - Unchanged wakeups before standing down.
+ * @param opts.fixerWorkflow - Fixer wrapper file name to dispatch.
+ * @param opts.effects - Side effects; the real `gh` calls unless a test
+ *   substitutes them.
  * @returns What was found and what was done about it.
  */
 export function runTriage(
   repo: string,
-  { onlyPr, dryRun = false, maxRepeats = 4 }: {
+  {
+    onlyPr,
+    dryRun = false,
+    maxRepeats = 4,
+    fixerWorkflow = DEFAULT_FIXER_WORKFLOW,
+    effects = GH_EFFECTS,
+  }: {
     onlyPr?: number;
     dryRun?: boolean;
     maxRepeats?: number;
+    fixerWorkflow?: string;
+    effects?: TriageEffects;
   } = {},
 ): TriageReport {
+  const { postComment, dispatchFixer, setLabel, readOpenPullRequests, countUnresolvedThreads, readComments } =
+    effects;
+  validateFixerWorkflow(fixerWorkflow);
   const all = readOpenPullRequests(repo);
   const prs: RawPr[] = onlyPr === undefined ? all : all.filter((p) => p.number === onlyPr);
 
-  const report: TriageReport = { actionable: [], waiting: [], woken: [], wedged: [], ready: [] };
+  const report: TriageReport = {
+    actionable: [], waiting: [], woken: [], wakeFailed: [], wakeUnrecorded: [], writeFailed: [], labelFailed: [], wedged: [], ready: [],
+  };
+  // A failed write on one PR must not end the sweep: every later PR would go
+  // unexamined. Each write reports its failure and the loop moves on.
+  const tryWrite = (pr: number, what: string, write: () => void, failed = report.writeFailed): boolean => {
+    try {
+      write();
+      return true;
+    } catch (err) {
+      process.stderr.write(
+        `could not ${what} on #${pr}: ${err instanceof Error ? err.message : String(err)}\n`,
+      );
+      failed.push(pr);
+      return false;
+    }
+  };
   for (const raw of prs) {
     // Skip the thread query for branches we would never act on — it is the
     // expensive call in this sweep and most open PRs are not ours.
@@ -413,7 +528,14 @@ export function runTriage(
     // kept a `ready-to-merge` label that was no longer true — a list-scanning
     // signal that lies is worse than none.
     const labelled = state.labels.includes(READY_LABEL);
-    if (!dryRun && ready !== labelled) setLabel(repo, triage.number, READY_LABEL, ready);
+    if (!dryRun && ready !== labelled) {
+      tryWrite(
+        triage.number,
+        'set the ready label',
+        () => setLabel(repo, triage.number, READY_LABEL, ready),
+        report.labelFailed,
+      );
+    }
 
     if (!triage.needsWork) {
       if (triage.waitingOnly) {
@@ -435,7 +557,8 @@ export function runTriage(
       // scan stays as the fallback for when a previous label write failed.
       if (labelled || alreadyAnnouncedReady(readComments(repo, triage.number))) continue;
 
-      if (!dryRun) postComment(repo, triage.number, renderReadyComment(state));
+      if (!dryRun && !tryWrite(triage.number, 'post the ready comment', () =>
+        postComment(repo, triage.number, renderReadyComment(state)))) continue;
       report.ready.push(triage.number);
       continue;
     }
@@ -452,7 +575,32 @@ export function runTriage(
     const decision = shouldWake(triage.signature, priorSignatures(comments), maxRepeats);
 
     if (decision.wake) {
-      if (!dryRun) postComment(repo, triage.number, renderWakeComment(triage, decision));
+      if (!dryRun) {
+        try {
+          dispatchFixer(repo, triage.number, fixerWorkflow);
+        } catch (err) {
+          process.stderr.write(
+            `could not dispatch ${fixerWorkflow} for #${triage.number}: ` +
+              `${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          report.wakeFailed.push(triage.number);
+          continue;
+        }
+        // The fixer is already running, so this PR IS woken whatever happens to
+        // the comment. A failed write must not end the sweep (later PRs would go
+        // unexamined); it is reported in `wakeUnrecorded`, which fails the job.
+        // Without the comment this wake is not counted toward the stand-down
+        // cap; the fixer's own fix-round cap (lib/fix-rounds.ts) still bounds it.
+        try {
+          postComment(repo, triage.number, renderWakeComment(triage, decision));
+        } catch (err) {
+          process.stderr.write(
+            `dispatched the fixer for #${triage.number} but could not post its wake comment: ` +
+              `${err instanceof Error ? err.message : String(err)}\n`,
+          );
+          report.wakeUnrecorded.push(triage.number);
+        }
+      }
       report.woken.push(triage.number);
       continue;
     }
@@ -463,7 +611,8 @@ export function runTriage(
       (c) => AUTOPILOT_AUTHORS.includes(c.author) && c.body.includes('<!-- wedged -->'),
     );
     if (!alreadySaid && !dryRun) {
-      postComment(repo, triage.number, renderWedgedComment(triage, decision));
+      tryWrite(triage.number, 'post the stood-down comment', () =>
+        postComment(repo, triage.number, renderWedgedComment(triage, decision)));
     }
     report.wedged.push(triage.number);
   }
@@ -471,9 +620,10 @@ export function runTriage(
 }
 
 /**
- * CLI entry point: sweep, print JSON, exit 0.
+ * CLI entry point: sweep, print JSON, and set exit code 3 if any wake or write failed.
  *
  * @returns Nothing.
+ * @throws Error on invalid env input or a failed GitHub read (exit 2).
  */
 function main(): void {
   const repo = process.env.REPO;
@@ -498,8 +648,14 @@ function main(): void {
     onlyPr,
     dryRun: process.env.DRY_RUN === 'true',
     maxRepeats,
+    fixerWorkflow: process.env.FIXER_WORKFLOW || DEFAULT_FIXER_WORKFLOW,
   });
   process.stdout.write(JSON.stringify(report, null, 2) + '\n');
+  // A wake that did not happen must not leave a green run behind it: that is
+  // the silent failure this dispatch path replaced.
+  if (report.wakeFailed.length > 0 || report.wakeUnrecorded.length > 0 || report.writeFailed.length > 0) {
+    process.exitCode = 3;
+  }
 }
 
 const invokedAsCli = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.url);

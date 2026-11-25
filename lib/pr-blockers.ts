@@ -330,13 +330,15 @@ export function shouldWake(
 }
 
 /**
- * Render the comment the autopilot posts to wake the fixer.
+ * Render the comment the autopilot posts each time it wakes the fixer.
  *
- * The `@claude` mention is the trigger `phase-pr-review` already listens for,
- * which is why the autopilot posts a comment rather than dispatching a
- * workflow: that path works unchanged in every wired consumer repo. The
- * blocker list is the audit trail — it says what woke the fixer, so a person
- * reading the thread later can see the reasoning without opening the run.
+ * The wake itself is a workflow dispatch (lib/cli/pr-triage.ts): a comment
+ * posted with GITHUB_TOKEN starts no run, so an `@claude` here never woke
+ * anything. The comment stays because it is the audit trail, the record the
+ * next sweep reads the signature back from, and the blocker list the
+ * dispatched fixer is told to read. It must not contain the fixer's mention:
+ * on a token whose comments do start runs, it would wake the fixer a second
+ * time alongside the dispatch.
  *
  * @param triage - The PR's blockers.
  * @param decision - The wake decision, whose signature is embedded for the
@@ -348,8 +350,9 @@ export function renderWakeComment(triage: PrTriage, decision: WakeDecision): str
     AUTOPILOT_MARKER,
     `<!-- signature:${triage.signature} -->`,
     '',
-    '@claude This PR is not mergeable yet. Address every item below, push, and',
-    'resolve each review thread you answer.',
+    '**Autopilot dispatched the fixer.** This PR is not mergeable yet; the fixer',
+    'has been asked to address every item below, push, and resolve each review',
+    'thread it answers.',
     '',
     ...triage.blockers.map((b) => `- ${b.detail}`),
   ];

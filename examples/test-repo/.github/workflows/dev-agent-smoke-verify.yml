@@ -20,10 +20,10 @@ jobs:
   smoke-verify:
     uses: ./.github/workflows/phase-smoke-verify.yml
     with:
-      issue_number: ${{ inputs.issue_number }}
+      issue_number: ${{ fromJSON(inputs.issue_number) }}
       smoke_phase: ${{ inputs.smoke_phase }}
       smoke_output: ${{ inputs.smoke_output }}
-      smoke_exit_code: ${{ inputs.smoke_exit_code }}
+      smoke_exit_code: ${{ fromJSON(inputs.smoke_exit_code) }}
       invocation_mode: stub
     secrets:
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
